@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
 import {
   Archive,
   ArrowDownToLine,
@@ -29,7 +30,8 @@ import {
   X,
   LifeBuoy,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  TrendingUp
 } from "lucide-react";
 import type {
   AppData,
@@ -37,6 +39,7 @@ import type {
   Product,
   SessionUser,
   StockUnit,
+  Variant,
 } from "./types";
 import {
   adjustBalance,
@@ -65,7 +68,8 @@ type Page =
   | "reports"
   | "business"
   | "users"
-  | "help";
+  | "help"
+  | "analytics";
 const money = (n: number) => `Rp ${Math.round(n).toLocaleString("id-ID")}`;
 const qty = (n: number, unit?: StockUnit) =>
   `${n.toLocaleString("id-ID")} ${unit === "pcs" ? "pcs" : unit || "unit"}`;
@@ -516,21 +520,52 @@ function App() {
       </div>
     );
 
-  const nav = [
-    ["dashboard", "Dashboard", LayoutDashboard],
-    ["products", "Produk & Varian", Archive],
-    ["locations", "Lokasi Usaha", Store],
-    ["receipts", "Stok Masuk", ArrowDownToLine],
-    ["stock", "Stok per Lokasi", Boxes],
-    ["transfers", "Transfer Stok", ArrowRightLeft],
-    ["sales", "Penjualan", ShoppingCart],
-    ["returns", "Retur", RotateCcw],
-    ["opname", "Stock Opname", ClipboardCheck],
-    ["history", "Histori Stok", History],
-    ["reports", "Laporan", BarChart3],
-    ["business", "Profil Usaha", Settings],
-    ["users", "Pengguna & Akses", Users],
-    ["help", "Pusat Bantuan", LifeBuoy],
+  const navGroups = [
+    {
+      group: "Utama",
+      items: [
+        ["dashboard", "Dashboard", LayoutDashboard],
+        ["analytics", "Analitik Bisnis", TrendingUp]
+      ]
+    },
+    {
+      group: "Master Data",
+      items: [
+        ["products", "Produk & Varian", Archive],
+        ["locations", "Lokasi Usaha", Store]
+      ]
+    },
+    {
+      group: "Inventaris",
+      items: [
+        ["receipts", "Stok Masuk", ArrowDownToLine],
+        ["stock", "Stok per Lokasi", Boxes],
+        ["transfers", "Transfer Stok", ArrowRightLeft],
+        ["opname", "Stock Opname", ClipboardCheck],
+        ["history", "Histori Stok", History]
+      ]
+    },
+    {
+      group: "Transaksi",
+      items: [
+        ["sales", "Penjualan", ShoppingCart],
+        ["returns", "Retur", RotateCcw]
+      ]
+    },
+    {
+      group: "Laporan",
+      items: [
+        ["reports", "Laporan", BarChart3]
+      ]
+    },
+    {
+      group: "Pengaturan",
+      items: [
+        ["business", "Profil Usaha", Settings],
+        ["users", "Pengguna & Akses", Users],
+        ["help", "Pusat Bantuan", LifeBuoy]
+      ]
+    }
   ] as const;
   const titles: Record<Page, string> = {
     dashboard: "Dashboard Operasional",
@@ -546,6 +581,7 @@ function App() {
     reports: "Laporan Usaha",
     business: "Profil Bisnis & Organisasi",
     users: "Manajemen Akses & Pengguna",
+    analytics: "Analisis Kinerja Bisnis",
     help: "Pusat Bantuan VEINSTOCK",
   };
   const allowed = (p: Page) =>
@@ -558,6 +594,7 @@ function App() {
           "locations",
           "receipts",
           "business",
+          "analytics",
         ].includes(p)
       : ["dashboard", "sales", "reports", "history"].includes(p));
 
@@ -589,27 +626,34 @@ function App() {
           </small>
         </div>
         <nav>
-          {nav
-            .filter(([id]) => allowed(id as Page))
-            .map(([id, label, Icon]) => (
-              <button
-                key={id}
-                className={page === id ? "active" : ""}
-                onClick={() => {
-                  setPage(id as Page);
-                  setSidebar(false);
-                }}
-              >
-                <Icon />
-                <span>{label}</span>
-                {id === "transfers" &&
-                  data.transfers.some((t) => t.status === "sent") && (
-                    <em>
-                      {data.transfers.filter((t) => t.status === "sent").length}
-                    </em>
-                  )}
-              </button>
-            ))}
+          {navGroups.map((group, idx) => {
+            const allowedItems = group.items.filter(([id]) => allowed(id as Page));
+            if (allowedItems.length === 0) return null;
+            return (
+              <div key={idx} className="nav-group-wrapper">
+                <div className="nav-group-title">{group.group}</div>
+                {allowedItems.map(([id, label, Icon]) => (
+                  <button
+                    key={id as string}
+                    className={page === id ? "active" : ""}
+                    onClick={() => {
+                      setPage(id as Page);
+                      setSidebar(false);
+                    }}
+                  >
+                    <Icon />
+                    <span>{label as string}</span>
+                    {id === "transfers" &&
+                      data.transfers.some((t) => t.status === "sent") && (
+                        <em>
+                          {data.transfers.filter((t) => t.status === "sent").length}
+                        </em>
+                      )}
+                  </button>
+                ))}
+              </div>
+            );
+          })}
         </nav>
         <div className="sidebar-user">
           <div className="avatar">{user.avatarUrl||(user.role==='owner'&&data.business?.logoUrl)?<img src={user.avatarUrl||data.business?.logoUrl} alt={user.name}/>:user.name.slice(0, 2).toUpperCase()}</div>
@@ -857,6 +901,7 @@ function App() {
             />
           )}
           {page === "help" && <HelpPage />}
+          {page === "analytics" && <AnalyticsPage data={data} />}
         </div>
       </main>
       {modal === "product" && (
@@ -4038,6 +4083,319 @@ const ModalActions = ({ close, onDelete }: any) => (
         ))}
       </div>
     </div>
+  );
+}
+
+function AnalyticsPage({ data }: { data: AppData }) {
+  const [refreshing, setRefreshing] = useState<Record<string, boolean>>({});
+  const handleRefresh = (key: string) => {
+    setRefreshing(p => ({ ...p, [key]: true }));
+    setTimeout(() => {
+      setRefreshing(p => ({ ...p, [key]: false }));
+    }, 600);
+  };
+
+  const stats = useMemo(() => {
+    let revenue = 0;
+    let cogs = 0;
+    
+    const costMap: Record<string, number> = {};
+    const variantMap: Record<string, Variant> = {};
+    data.products.forEach(p => {
+      p.variants.forEach(v => {
+        costMap[v.id] = v.cost || 0;
+        variantMap[v.id] = v;
+      });
+    });
+
+    data.sales.forEach(sale => {
+      if (sale.status !== "cancelled") {
+        revenue += sale.total;
+        sale.items.forEach(item => {
+          cogs += (item.quantity * (costMap[item.variantId] || 0));
+        });
+      }
+    });
+
+    const grossProfit = revenue - cogs;
+
+    let stockValue = 0;
+    const lowStockAlerts: { variant: Variant, product: Product, qty: number }[] = [];
+    const balancesByVariant: Record<string, number> = {};
+
+    data.balances.forEach(b => {
+      stockValue += (b.quantity * (costMap[b.variantId] || 0));
+      balancesByVariant[b.variantId] = (balancesByVariant[b.variantId] || 0) + b.quantity;
+    });
+
+    Object.entries(balancesByVariant).forEach(([vid, q]) => {
+      const v = variantMap[vid];
+      if (v && q <= (v.minStock || 0)) {
+        const p = data.products.find(prod => prod.variants.some(x => x.id === vid));
+        if (p) lowStockAlerts.push({ variant: v, product: p, qty: q });
+      }
+    });
+
+    // Recent Activities
+    const activities = [
+      ...data.sales.map(s => ({ date: new Date(s.createdAt), type: 'Penjualan', desc: `Transaksi Penjualan via ${s.channel}`, amount: s.total, color: '#10b981' })),
+      ...(data.receipts || []).map(r => ({ date: new Date(r.createdAt), type: 'Stok Masuk', desc: `Penerimaan stok dari ${r.sourceType}`, amount: r.quantity * r.unitCost, color: '#3b82f6' })),
+      ...data.transfers.map(t => ({ date: new Date(t.createdAt), type: 'Transfer', desc: `Transfer stok antar lokasi`, amount: 0, color: '#f59e0b' }))
+    ].sort((a, b) => b.date.getTime() - a.date.getTime()).slice(0, 10);
+
+    // Sales Trend (Last 7 Days)
+    const salesTrend: { date: string, Omset: number, Modal: number }[] = [];
+    for(let i=6; i>=0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const dateStr = d.toLocaleDateString('id-ID', { day: 'numeric', month: 'short' });
+      salesTrend.push({ date: dateStr, Omset: 0, Modal: 0 });
+    }
+    
+    data.sales.forEach(sale => {
+      if (sale.status !== 'cancelled') {
+        const sDate = new Date(sale.createdAt);
+        const dayDiff = Math.floor((new Date().getTime() - sDate.getTime()) / (1000 * 3600 * 24));
+        if (dayDiff >= 0 && dayDiff < 7) {
+          const index = 6 - dayDiff;
+          salesTrend[index].Omset += sale.total;
+          let saleCogs = 0;
+          sale.items.forEach(item => { saleCogs += item.quantity * (costMap[item.variantId] || 0); });
+          salesTrend[index].Modal += saleCogs;
+        }
+      }
+    });
+
+    const salesByVariant: Record<string, number> = {};
+    data.sales.forEach(s => {
+      if (s.status !== "cancelled") {
+        s.items.forEach(item => {
+          salesByVariant[item.variantId] = (salesByVariant[item.variantId] || 0) + item.quantity;
+        });
+      }
+    });
+
+    const topProducts = Object.entries(salesByVariant)
+      .map(([vid, q]) => ({
+        variant: variantMap[vid],
+        product: data.products.find(prod => prod.variants.some(x => x.id === vid)),
+        qty: q
+      }))
+      .filter(x => x.variant && x.product)
+      .sort((a, b) => b.qty - a.qty)
+      .slice(0, 5);
+      
+    // Profit / Loss Chart Data
+    const profitData = [
+      { name: 'Modal (HPP)', value: cogs, color: '#f87171' },
+      { name: 'Laba Kotor', value: grossProfit, color: '#10b981' }
+    ];
+
+    return {
+      revenue,
+      grossProfit,
+      stockValue,
+      lowStockAlerts,
+      topProducts,
+      activities,
+      salesTrend,
+      profitData,
+      totalSalesCount: data.sales.filter(s => s.status !== 'cancelled').length,
+      totalProductsCount: data.products.length,
+      cogs
+    };
+  }, [data]);
+
+  return (
+    <PageBlock title="Dashboard Utama" desc="Ringkasan performa dan kesehatan bisnis Anda.">
+      <div className="dash-grid-top">
+        {/* Aktivitas Terakhir */}
+        <article className="dash-widget">
+          <header>
+            <h3>Aktivitas Terakhir</h3>
+            <button className="icon-btn" style={{padding: 4, margin: -4}} onClick={() => handleRefresh("act")}><RotateCcw size={14} className={`text-muted ${refreshing.act ? "spin-anim" : ""}`} /></button>
+          </header>
+          <div className="widget-content scroll-y" style={{maxHeight: 220}}>
+            {stats.activities.length === 0 ? <p className="empty-text">Belum ada aktivitas</p> : (
+              <div className="timeline">
+                {stats.activities.map((act, idx) => (
+                  <div key={idx} className="timeline-item">
+                    <div className="time-col">
+                      <b>{act.date.toLocaleDateString('id-ID', {day:'2-digit'})}</b>
+                      <small>{act.date.toLocaleDateString('id-ID', {month:'short'})}</small>
+                    </div>
+                    <div className="timeline-dot" style={{borderColor: act.color}}></div>
+                    <div className="timeline-content">
+                      <div className="time-badge">{act.date.toLocaleTimeString('id-ID', {hour:'2-digit', minute:'2-digit'})}</div>
+                      <p>{act.desc}</p>
+                      {act.amount > 0 && <b>{money(act.amount)}</b>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </article>
+
+        {/* Peringatan Stok */}
+        <article className="dash-widget">
+          <header>
+            <h3>Peringatan Stok Menipis</h3>
+            <button className="icon-btn" style={{padding: 4, margin: -4}} onClick={() => handleRefresh("stock")}><RotateCcw size={14} className={`text-muted ${refreshing.stock ? "spin-anim" : ""}`} /></button>
+          </header>
+          <div className="widget-content scroll-y" style={{maxHeight: 220}}>
+            {stats.lowStockAlerts.length === 0 ? <p className="empty-text">Semua stok aman</p> : (
+              <div className="timeline">
+                {stats.lowStockAlerts.map((alert, idx) => (
+                  <div key={idx} className="timeline-item">
+                     <div className="timeline-dot" style={{borderColor: '#ef4444'}}></div>
+                     <div className="timeline-content">
+                        <div className="time-badge" style={{background: '#fee2e2', color: '#b91c1c'}}>Perhatian</div>
+                        <p>{alert.product.name} - {alert.variant.name}</p>
+                        <small>Sisa: {qty(alert.qty, alert.product.unit)} (Min: {qty(alert.variant.minStock, alert.product.unit)})</small>
+                     </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </article>
+
+        {/* Aset Saat Ini */}
+        <article className="dash-widget">
+          <header>
+            <h3>Aset saat ini</h3>
+            <button className="icon-btn" style={{padding: 4, margin: -4}} onClick={() => handleRefresh("asset")}><RotateCcw size={14} className={`text-muted ${refreshing.asset ? "spin-anim" : ""}`} /></button>
+          </header>
+          <div className="widget-content">
+            <small style={{color:'var(--muted)'}}>Total Nilai Stok</small>
+            <h2 style={{fontSize: 28, margin: '8px 0 24px', color: 'var(--navy)'}}>{money(stats.stockValue)}</h2>
+            
+            <div style={{display:'flex', justifyContent:'space-between', borderTop:'1px solid var(--line)', paddingTop: 16}}>
+              <span className="text-muted">Total Transaksi</span>
+              <b>{stats.totalSalesCount} kali</b>
+            </div>
+            <div style={{display:'flex', justifyContent:'space-between', marginTop: 8}}>
+              <span className="text-muted">Total Barang</span>
+              <b>{stats.totalProductsCount} jenis</b>
+            </div>
+          </div>
+        </article>
+      </div>
+
+      <div className="dash-grid-middle">
+        {/* Arus Kas / Bar Chart */}
+        <article className="dash-widget">
+          <header>
+             <div>
+               <h3>Penjualan vs Modal</h3>
+               <small className="text-muted">Rentang Seminggu Terakhir</small>
+             </div>
+             <button className="icon-btn" style={{padding: 4, margin: -4}} onClick={() => handleRefresh("barchart")}><RotateCcw size={14} className={`text-muted ${refreshing.barchart ? "spin-anim" : ""}`} /></button>
+          </header>
+          <div className="widget-content" style={{height: 250, paddingTop: 16}}>
+             <ResponsiveContainer width="100%" height="100%">
+               <BarChart data={stats.salesTrend} margin={{top:0, right:10, left:-20, bottom:0}}>
+                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0"/>
+                 <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fontSize: 12, fill: '#64748b'}} />
+                 <YAxis axisLine={false} tickLine={false} tick={{fontSize: 12, fill: '#64748b'}} tickFormatter={(val) => `Rp${val/1000}k`}/>
+                 <RechartsTooltip formatter={(val: any) => money(Number(val))} cursor={{fill: '#f8fafc'}}/>
+                 <Legend iconType="circle" wrapperStyle={{fontSize: 12, paddingTop: 10}}/>
+                 <Bar dataKey="Modal" name="Modal (HPP)" stackId="a" fill="#f87171" radius={[0,0,4,4]} barSize={24}/>
+                 <Bar dataKey="Omset" name="Omset Kotor" stackId="a" fill="#34d399" radius={[4,4,0,0]} />
+               </BarChart>
+             </ResponsiveContainer>
+          </div>
+        </article>
+
+        {/* Grafik Penjualan */}
+        <article className="dash-widget">
+          <header>
+             <div>
+               <h3>Tren Omset Penjualan</h3>
+               <small className="text-muted">Rentang Seminggu Terakhir</small>
+             </div>
+             <button className="icon-btn" style={{padding: 4, margin: -4}} onClick={() => handleRefresh("linechart")}><RotateCcw size={14} className={`text-muted ${refreshing.linechart ? "spin-anim" : ""}`} /></button>
+          </header>
+          <div className="widget-content" style={{height: 250, paddingTop: 16}}>
+             <ResponsiveContainer width="100%" height="100%">
+               <LineChart data={stats.salesTrend} margin={{top:0, right:10, left:-20, bottom:0}}>
+                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0"/>
+                 <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fontSize: 12, fill: '#64748b'}} />
+                 <YAxis axisLine={false} tickLine={false} tick={{fontSize: 12, fill: '#64748b'}} tickFormatter={(val) => `Rp${val/1000}k`}/>
+                 <RechartsTooltip formatter={(val: any) => money(Number(val))} />
+                 <Line type="monotone" dataKey="Omset" stroke="#0ea5e9" strokeWidth={3} dot={{r: 4, fill: '#0ea5e9', strokeWidth: 2, stroke:'#fff'}} activeDot={{r: 6}} />
+               </LineChart>
+             </ResponsiveContainer>
+          </div>
+        </article>
+      </div>
+      
+      <div className="dash-grid-bottom">
+        {/* Laba Rugi */}
+        <article className="dash-widget">
+          <header>
+             <h3>Laba Kotor (Semua Waktu)</h3>
+             <button className="icon-btn" style={{padding: 4, margin: -4}} onClick={() => handleRefresh("donut")}><RotateCcw size={14} className={`text-muted ${refreshing.donut ? "spin-anim" : ""}`} /></button>
+          </header>
+          <div className="widget-content" style={{display:'flex', alignItems:'center', height: 200}}>
+             <div style={{width: '50%', height: '100%'}}>
+               <ResponsiveContainer width="100%" height="100%">
+                 <PieChart>
+                   <Pie data={stats.profitData} innerRadius={55} outerRadius={75} paddingAngle={2} dataKey="value" stroke="none">
+                     {stats.profitData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} />)}
+                   </Pie>
+                   <RechartsTooltip formatter={(val: any) => money(Number(val))}/>
+                 </PieChart>
+               </ResponsiveContainer>
+             </div>
+             <div style={{width: '50%', paddingLeft: 16}}>
+                <div style={{marginBottom: 12}}>
+                  <div style={{display:'flex', alignItems:'center', gap: 6, fontSize: 13, color: 'var(--muted)'}}>
+                    <span style={{width: 8, height: 8, borderRadius: '50%', background: '#34d399'}}></span> Omset Total
+                  </div>
+                  <b>{money(stats.revenue)}</b>
+                </div>
+                <div style={{marginBottom: 12}}>
+                  <div style={{display:'flex', alignItems:'center', gap: 6, fontSize: 13, color: 'var(--muted)'}}>
+                    <span style={{width: 8, height: 8, borderRadius: '50%', background: '#f87171'}}></span> Nilai HPP
+                  </div>
+                  <b>{money(stats.cogs)}</b>
+                </div>
+                <div style={{borderTop:'1px solid var(--line)', paddingTop: 8}}>
+                  <div style={{fontSize: 13, color: 'var(--muted)'}}>Laba Kotor</div>
+                  <b style={{color: '#10b981', fontSize: 16}}>{money(stats.grossProfit)}</b>
+                </div>
+             </div>
+          </div>
+        </article>
+        
+        {/* Produk Terlaris */}
+        <article className="dash-widget">
+          <header>
+             <h3>Produk Terlaris</h3>
+             <button className="icon-btn" style={{padding: 4, margin: -4}} onClick={() => handleRefresh("top")}><RotateCcw size={14} className={`text-muted ${refreshing.top ? "spin-anim" : ""}`} /></button>
+          </header>
+          <div className="widget-content scroll-y" style={{height: 200, paddingRight: 8}}>
+             {stats.topProducts.length === 0 ? <p className="empty-text">Belum ada data</p> : (
+               <ul className="ranking-list" style={{gap: 0}}>
+                 {stats.topProducts.map((p) => (
+                   <li key={p.variant!.id} style={{padding: '12px 0', background: 'transparent', borderBottom: '1px solid var(--line)', borderRadius: 0, borderTop: 0, borderLeft: 0, borderRight: 0}}>
+                     <div className="rank-info">
+                       <div style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+                         <b style={{margin: 0}}>{p.product!.name}</b>
+                         <b style={{color:'#10b981', margin: 0}}>{qty(p.qty, p.product!.unit)}</b>
+                       </div>
+                       <small>{p.variant!.name}</small>
+                     </div>
+                   </li>
+                 ))}
+               </ul>
+             )}
+          </div>
+        </article>
+      </div>
+    </PageBlock>
   );
 }
 
