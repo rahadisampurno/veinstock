@@ -186,7 +186,7 @@ async function db() {
       name VARCHAR(120) NOT NULL,
       email VARCHAR(190) NOT NULL,
       password_hash VARCHAR(255) NOT NULL,
-      role ENUM('owner','pic','finance') NOT NULL,
+      role ENUM('owner','pic','finance','admin','warehouse','cashier') NOT NULL,
       outlet_id VARCHAR(40) NULL,
       active BOOLEAN NOT NULL DEFAULT TRUE,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -269,6 +269,20 @@ function validatePicChange(previous,next,user){
   if(next.balances.length<previous.balances.length) return 'Saldo stok tidak boleh dihapus';
   return null;
 }
+function validateState(data){
+  const arrays=['users','locations','products','balances','transfers','sales','movements','stockCounts'];
+  if(!data||arrays.some(key=>!Array.isArray(data[key])))return 'Format data stok tidak valid';
+  const isNumber=value=>typeof value==='number'&&Number.isFinite(value);
+  const variants=new Set(data.products.flatMap(product=>Array.isArray(product.variants)?product.variants.map(variant=>variant.id):[]));
+  const locations=new Set(data.locations.map(location=>location.id));
+  if(data.balances.some(item=>!locations.has(item.locationId)||!variants.has(item.variantId)||!isNumber(item.quantity)||item.quantity<0))return 'Saldo stok tidak valid atau menjadi minus';
+  if(data.sales.some(sale=>!locations.has(sale.locationId)||!isNumber(sale.total)||sale.total<0||!Array.isArray(sale.items)||sale.items.some(item=>!variants.has(item.variantId)||!isNumber(item.quantity)||item.quantity<=0)))return 'Transaksi penjualan tidak valid';
+  if(data.transfers.some(item=>!locations.has(item.fromId)||!locations.has(item.toId)||item.fromId===item.toId||!variants.has(item.variantId)||!isNumber(item.quantity)||item.quantity<=0))return 'Transfer stok tidak valid';
+  if((data.receipts||[]).some(item=>!locations.has(item.locationId)||!variants.has(item.variantId)||!isNumber(item.quantity)||item.quantity<=0||!isNumber(item.unitCost)||item.unitCost<0))return 'Stok masuk tidak valid';
+  if((data.returns||[]).some(item=>!locations.has(item.locationId)||!variants.has(item.variantId)||!isNumber(item.quantity)||item.quantity<=0))return 'Retur stok tidak valid';
+  if(data.stockCounts.some(item=>!locations.has(item.locationId)||!variants.has(item.variantId)||!isNumber(item.actualQty)||item.actualQty<0))return 'Stock opname tidak valid';
+  return null;
+}
 async function currentUser(conn,auth){
   if(!conn)return demoUsers.find(item=>item.id===auth.sub&&item.organization_id===auth.org);
   const [rows]=await conn.execute('SELECT id,organization_id,name,email,role,outlet_id,active FROM users WHERE id=? AND organization_id=? AND active=TRUE LIMIT 1',[auth.sub,auth.org]);
@@ -278,7 +292,7 @@ app.post('/api/users',requireAuth,async(req,res)=>{
   const conn=await db(),actor=await currentUser(conn,req.auth);
   if(!actor||actor.role!=='owner')return res.status(403).json({message:'Hanya Owner yang dapat menambah pengguna'});
   const name=String(req.body?.name||'').trim(),email=String(req.body?.email||'').trim().toLowerCase(),password=String(req.body?.password||''),role=String(req.body?.role||''),outletId=req.body?.outletId||null;
-  if(name.length<2||!email.includes('@')||password.length<8||!['pic','finance'].includes(role))return res.status(400).json({message:'Data pengguna belum lengkap'});
+  if(name.length<2||!email.includes('@')||password.length<8||!['pic','finance','admin','warehouse','cashier'].includes(role))return res.status(400).json({message:'Data pengguna belum lengkap'});
   if(role==='pic'&&!outletId)return res.status(400).json({message:'PIC wajib dihubungkan ke outlet'});
   if(role==='pic'){
     const state=!conn?demoStates.get(req.auth.org)?.data:(await conn.execute('SELECT payload FROM app_state WHERE id=?',[req.auth.org]))[0][0]?.payload;
@@ -302,7 +316,7 @@ app.patch('/api/users/:id',requireAuth,async(req,res)=>{
   if(!target)return res.status(404).json({message:'Pengguna tidak ditemukan'});
   const role=target.role==='owner'?'owner':requestedRole;
   const finalActive=target.role==='owner'?true:active;
-  if(!['owner','pic','finance'].includes(role))return res.status(400).json({message:'Role pengguna tidak valid'});
+  if(!['owner','pic','finance','admin','warehouse','cashier'].includes(role))return res.status(400).json({message:'Role pengguna tidak valid'});
   if(role==='pic'){
     const state=!conn?demoStates.get(req.auth.org)?.data:(await conn.execute('SELECT payload FROM app_state WHERE id=?',[req.auth.org]))[0][0]?.payload;
     if(!state?.locations?.some(item=>item.id===outletId&&item.type==='outlet'&&item.active))return res.status(400).json({message:'PIC wajib dihubungkan ke outlet aktif'});
@@ -434,6 +448,8 @@ app.get('/api/state', requireAuth, async (req, res) => {
 app.put('/api/state', requireAuth, async (req, res) => {
   const { data, version = 0 } = req.body || {};
   if (!data) return res.status(400).json({ message: 'Data wajib diisi' });
+  const invalid=validateState(data);
+  if(invalid)return res.status(400).json({message:invalid});
   const conn = await db();
   const actor=await currentUser(conn,req.auth);
   if(!actor)return res.status(401).json({message:'Akun tidak aktif'});

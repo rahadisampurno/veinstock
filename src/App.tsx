@@ -76,6 +76,9 @@ type Page =
 const money = (n: number) => `Rp ${Math.round(n).toLocaleString("id-ID")}`;
 const qty = (n: number, unit?: StockUnit) =>
   `${n.toLocaleString("id-ID")} ${unit === "pcs" ? "pcs" : unit || "unit"}`;
+const isPositiveNumber = (value: number) => Number.isFinite(value) && value > 0;
+const minimumFor = (variant: Variant | undefined, locationId: string) =>
+  variant?.minStockByLocation?.[locationId] ?? variant?.minStock ?? 0;
 const savedSessionKey = "veinstock_saved_session";
 
 const readSession = () => {
@@ -653,7 +656,7 @@ function App() {
     if (user.role === "warehouse") return ["dashboard", "receipts", "stock", "transfers", "opname", "history", "returns"].includes(p);
     if (user.role === "cashier") return ["dashboard", "sales", "stock"].includes(p);
     if (user.role === "finance") return ["dashboard", "analytics", "reports"].includes(p);
-    return ["dashboard", "sales", "reports", "history"].includes(p); // pic
+    return ["dashboard", "stock", "transfers", "sales", "opname", "reports", "history"].includes(p); // pic
   };
 
   return (
@@ -758,7 +761,7 @@ function App() {
             >
               <Bell />
               {data.balances.some(
-                (b) => b.quantity < (variantMap[b.variantId]?.minStock || 0),
+                (b) => b.quantity < minimumFor(variantMap[b.variantId], b.locationId),
               ) && <i />}
             </button>
             <div className="date-chip">
@@ -825,6 +828,7 @@ function App() {
           {page === "stock" && (
             <Stock 
               data={data} 
+              setData={setData}
               variants={variantMap}
               role={user.role}
               outletId={user.outletId} 
@@ -884,6 +888,7 @@ function App() {
               }
               cancel={(id: string) => setModal(`cancel:sale:${id}`)}
               detail={(id: string) => setModal(`sale-detail:${id}`)}
+              canCancel={user.role === "owner"}
             />
           )}
           {page === "returns" && (
@@ -930,6 +935,7 @@ function App() {
               user={user.name}
               edit={(id: string) => setModal(`opname:${id}`)}
               cancel={(id: string) => setModal(`cancel:opname:${id}`)}
+              canCorrect={user.role === "owner"}
             />
           )}
           {page === "history" && (
@@ -947,6 +953,8 @@ function App() {
               variants={variantMap}
               locations={locationMap}
               notify={notify}
+              role={user.role}
+              outletId={user.outletId}
             />
           )}
           {page === "business" && (
@@ -986,11 +994,18 @@ function App() {
               uploadImage={uploadImage}
               onDelete={() => {
                 setConfirm({
-                  message: "Yakin ingin menghapus seluruh produk ini beserta variannya?",
+                  message: "Arsipkan produk ini? Produk tidak lagi bisa dipilih untuk transaksi baru, tetapi histori penjualan dan stok tetap aman.",
                   onConfirm: () => {
-                    setData((d) => ({ ...d, products: d.products.filter((p: any) => p.id !== product.id) }));
+                    setData((d) => ({
+                      ...d,
+                      products: d.products.map((p: any) =>
+                        p.id === product.id
+                          ? { ...p, active: false, variants: p.variants.map((v: any) => ({ ...v, active: false })) }
+                          : p,
+                      ),
+                    }));
                     setModal(null);
-                    notify("Produk berhasil dihapus");
+                    notify("Produk diarsipkan. Histori transaksi tetap tersimpan.");
                     setConfirm(null);
                   }
                 });
@@ -1035,11 +1050,18 @@ function App() {
               close={() => setModal(null)}
               onDelete={() => {
                 setConfirm({
-                  message: "Yakin ingin menghapus lokasi ini?",
+                  message: "Nonaktifkan lokasi ini? Histori dan saldo lama tetap tersimpan untuk audit, tetapi lokasi tidak dapat dipakai transaksi baru.",
                   onConfirm: () => {
-                    setData((d) => ({ ...d, locations: d.locations.filter((l: any) => l.id !== selected.id) }));
+                    if (data.locations.filter((l) => l.active).length === 1)
+                      return notify("Minimal satu lokasi harus tetap aktif");
+                    setData((d) => ({
+                      ...d,
+                      locations: d.locations.map((l: any) =>
+                        l.id === selected.id ? { ...l, active: false } : l,
+                      ),
+                    }));
                     setModal(null);
-                    notify("Lokasi berhasil dihapus");
+                    notify("Lokasi dinonaktifkan. Histori transaksi tetap tersimpan.");
                     setConfirm(null);
                   }
                 });
@@ -1078,6 +1100,8 @@ function App() {
               receipt={receipt}
               close={() => setModal(null)}
               save={(form: any) => {
+                if (!isPositiveNumber(form.quantity) || !Number.isFinite(form.unitCost) || form.unitCost < 0)
+                  return notify("Jumlah dan harga modal stok masuk harus valid");
                 setData((d) => {
                   let b = d.balances;
                   if (receipt) {
@@ -1132,6 +1156,8 @@ function App() {
           data={data}
           close={() => setModal(null)}
           save={(form: any) => {
+            if (!isPositiveNumber(form.quantity) || !form.reason?.trim())
+              return notify("Jumlah dan alasan retur harus diisi dengan benar");
             const delta =
               form.type === "customer" ? form.quantity : -form.quantity;
             if (
@@ -1205,12 +1231,17 @@ function App() {
               close={() => setModal(null)}
               onDelete={selected.id !== user.id ? () => {
                 setConfirm({
-                  message: "Yakin ingin menghapus pengguna ini?",
-                  onConfirm: () => {
-                    setData((d) => ({ ...d, users: d.users.filter((u: any) => u.id !== selected.id) }));
-                    setModal(null);
-                    notify("Pengguna berhasil dihapus");
+                  message: "Nonaktifkan akun ini? Akun tidak dapat masuk lagi, tetapi histori aktivitasnya tetap dapat diaudit.",
+                  onConfirm: async () => {
+                    await updateUser(selected.id, {
+                      name: selected.name,
+                      email: selected.email,
+                      role: selected.role,
+                      outletId: selected.outletId,
+                      active: false,
+                    });
                     setConfirm(null);
+                    notify("Akun dinonaktifkan. Histori aktivitas tetap tersimpan.");
                   }
                 });
               } : undefined}
@@ -1224,6 +1255,8 @@ function App() {
           close={() => setModal(null)}
           fixedFrom={user.role === "pic" ? user.outletId : undefined}
           save={(f: string, t: string, v: string, q: number) => {
+            if (!isPositiveNumber(q) || f === t)
+              return notify("Pilih lokasi berbeda dan jumlah transfer yang valid");
             if (getBalance(data.balances, f, v) < q)
               return notify("Stok lokasi asal tidak mencukupi");
             setData((d) => ({
@@ -1272,6 +1305,8 @@ function App() {
             cups?: number,
           ) => {
             const variant = variantMap[v];
+            if (!variant || !isPositiveNumber(amount))
+              return notify("Jumlah penjualan harus lebih dari nol");
             if (getBalance(data.balances, loc, v) < amount)
               return notify("Stok tidak mencukupi");
             const price =
@@ -1326,6 +1361,8 @@ function App() {
           fixedLocation={user.role === "pic" ? user.outletId : undefined}
           close={() => setModal(null)}
           save={(loc: string, v: string, actual: number, reason: string) => {
+            if (!Number.isFinite(actual) || actual < 0 || !reason.trim())
+              return notify("Isi stok fisik dan alasan opname dengan benar");
             const isEdit = modal.includes(":");
             if (isEdit) {
               const id = modal.split(":")[1];
@@ -1732,7 +1769,7 @@ function Dashboard({
 
   const today = sales.reduce((s: any, x: any) => s + x.total, 0);
   const low = balances.filter(
-    (b: any) => b.quantity < (variants[b.variantId]?.minStock || 0),
+    (b: any) => b.quantity < minimumFor(variants[b.variantId], b.locationId),
   );
   return (
     <>
@@ -2196,7 +2233,7 @@ function BusinessPage({ data, open }: any) {
     </PageBlock>
   );
 }
-function Stock({ data, variants, role, outletId }: any) {
+function Stock({ data, setData, variants, role, outletId }: any) {
   const isPic = role === "pic" && outletId;
   const myLocations = isPic ? data.locations.filter((l: any) => l.id === outletId) : data.locations;
   const [loc, setLoc] = useState(myLocations[0]?.id || data.locations[0]?.id),
@@ -2242,7 +2279,8 @@ function Stock({ data, variants, role, outletId }: any) {
             {rows.length ? (
               rows.map((b: any) => {
                 const v = variants[b.variantId],
-                  low = b.quantity < v.minStock;
+                  minimum = minimumFor(v, b.locationId),
+                  low = b.quantity < minimum;
                 return (
                   <tr key={`${b.locationId}-${b.variantId}`}>
                     <td>
@@ -2254,7 +2292,31 @@ function Stock({ data, variants, role, outletId }: any) {
                     <td>
                       <strong>{qty(b.quantity, v.unit)}</strong>
                     </td>
-                    <td>{qty(v.minStock, v.unit)}</td>
+                    <td>
+                      {role === "owner" ? (
+                        <input
+                          aria-label={`Minimum stok ${v.name}`}
+                          type="number"
+                          min="0"
+                          value={minimum}
+                          onChange={(e) => {
+                            const next = Number(e.target.value);
+                            if (!Number.isFinite(next) || next < 0) return;
+                            setData((current: AppData) => ({
+                              ...current,
+                              products: current.products.map((product) => ({
+                                ...product,
+                                variants: product.variants.map((variant) =>
+                                  variant.id === v.id
+                                    ? { ...variant, minStockByLocation: { ...variant.minStockByLocation, [b.locationId]: next } }
+                                    : variant,
+                                ),
+                              })),
+                            }));
+                          }}
+                        />
+                      ) : qty(minimum, v.unit)}
+                    </td>
                     <td>
                       <span className={`status ${low ? "danger" : "ok"}`}>
                         {low ? "Menipis" : "Aman"}
@@ -2322,7 +2384,7 @@ function Transfers({
     <PageBlock
       title="Transfer antar lokasi"
       desc="Stok tujuan bertambah setelah penerima mengonfirmasi barang."
-      action={(role === "owner" || role === "pic") ? "Buat Transfer" : undefined}
+      action={role === "owner" ? "Buat Transfer" : undefined}
       onAction={open}
     >
       <ListSearch
@@ -2405,7 +2467,7 @@ function Transfers({
     </PageBlock>
   );
 }
-function Sales({ data, variants, locations, open, cancel, detail, role, outletId }: any) {
+function Sales({ data, variants, locations, open, cancel, detail, role, outletId, canCancel }: any) {
   const [search, setSearch] = useState(""),
     [channel, setChannel] = useState("all");
   const isPic = role === "pic" && outletId;
@@ -2487,7 +2549,7 @@ function Sales({ data, variants, locations, open, cancel, detail, role, outletId
                     >
                       Detail
                     </button>
-                    {s.status !== "cancelled" && (
+                    {canCancel && s.status !== "cancelled" && (
                       <button
                         className="table-action danger-text"
                         onClick={() => cancel(s.id)}
@@ -2507,7 +2569,7 @@ function Sales({ data, variants, locations, open, cancel, detail, role, outletId
     </PageBlock>
   );
 }
-function Opname({ data, variants, locations, open, edit, cancel, role, outletId }: any) {
+function Opname({ data, variants, locations, open, edit, cancel, role, outletId, canCorrect }: any) {
   const isPic = role === "pic" && outletId;
   const stockCounts = isPic ? data.stockCounts.filter((o: any) => o.locationId === outletId) : data.stockCounts;
   return (
@@ -2551,7 +2613,7 @@ function Opname({ data, variants, locations, open, edit, cancel, role, outletId 
                   <td>{o.status === "cancelled" ? `Dibatalkan: ${o.cancelReason}` : o.reason}</td>
                   <td>
                     <div className="table-actions">
-                      {o.status !== "cancelled" && (
+                      {canCorrect && o.status !== "cancelled" && (
                         <>
                           <button onClick={() => edit(o.id)}>Edit</button>
                           <button className="danger" onClick={() => cancel(o.id)}>
@@ -2604,7 +2666,7 @@ function HistoryPage({ data, variants, locations, role, outletId }: any) {
     </PageBlock>
   );
 }
-function Reports({ data, variants, locations, notify }: any) {
+function Reports({ data, variants, locations, notify, role, outletId }: any) {
   const [period, setPeriod] = useState("month"),
     [location, setLocation] = useState("all"),
     [product, setProduct] = useState("all"),
@@ -2618,9 +2680,17 @@ function Reports({ data, variants, locations, notify }: any) {
           : period === "month"
             ? now - 30 * 864e5
             : 0;
+  const isPic = role === "pic" && outletId;
+  const visibleLocations = isPic
+    ? data.locations.filter((item: any) => item.id === outletId)
+    : data.locations;
+  const visibleBalances = isPic
+    ? data.balances.filter((item: any) => item.locationId === outletId)
+    : data.balances;
   const sales = data.sales.filter(
       (s: any) =>
         s.status !== "cancelled" &&
+        (!isPic || s.locationId === outletId) &&
         new Date(s.createdAt).getTime() >= start &&
         (location === "all" || s.locationId === location) &&
         (channel === "all" || s.channel === channel) &&
@@ -2637,7 +2707,7 @@ function Reports({ data, variants, locations, notify }: any) {
   const top = Object.entries(sold).sort((a, b) => b[1] - a[1])[0],
     stockout = Object.entries(variants)
       .map(([id, v]: any) => {
-        const balance = data.balances
+        const balance = visibleBalances
             .filter((b: any) => b.variantId === id)
             .reduce((a: number, b: any) => a + b.quantity, 0),
           daily =
@@ -2716,7 +2786,7 @@ function Reports({ data, variants, locations, notify }: any) {
         </select>
         <select value={location} onChange={(e) => setLocation(e.target.value)}>
           <option value="all">Semua outlet</option>
-          {data.locations.map((l: any) => (
+          {visibleLocations.map((l: any) => (
             <option value={l.id} key={l.id}>
               {l.name}
             </option>
@@ -3663,10 +3733,12 @@ function SaleModal({ data, close, save, fixedLocation }: any) {
       fixedLocation || activeLocations[1]?.id || activeLocations[0]?.id || "",
     ),
     [channel, setChannel] = useState<Channel>("offline"),
+    [skuSearch, setSkuSearch] = useState(""),
     [v, setV] = useState(variants[0]?.id || ""),
     [amount, setAmount] = useState(1),
     [useCups, setUseCups] = useState(false),
     [payment, setPayment] = useState("QRIS"),
+    matchingVariants = variants.filter((item: any) => `${item.sku} ${item.productName} ${item.name}`.toLowerCase().includes(skuSearch.toLowerCase())),
     selected = variants.find((item: any) => item.id === v) || variants[0] || {},
     canUseCups = selected?.unit === "gram" && Boolean(selected?.gramsPerCup);
   return (
@@ -3718,6 +3790,17 @@ function SaleModal({ data, close, save, fixedLocation }: any) {
           </Field>
         </div>
         <Field label="Produk / varian">
+          <input
+            value={skuSearch}
+            onChange={(e) => {
+              const next = e.target.value;
+              setSkuSearch(next);
+              const exact = variants.find((item: any) => item.sku.toLowerCase() === next.trim().toLowerCase());
+              if (exact) setV(exact.id);
+            }}
+            placeholder="Cari atau scan barcode / SKU"
+            autoComplete="off"
+          />
           <select
             value={v}
             onChange={(e) => {
@@ -3725,9 +3808,9 @@ function SaleModal({ data, close, save, fixedLocation }: any) {
               setUseCups(false);
             }}
           >
-            {variants.map((item: any) => (
+            {matchingVariants.map((item: any) => (
               <option key={item.id} value={item.id}>
-                {item.productName} · {item.name}
+                {item.sku} · {item.productName} · {item.name}
               </option>
             ))}
           </select>
@@ -3984,7 +4067,7 @@ function TransferDetail({
     </Modal>
   );
 }
-function Notifications({data,variants,locations,close,act}:any){const low=data.balances.filter((b:any)=>b.quantity<(variants[b.variantId]?.minStock||0));return <Modal title="Notifikasi stok" desc="Setiap pemberitahuan dilengkapi tindakan yang dapat dilakukan." close={close}>{low.length?<div className="notification-list">{low.map((b:any)=><article key={`${b.locationId}-${b.variantId}`}><div><b>{variants[b.variantId]?.productName} · {variants[b.variantId]?.name}</b><span>{locations[b.locationId]?.name}: tersisa {qty(b.quantity,variants[b.variantId]?.unit)}, minimum {qty(variants[b.variantId]?.minStock,variants[b.variantId]?.unit)}</span></div><button className="small-primary" onClick={()=>act('receipts')}>Tambah stok</button></article>)}</div>:<div className="empty standalone"><Check/><b>Semua stok aman</b><span>Tidak ada saldo di bawah batas minimum.</span></div>}</Modal>}
+function Notifications({data,variants,locations,close,act}:any){const low=data.balances.filter((b:any)=>b.quantity<minimumFor(variants[b.variantId],b.locationId));return <Modal title="Notifikasi stok" desc="Setiap pemberitahuan dilengkapi tindakan yang dapat dilakukan." close={close}>{low.length?<div className="notification-list">{low.map((b:any)=><article key={`${b.locationId}-${b.variantId}`}><div><b>{variants[b.variantId]?.productName} · {variants[b.variantId]?.name}</b><span>{locations[b.locationId]?.name}: tersisa {qty(b.quantity,variants[b.variantId]?.unit)}, minimum {qty(minimumFor(variants[b.variantId],b.locationId),variants[b.variantId]?.unit)}</span></div><button className="small-primary" onClick={()=>act('receipts')}>Tambah stok</button></article>)}</div>:<div className="empty standalone"><Check/><b>Semua stok aman</b><span>Tidak ada saldo di bawah batas minimum.</span></div>}</Modal>}
 const ListSearch=({value,setValue,placeholder}:any)=><label className="list-search"><Search/><input value={value} onChange={(e)=>setValue(e.target.value)} placeholder={placeholder}/></label>;
 const Field = ({ label, children }: any) => (
   <label className="field">
@@ -4214,9 +4297,9 @@ function AnalyticsPage({ data }: { data: AppData }) {
 
     // Recent Activities
     const activities = [
-      ...data.sales.map(s => ({ date: new Date(s.createdAt), type: 'Penjualan', desc: `Transaksi Penjualan via ${s.channel}`, amount: s.total, color: '#10b981' })),
-      ...(data.receipts || []).map(r => ({ date: new Date(r.createdAt), type: 'Stok Masuk', desc: `Penerimaan stok dari ${r.sourceType}`, amount: r.quantity * r.unitCost, color: '#3b82f6' })),
-      ...data.transfers.map(t => ({ date: new Date(t.createdAt), type: 'Transfer', desc: `Transfer stok antar lokasi`, amount: 0, color: '#f59e0b' }))
+      ...data.sales.filter(s => s.status !== 'cancelled').map(s => ({ date: new Date(s.createdAt), type: 'Penjualan', desc: `Transaksi Penjualan via ${s.channel}`, amount: s.total, color: '#10b981' })),
+      ...(data.receipts || []).filter(r => r.status !== 'cancelled').map(r => ({ date: new Date(r.createdAt), type: 'Stok Masuk', desc: `Penerimaan stok dari ${r.sourceType}`, amount: r.quantity * r.unitCost, color: '#3b82f6' })),
+      ...data.transfers.filter(t => t.status !== 'cancelled').map(t => ({ date: new Date(t.createdAt), type: 'Transfer', desc: `Transfer stok antar lokasi`, amount: 0, color: '#f59e0b' }))
     ].sort((a, b) => b.date.getTime() - a.date.getTime()).slice(0, 10);
 
     // Sales Trend (Last 7 Days)
