@@ -199,7 +199,7 @@ app.post('/api/uploads/image',requireAuth,imageUpload.single('image'),async(req,
 });
 app.get('/api/health', async (_req, res) => {
   try { const conn = await db(); if (conn) await conn.query('SELECT 1'); res.json({ ok: true, database: conn ? 'mysql' : 'demo' }); }
-  catch (error) { res.status(503).json({ ok: false, message: 'Database tidak tersedia' }); }
+  catch (error) { console.error('Database health check failed', { code:error?.code, errno:error?.errno, message:error?.message }); res.status(503).json({ ok: false, message: 'Database tidak tersedia' }); }
 });
 app.get('/api/state', requireAuth, async (req, res) => {
   const conn = await db();
