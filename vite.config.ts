@@ -22,5 +22,5 @@ export default defineConfig({
     },
     workbox: { navigateFallback: '/index.html' },
   })],
-  server: { proxy: { '/api': 'http://localhost:8787' } },
+  server: { proxy: { '/api': 'http://127.0.0.1:8787' } },
 })

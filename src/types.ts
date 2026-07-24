@@ -13,7 +13,7 @@ export interface Transfer { id: string; fromId: string; toId: string; variantId:
 export interface SaleItem { variantId: string; quantity: number; unit: StockUnit; cups?: number }
 export interface Sale { id: string; locationId: string; channel: Channel; customer?: string; total: number; payment: string; createdAt: string; items: SaleItem[]; status?: 'completed' | 'cancelled'; cancelledAt?: string; cancelReason?: string }
 export interface Movement { id: string; variantId: string; locationId: string; type: string; quantity: number; note: string; user: string; createdAt: string }
-export interface StockCount { id: string; locationId: string; variantId: string; systemQty: number; actualQty: number; difference: number; reason: string; createdAt: string }
+export interface StockCount { id: string; locationId: string; variantId: string; systemQty: number; actualQty: number; difference: number; reason: string; createdAt: string; status?: "cancelled"; cancelReason?: string; cancelledAt?: string; updatedAt?: string; }
 export interface Supplier { id: string; name: string; phone?: string; address?: string; active: boolean }
 export interface StockReceipt { id: string; sourceType: 'supplier' | 'production'; supplierId?: string; supplierName?: string; locationId: string; variantId: string; quantity: number; unitCost: number; note?: string; createdAt: string; status: 'completed' | 'cancelled'; cancelledAt?: string; cancelReason?: string }
 export interface StockReturn { id: string; type: 'customer' | 'supplier'; locationId: string; supplierId?: string; variantId: string; quantity: number; reason: string; createdAt: string; status: 'completed' | 'cancelled'; cancelledAt?: string; cancelReason?: string }

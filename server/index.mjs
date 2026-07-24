@@ -7,6 +7,8 @@ import jwt from 'jsonwebtoken';
 import multer from 'multer';
 import sharp from 'sharp';
 import { v2 as cloudinary } from 'cloudinary';
+import nodemailer from 'nodemailer';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -17,6 +19,139 @@ app.use(cors({ origin: process.env.APP_ORIGIN || true }));
 app.use(express.json({ limit: '2mb' }));
 cloudinary.config({secure:true});
 const imageUpload=multer({storage:multer.memoryStorage(),limits:{fileSize:5*1024*1024,files:1},fileFilter:(_req,file,done)=>done(null,['image/jpeg','image/png','image/webp','image/heic','image/heif'].includes(file.mimetype))});
+
+// ── Email / SMTP ─────────────────────────────────────────────────────────────
+const hasResend = Boolean(process.env.RESEND_API_KEY);
+const hasSmtp = Boolean(process.env.SMTP_HOST && process.env.SMTP_PASS);
+const mailer = hasResend ? nodemailer.createTransport({
+  host: 'smtp.resend.com',
+  port: 465,
+  secure: true,
+  auth: { user: 'resend', pass: process.env.RESEND_API_KEY },
+}) : hasSmtp ? nodemailer.createTransport({
+  host: process.env.SMTP_HOST,
+  port: Number(process.env.SMTP_PORT || 465),
+  secure: Number(process.env.SMTP_PORT || 465) === 465,
+  auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+}) : null;
+const FROM_ADDRESS = process.env.EMAIL_FROM || process.env.SMTP_FROM || 'noreply@veinstock.app';
+const APP_NAME = 'VEINSTOCK';
+
+function buildResetEmail(recipientName, token, expiresMinutes = 15) {
+  const subject = `Reset Password ${APP_NAME}`;
+  const html = `<!DOCTYPE html>
+<html lang="id">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${subject}</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#f0f4f8;font-family:'Segoe UI',Arial,sans-serif;padding:32px 16px}
+  .wrap{max-width:520px;margin:0 auto}
+  .card{background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px #0002}
+  .header{background:linear-gradient(135deg,#0d9563 0%,#0a7a50 100%);padding:36px 40px;text-align:center}
+  .logo{font-size:22px;font-weight:800;color:#fff;letter-spacing:2px;margin-bottom:4px}
+  .logo-sub{font-size:12px;color:#a7f3d0;letter-spacing:1px}
+  .body{padding:40px}
+  .greeting{font-size:16px;color:#374151;margin-bottom:16px}
+  .lead{font-size:14px;color:#6b7280;line-height:1.6;margin-bottom:28px}
+  .token-box{background:#f0fdf4;border:2px dashed #16a34a;border-radius:12px;padding:20px 24px;text-align:center;margin-bottom:28px}
+  .token-label{font-size:11px;font-weight:700;color:#16a34a;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:8px}
+  .token{font-size:28px;font-weight:800;color:#0d9563;letter-spacing:8px;font-family:monospace}
+  .expires{font-size:12px;color:#9ca3af;margin-top:8px}
+  .warning{background:#fffbeb;border-left:4px solid #f59e0b;border-radius:0 8px 8px 0;padding:12px 16px;font-size:13px;color:#92400e;margin-bottom:28px;line-height:1.5}
+  .ignore{font-size:13px;color:#9ca3af;text-align:center;line-height:1.5;margin-bottom:32px}
+  .footer{background:#f9fafb;padding:20px 40px;text-align:center;border-top:1px solid #e5e7eb}
+  .footer p{font-size:12px;color:#9ca3af;line-height:1.6}
+  .footer strong{color:#6b7280}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <div class="header">
+      <div class="logo">${APP_NAME}</div>
+      <div class="logo-sub">Sistem Manajemen Stok UMKM</div>
+    </div>
+    <div class="body">
+      <p class="greeting">Halo, <strong>${recipientName}</strong> 👋</p>
+      <p class="lead">Kami menerima permintaan untuk mereset password akun <strong>${APP_NAME}</strong> Anda. Gunakan kode OTP di bawah ini untuk melanjutkan proses reset password.</p>
+      <div class="token-box">
+        <div class="token-label">Kode OTP Reset Password</div>
+        <div class="token">${token}</div>
+        <div class="expires">Berlaku selama ${expiresMinutes} menit</div>
+      </div>
+      <div class="warning">
+        ⚠️ <strong>Jangan bagikan kode ini</strong> kepada siapa pun, termasuk tim VEINSTOCK. Kode ini bersifat rahasia dan hanya untuk Anda.
+      </div>
+      <p class="ignore">Jika Anda tidak merasa meminta reset password, abaikan email ini. Akun Anda tetap aman.</p>
+    </div>
+    <div class="footer">
+      <p><strong>${APP_NAME}</strong> · Sistem Manajemen Stok UMKM</p>
+      <p>Email ini dikirim otomatis, harap tidak membalas.</p>
+    </div>
+  </div>
+</div>
+</body></html>`;
+  return { subject, html };
+}
+
+function buildChangePasswordEmail(recipientName) {
+  const subject = `Password ${APP_NAME} Berhasil Diubah`;
+  const html = `<!DOCTYPE html>
+<html lang="id">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${subject}</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#f0f4f8;font-family:'Segoe UI',Arial,sans-serif;padding:32px 16px}
+  .wrap{max-width:520px;margin:0 auto}
+  .card{background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px #0002}
+  .header{background:linear-gradient(135deg,#0d9563 0%,#0a7a50 100%);padding:36px 40px;text-align:center}
+  .logo{font-size:22px;font-weight:800;color:#fff;letter-spacing:2px;margin-bottom:4px}
+  .logo-sub{font-size:12px;color:#a7f3d0;letter-spacing:1px}
+  .body{padding:40px}
+  .greeting{font-size:16px;color:#374151;margin-bottom:16px}
+  .lead{font-size:14px;color:#6b7280;line-height:1.6;margin-bottom:28px}
+  .success-box{background:#f0fdf4;border:2px solid #16a34a;border-radius:12px;padding:20px 24px;text-align:center;margin-bottom:28px}
+  .check{font-size:36px;margin-bottom:8px}
+  .success-text{font-size:15px;font-weight:700;color:#0d9563}
+  .warning{background:#fef2f2;border-left:4px solid #ef4444;border-radius:0 8px 8px 0;padding:12px 16px;font-size:13px;color:#991b1b;margin-bottom:28px;line-height:1.5}
+  .footer{background:#f9fafb;padding:20px 40px;text-align:center;border-top:1px solid #e5e7eb}
+  .footer p{font-size:12px;color:#9ca3af;line-height:1.6}
+  .footer strong{color:#6b7280}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <div class="header">
+      <div class="logo">${APP_NAME}</div>
+      <div class="logo-sub">Sistem Manajemen Stok UMKM</div>
+    </div>
+    <div class="body">
+      <p class="greeting">Halo, <strong>${recipientName}</strong> 👋</p>
+      <p class="lead">Kami ingin memberitahu bahwa password akun <strong>${APP_NAME}</strong> Anda baru saja berhasil diubah.</p>
+      <div class="success-box">
+        <div class="check">✅</div>
+        <div class="success-text">Password berhasil diperbarui</div>
+      </div>
+      <div class="warning">
+        🚨 <strong>Bukan Anda yang melakukan ini?</strong> Segera hubungi Owner atau admin usaha Anda untuk mengamankan akun.
+      </div>
+    </div>
+    <div class="footer">
+      <p><strong>${APP_NAME}</strong> · Sistem Manajemen Stok UMKM</p>
+      <p>Email ini dikirim otomatis, harap tidak membalas.</p>
+    </div>
+  </div>
+</div>
+</body></html>`;
+  return { subject, html };
+}
+
+// In-memory OTP store: Map<email, { otp, hash, expiresAt, name }>
+const resetTokens = new Map();
+function generateOtp() { return String(Math.floor(100000 + Math.random() * 900000)); }
 
 let pool;
 async function db() {
@@ -185,6 +320,97 @@ app.patch('/api/users/:id',requireAuth,async(req,res)=>{
   sql+=' WHERE id=? AND organization_id=?';params.push(targetId,req.auth.org);
   await conn.execute(sql,params);
   res.json({user:{id:targetId,name,email,role,outletId:role==='pic'?outletId:undefined,active:finalActive,organizationId:req.auth.org}});
+});
+
+// ── Forgot Password (Request OTP) ────────────────────────────────────────────
+app.post('/api/auth/forgot-password', async (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  if (!email.includes('@')) return res.status(400).json({ message: 'Masukkan alamat email yang valid' });
+  const conn = await db();
+  let user;
+  if (conn) {
+    const [rows] = await conn.execute('SELECT id, name, email FROM users WHERE email=? AND active=TRUE LIMIT 1', [email]);
+    user = rows[0];
+  } else {
+    user = demoUsers.find(u => u.email === email && u.active !== false);
+  }
+  
+  if (!user) return res.status(404).json({ message: 'Email tidak terdaftar di sistem. Silakan daftar terlebih dahulu.' });
+
+  const otp = generateOtp();
+  const hash = await bcrypt.hash(otp, 10);
+  resetTokens.set(email, { hash, name: user.name, expiresAt: Date.now() + 15 * 60 * 1000 });
+  if (mailer) {
+    const { subject, html } = buildResetEmail(user.name, otp, 15);
+    try {
+      await mailer.sendMail({ from: `"${APP_NAME}" <${FROM_ADDRESS}>`, to: email, subject, html });
+    } catch (err) {
+      console.error('SMTP error:', err.message);
+      return res.status(500).json({ message: 'Gagal mengirim email. Coba lagi beberapa saat.' });
+    }
+  }
+  res.json({ message: 'Jika email terdaftar, kode OTP telah dikirim.' });
+});
+
+// ── Reset Password (Submit OTP + new password) ────────────────────────────────
+app.post('/api/auth/reset-password', async (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  const otp = String(req.body?.otp || '').trim();
+  const newPassword = String(req.body?.newPassword || '');
+  if (!email.includes('@') || otp.length < 6 || newPassword.length < 8)
+    return res.status(400).json({ message: 'Data tidak lengkap atau password minimal 8 karakter' });
+  const entry = resetTokens.get(email);
+  if (!entry || Date.now() > entry.expiresAt)
+    return res.status(400).json({ message: 'Kode OTP tidak valid atau sudah kadaluarsa' });
+  const valid = await bcrypt.compare(otp, entry.hash);
+  if (!valid) return res.status(400).json({ message: 'Kode OTP salah' });
+  resetTokens.delete(email);
+  const newHash = await bcrypt.hash(newPassword, 12);
+  const conn = await db();
+  if (conn) {
+    await conn.execute('UPDATE users SET password_hash=? WHERE email=? AND active=TRUE', [newHash, email]);
+  } else {
+    const u = demoUsers.find(u => u.email === email);
+    if (u) u.demo_password = newPassword;
+  }
+  if (mailer) {
+    const { subject, html } = buildChangePasswordEmail(entry.name);
+    try { await mailer.sendMail({ from: `"${APP_NAME}" <${FROM_ADDRESS}>`, to: email, subject, html }); } catch {}
+  }
+  res.json({ message: 'Password berhasil direset. Silakan masuk kembali.' });
+});
+
+// ── Change Password (for logged-in users) ─────────────────────────────────────
+app.patch('/api/profile/password', requireAuth, async (req, res) => {
+  const currentPassword = String(req.body?.currentPassword || '');
+  const newPassword = String(req.body?.newPassword || '');
+  if (!currentPassword || newPassword.length < 8)
+    return res.status(400).json({ message: 'Password baru minimal 8 karakter' });
+  const conn = await db();
+  let user;
+  if (conn) {
+    const [rows] = await conn.execute('SELECT id, name, email, password_hash FROM users WHERE id=? AND organization_id=? AND active=TRUE LIMIT 1', [req.auth.sub, req.auth.org]);
+    user = rows[0];
+  } else {
+    user = demoUsers.find(u => u.id === req.auth.sub && u.organization_id === req.auth.org);
+  }
+  if (!user) return res.status(404).json({ message: 'Akun tidak ditemukan' });
+  const currentHash = conn ? user.password_hash : null;
+  const passwordOk = conn
+    ? await bcrypt.compare(currentPassword, currentHash)
+    : currentPassword === (user.demo_password || 'VeinStock123!');
+  if (!passwordOk) return res.status(401).json({ message: 'Password lama tidak sesuai' });
+  const newHash = await bcrypt.hash(newPassword, 12);
+  if (conn) {
+    await conn.execute('UPDATE users SET password_hash=? WHERE id=? AND organization_id=?', [newHash, req.auth.sub, req.auth.org]);
+  } else {
+    user.demo_password = newPassword;
+  }
+  if (mailer) {
+    const { subject, html } = buildChangePasswordEmail(user.name);
+    try { await mailer.sendMail({ from: `"${APP_NAME}" <${FROM_ADDRESS}>`, to: user.email, subject, html }); } catch {}
+  }
+  res.json({ message: 'Password berhasil diubah' });
 });
 app.post('/api/uploads/image',requireAuth,imageUpload.single('image'),async(req,res)=>{
   const conn=await db(),actor=await currentUser(conn,req.auth);

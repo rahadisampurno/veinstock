@@ -13,6 +13,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@types/nodemailer": "^8.0.1",
     "bcryptjs": "^3.0.3",
     "cloudinary": "^2.10.0",
     "dotenv": "^17.4.2",
@@ -21,6 +22,7 @@
     "lucide-react": "^1.26.0",
     "multer": "^2.2.0",
     "mysql2": "^3.23.1",
+    "nodemailer": "^9.0.3",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "react-router-dom": "^7.18.1",

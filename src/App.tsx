@@ -20,9 +20,16 @@ import {
   Settings,
   ShoppingCart,
   Store,
+  Trash2,
   Users,
+  Eye,
+  EyeOff,
+  KeyRound,
   Warehouse,
   X,
+  LifeBuoy,
+  ChevronDown,
+  ChevronUp
 } from "lucide-react";
 import type {
   AppData,
@@ -57,7 +64,8 @@ type Page =
   | "history"
   | "reports"
   | "business"
-  | "users";
+  | "users"
+  | "help";
 const money = (n: number) => `Rp ${Math.round(n).toLocaleString("id-ID")}`;
 const qty = (n: number, unit?: StockUnit) =>
   `${n.toLocaleString("id-ID")} ${unit === "pcs" ? "pcs" : unit || "unit"}`;
@@ -79,6 +87,7 @@ function App() {
   const [sidebar, setSidebar] = useState(false);
   const [modal, setModal] = useState<string | null>(null);
   const [toast, setToast] = useState("");
+  const [confirm, setConfirm] = useState<{ message: string, onConfirm: () => void } | null>(null);
   const serverVersion = useRef(0);
   const serverReady = useRef(false);
   const skipNextSync = useRef(false);
@@ -192,6 +201,11 @@ function App() {
     setToken(result.token);
     sessionStorage.setItem("veinstock_user", JSON.stringify(result.user));
     sessionStorage.setItem("veinstock_token", result.token);
+    notify(
+      endpoint === "/api/login"
+        ? "Berhasil masuk ke Dashboard"
+        : "Pendaftaran berhasil, selamat datang di VEINSTOCK!"
+    );
   };
   const login = (email: string, password: string) =>
     authenticate("/api/login", { email, password });
@@ -411,6 +425,42 @@ function App() {
           ),
         };
       }
+      if (kind === "opname") {
+        const item = d.stockCounts.find((x: any) => x.id === id);
+        if (!item || item.status === "cancelled") return d;
+        balances = adjustBalance(
+          balances,
+          item.locationId,
+          item.variantId,
+          -item.difference,
+        );
+        movements = [
+          movement(
+            item.variantId,
+            item.locationId,
+            "Pembatalan opname",
+            -item.difference,
+            reason,
+            user?.name || "Pengguna",
+          ),
+          ...movements,
+        ];
+        return {
+          ...d,
+          balances,
+          movements,
+          stockCounts: d.stockCounts.map((x: any) =>
+            x.id === id
+              ? {
+                  ...x,
+                  status: "cancelled",
+                  cancelReason: reason,
+                  cancelledAt: new Date().toISOString(),
+                }
+              : x,
+          ),
+        };
+      }
       const item = (d.returns || []).find((x: any) => x.id === id);
       if (!item || item.status === "cancelled") return d;
       const delta = item.type === "customer" ? -item.quantity : item.quantity;
@@ -480,6 +530,7 @@ function App() {
     ["reports", "Laporan", BarChart3],
     ["business", "Profil Usaha", Settings],
     ["users", "Pengguna & Akses", Users],
+    ["help", "Pusat Bantuan", LifeBuoy],
   ] as const;
   const titles: Record<Page, string> = {
     dashboard: "Dashboard Operasional",
@@ -493,8 +544,9 @@ function App() {
     opname: "Stock Opname & Penyesuaian",
     history: "Histori Pergerakan Stok",
     reports: "Laporan Usaha",
-    business: "Profil Usaha",
-    users: "Pengguna & Hak Akses",
+    business: "Profil Bisnis & Organisasi",
+    users: "Manajemen Akses & Pengguna",
+    help: "Pusat Bantuan VEINSTOCK",
   };
   const allowed = (p: Page) =>
     user.role === "owner" ||
@@ -571,9 +623,14 @@ function App() {
                   : "Keuangan"}
             </small>
           </div>
-          <button className="icon-btn" aria-label="Keluar" onClick={logout}>
-            <LogOut />
-          </button>
+          <div className="sidebar-user-actions">
+            <button className="icon-btn" aria-label="Ganti Password" title="Ganti Password" onClick={() => setModal("change-password")}>
+              <KeyRound size={18} />
+            </button>
+            <button className="icon-btn" aria-label="Keluar" onClick={logout}>
+              <LogOut />
+            </button>
+          </div>
         </div>
       </aside>
       <main>
@@ -617,20 +674,21 @@ function App() {
           {page === "dashboard" && (
             <Dashboard
               data={data}
-              businessLogo={data.business?.logoUrl}
               variants={variantMap}
               locations={locationMap}
               setPage={setPage}
-              organizationName={user.organizationName}
+              organizationName={data.business?.name || "Usaha Anda"}
               canEdit={user.role !== "finance"}
+              role={user.role}
+              outletId={user.outletId}
             />
           )}
           {page === "products" && (
             <Products
               data={data}
               open={() => setModal("product")}
-              edit={(productId: string, variantId: string) =>
-                setModal(`product:${productId}:${variantId}`)
+              edit={(productId: string) =>
+                setModal(`product:${productId}`)
               }
             />
           )}
@@ -656,29 +714,42 @@ function App() {
                   return notify("Tambahkan produk aktif terlebih dahulu");
                 setModal("receipt");
               }}
+              edit={(id: string) => setModal(`receipt:${id}`)}
               cancel={(id: string) => setModal(`cancel:receipt:${id}`)}
             />
           )}
-          {page === "stock" && <Stock data={data} variants={variantMap} />}
+          {page === "stock" && (
+            <Stock 
+              data={data} 
+              variants={variantMap}
+              role={user.role}
+              outletId={user.outletId} 
+            />
+          )}
           {page === "transfers" && (
             <Transfers
               data={data}
               setData={setData}
               variants={variantMap}
               locations={locationMap}
+              role={user.role}
+              outletId={user.outletId}
               open={() => {
                 if (data.locations.filter((l) => l.active).length < 2)
                   return notify(
                     "Tambahkan minimal dua lokasi aktif terlebih dahulu",
                   );
-                if (!data.products.some((p) => p.variants.length))
-                  return notify("Tambahkan produk dan varian terlebih dahulu");
+                if (
+                  !data.products.some(
+                    (p) =>
+                      p.active && p.variants.some((v) => v.active !== false),
+                  )
+                )
+                  return notify("Tambahkan produk aktif terlebih dahulu");
                 setModal("transfer");
               }}
               notify={notify}
               user={user.name}
-              role={user.role}
-              outletId={user.outletId}
               cancel={(id: string) => setModal(`cancel:transfer:${id}`)}
               detail={(id: string) => setModal(`transfer-detail:${id}`)}
             />
@@ -688,14 +759,22 @@ function App() {
               data={data}
               variants={variantMap}
               locations={locationMap}
+              role={user.role}
+              outletId={user.outletId}
               open={
                 user.role === "finance"
                   ? undefined
                   : () => {
-                      if (!data.products.some((p) => p.variants.length))
-                        return notify(
-                          "Tambahkan produk dan varian terlebih dahulu",
-                        );
+                      if (!data.locations.some((l) => l.active))
+                        return notify("Tambahkan lokasi aktif terlebih dahulu");
+                      if (
+                        !data.products.some(
+                          (p) =>
+                            p.active &&
+                            p.variants.some((v) => v.active !== false),
+                        )
+                      )
+                        return notify("Tambahkan produk aktif terlebih dahulu");
                       setModal("sale");
                     }
               }
@@ -708,6 +787,8 @@ function App() {
               data={data}
               variants={variantMap}
               locations={locationMap}
+              role={user.role}
+              outletId={user.outletId}
               open={() => {
                 if (
                   !data.products.some(
@@ -727,13 +808,24 @@ function App() {
               setData={setData}
               variants={variantMap}
               locations={locationMap}
+              role={user.role}
+              outletId={user.outletId}
               open={() => {
-                if (!data.products.some((p) => p.variants.length))
-                  return notify("Tambahkan produk dan varian terlebih dahulu");
+                if (!data.locations.some((l) => l.active))
+                  return notify("Tambahkan lokasi aktif terlebih dahulu");
+                if (
+                  !data.products.some(
+                    (p) =>
+                      p.active && p.variants.some((v) => v.active !== false),
+                  )
+                )
+                  return notify("Tambahkan produk aktif terlebih dahulu");
                 setModal("opname");
               }}
               notify={notify}
               user={user.name}
+              edit={(id: string) => setModal(`opname:${id}`)}
+              cancel={(id: string) => setModal(`cancel:opname:${id}`)}
             />
           )}
           {page === "history" && (
@@ -741,6 +833,8 @@ function App() {
               data={data}
               variants={variantMap}
               locations={locationMap}
+              role={user.role}
+              outletId={user.outletId}
             />
           )}
           {page === "reports" && (
@@ -762,6 +856,7 @@ function App() {
               edit={(id: string) => setModal(`user:${id}`)}
             />
           )}
+          {page === "help" && <HelpPage />}
         </div>
       </main>
       {modal === "product" && (
@@ -777,15 +872,24 @@ function App() {
       )}
       {modal?.startsWith("product:") &&
         (() => {
-          const [, productId, variantId] = modal.split(":"),
-            product = data.products.find((item) => item.id === productId),
-            variant = product?.variants.find((item) => item.id === variantId);
-          return product && variant ? (
+          const [, productId] = modal.split(":"),
+            product = data.products.find((item) => item.id === productId);
+          return product ? (
             <ProductModal
               product={product}
-              variant={variant}
               close={() => setModal(null)}
               uploadImage={uploadImage}
+              onDelete={() => {
+                setConfirm({
+                  message: "Yakin ingin menghapus seluruh produk ini beserta variannya?",
+                  onConfirm: () => {
+                    setData((d) => ({ ...d, products: d.products.filter((p: any) => p.id !== product.id) }));
+                    setModal(null);
+                    notify("Produk berhasil dihapus");
+                    setConfirm(null);
+                  }
+                });
+              }}
               save={(updated: Product) => {
                 setData((d) => ({
                   ...d,
@@ -824,6 +928,17 @@ function App() {
             <LocationModal
               location={selected}
               close={() => setModal(null)}
+              onDelete={() => {
+                setConfirm({
+                  message: "Yakin ingin menghapus lokasi ini?",
+                  onConfirm: () => {
+                    setData((d) => ({ ...d, locations: d.locations.filter((l: any) => l.id !== selected.id) }));
+                    setModal(null);
+                    notify("Lokasi berhasil dihapus");
+                    setConfirm(null);
+                  }
+                });
+              }}
               save={(
                 name: string,
                 type: "warehouse" | "outlet",
@@ -849,46 +964,63 @@ function App() {
             />
           ) : null;
         })()}
-      {modal === "receipt" && (
-        <ReceiptModal
-          data={data}
-          close={() => setModal(null)}
-          save={(form: any) => {
-            setData((d) => ({
-              ...d,
-              balances: adjustBalance(
-                d.balances,
-                form.locationId,
-                form.variantId,
-                form.quantity,
-              ),
-              receipts: [
-                {
-                  id: newId("rcv"),
-                  ...form,
-                  status: "completed",
-                  createdAt: new Date().toISOString(),
-                },
-                ...(d.receipts || []),
-              ],
-              movements: [
-                movement(
-                  form.variantId,
-                  form.locationId,
-                  form.sourceType === "production"
-                    ? "Hasil produksi"
-                    : "Stok masuk",
-                  form.quantity,
-                  form.note || "Penerimaan barang",
-                  user.name,
-                ),
-                ...d.movements,
-              ],
-            }));
-            setModal(null);
-            notify("Stok masuk berhasil dicatat dan saldo telah bertambah");
-          }}
-        />
+      {(modal === "receipt" || (modal?.startsWith("receipt:") && !modal.startsWith("cancel:"))) && (
+        (() => {
+          const receipt = modal !== "receipt" ? data.receipts?.find((r: any) => r.id === modal.split(":")[1]) : undefined;
+          return (
+            <ReceiptModal
+              data={data}
+              receipt={receipt}
+              close={() => setModal(null)}
+              save={(form: any) => {
+                setData((d) => {
+                  let b = d.balances;
+                  if (receipt) {
+                    b = adjustBalance(b, receipt.locationId, receipt.variantId, -receipt.quantity);
+                  }
+                  b = adjustBalance(b, form.locationId, form.variantId, form.quantity);
+
+                  return {
+                    ...d,
+                    balances: b,
+                    receipts: receipt
+                      ? (d.receipts || []).map((r: any) => r.id === receipt.id ? { ...r, ...form } : r)
+                      : [
+                          {
+                            id: newId("rcv"),
+                            ...form,
+                            status: "completed",
+                            createdAt: new Date().toISOString(),
+                          },
+                          ...(d.receipts || []),
+                        ],
+                    movements: receipt
+                      ? [
+                          movement(form.variantId, form.locationId, "Koreksi Stok Masuk", form.quantity, "Revisi transaksi", user?.name || "Sistem"),
+                          movement(receipt.variantId, receipt.locationId, "Koreksi Stok Masuk", -receipt.quantity, "Revisi transaksi (Pembatalan lama)", user?.name || "Sistem"),
+                          ...(d.movements || [])
+                        ]
+                      : [
+                          movement(
+                            form.variantId,
+                            form.locationId,
+                            form.sourceType === "production"
+                              ? "Hasil produksi"
+                              : form.supplierName || "Supplier",
+                            form.quantity,
+                            "",
+                            user?.name || "Sistem",
+                          ),
+                          ...(d.movements || []),
+                        ],
+                  };
+                });
+                setModal(null);
+                notify(receipt ? "Stok masuk berhasil diperbarui" : "Stok masuk berhasil dicatat");
+              }}
+            />
+          );
+        })()
       )}
       {modal === "return" && (
         <ReturnModal
@@ -966,6 +1098,17 @@ function App() {
               user={selected}
               uploadImage={uploadImage}
               close={() => setModal(null)}
+              onDelete={selected.id !== user.id ? () => {
+                setConfirm({
+                  message: "Yakin ingin menghapus pengguna ini?",
+                  onConfirm: () => {
+                    setData((d) => ({ ...d, users: d.users.filter((u: any) => u.id !== selected.id) }));
+                    setModal(null);
+                    notify("Pengguna berhasil dihapus");
+                    setConfirm(null);
+                  }
+                });
+              } : undefined}
               save={(payload: object) => updateUser(selected.id, payload)}
             />
           ) : null;
@@ -974,6 +1117,7 @@ function App() {
         <TransferModal
           data={data}
           close={() => setModal(null)}
+          fixedFrom={user.role === "pic" ? user.outletId : undefined}
           save={(f: string, t: string, v: string, q: number) => {
             if (getBalance(data.balances, f, v) < q)
               return notify("Stok lokasi asal tidak mencukupi");
@@ -1047,7 +1191,7 @@ function App() {
                     },
                   ],
                 },
-                ...d.sales,
+                ...(d.sales || []),
               ],
               movements: [
                 movement(
@@ -1066,37 +1210,84 @@ function App() {
           }}
         />
       )}
-      {modal === "opname" && (
+      {modal?.startsWith("opname") && (
         <OpnameModal
           data={data}
+          item={
+            modal.split(":")[1]
+              ? data.stockCounts.find((x: any) => x.id === modal.split(":")[1])
+              : null
+          }
           fixedLocation={user.role === "pic" ? user.outletId : undefined}
           close={() => setModal(null)}
           save={(loc: string, v: string, actual: number, reason: string) => {
-            const system = getBalance(data.balances, loc, v),
-              diff = actual - system;
-            setData((d) => ({
-              ...d,
-              balances: adjustBalance(d.balances, loc, v, diff),
-              stockCounts: [
-                {
-                  id: newId("opn"),
-                  locationId: loc,
-                  variantId: v,
-                  systemQty: system,
-                  actualQty: actual,
-                  difference: diff,
-                  reason,
-                  createdAt: new Date().toISOString(),
-                },
-                ...d.stockCounts,
-              ],
-              movements: [
-                movement(v, loc, "Koreksi opname", diff, reason, user.name),
-                ...d.movements,
-              ],
-            }));
-            setModal(null);
-            notify("Stock opname berhasil dicatat");
+            const isEdit = modal.includes(":");
+            if (isEdit) {
+              const id = modal.split(":")[1];
+              const oldItem = data.stockCounts.find((x: any) => x.id === id);
+              if (!oldItem) return;
+              setData((d) => {
+                // Revert old effect
+                const revertedBalances = adjustBalance(d.balances, oldItem.locationId, oldItem.variantId, -oldItem.difference);
+                
+                // Apply new effect
+                const system = getBalance(revertedBalances, loc, v);
+                const newDiff = actual - system;
+                const finalBalances = adjustBalance(revertedBalances, loc, v, newDiff);
+
+                return {
+                  ...d,
+                  balances: finalBalances,
+                  stockCounts: d.stockCounts.map((x: any) =>
+                    x.id === id
+                      ? {
+                          ...x,
+                          locationId: loc,
+                          variantId: v,
+                          systemQty: system,
+                          actualQty: actual,
+                          difference: newDiff,
+                          reason,
+                          updatedAt: new Date().toISOString(),
+                        }
+                      : x,
+                  ),
+                  movements: [
+                    movement(v, loc, "Koreksi opname (Update)", newDiff, reason, user.name),
+                    movement(oldItem.variantId, oldItem.locationId, "Reversi update opname", -oldItem.difference, reason, user.name),
+                    ...d.movements,
+                  ],
+                };
+              });
+              setModal(null);
+              notify("Stock opname berhasil diperbarui");
+            } else {
+              const system = getBalance(data.balances, loc, v),
+                diff = actual - system;
+              setData((d) => ({
+                ...d,
+                balances: adjustBalance(d.balances, loc, v, diff),
+                stockCounts: [
+                  {
+                    id: newId("opn"),
+                    locationId: loc,
+                    variantId: v,
+                    systemQty: system,
+                    actualQty: actual,
+                    difference: diff,
+                    reason,
+                    createdAt: new Date().toISOString(),
+                  },
+                  ...(d.stockCounts || []),
+                ],
+                movements: [
+                  movement(v, loc, "Koreksi opname", diff, reason, user.name),
+                  ...d.movements,
+                ],
+              }));
+              setModal(null);
+              notify("Stock opname berhasil dicatat");
+            }
           }}
         />
       )}
@@ -1139,6 +1330,25 @@ function App() {
           }}
         />
       )}
+      {modal === "change-password" && (
+        <ChangePasswordModal
+          token={token}
+          close={() => setModal(null)}
+          notify={notify}
+        />
+      )}
+      {confirm && (
+        <div className="modal-backdrop" style={{ zIndex: 100 }}>
+          <div className="modal" style={{ width: '400px', padding: '24px' }}>
+            <h2 style={{ fontSize: '18px', marginBottom: '8px' }}>Konfirmasi</h2>
+            <p style={{ color: '#64748b', fontSize: '14px', marginBottom: '24px' }}>{confirm.message}</p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
+              <button type="button" className="secondary" onClick={() => setConfirm(null)}>Batal</button>
+              <button type="button" className="danger-button" onClick={confirm.onConfirm}>Ya, Lanjutkan</button>
+            </div>
+          </div>
+        </div>
+      )}
       {toast && (
         <div className="toast">
           <Check />
@@ -1161,14 +1371,14 @@ function Login({
     password: string,
   ) => Promise<void>;
 }) {
-  const [mode, setMode] = useState<"login" | "register">("login"),
+  const [mode, setMode] = useState<"login" | "register" | "forgot">("login"),
     [organization, setOrganization] = useState(""),
     [name, setName] = useState(""),
-    [email, setEmail] = useState("owner@meneng.id"),
-    [password, setPassword] = useState("VeinStock123!"),
+    [email, setEmail] = useState(""),
+    [password, setPassword] = useState(""),
     [error, setError] = useState(""),
     [loading, setLoading] = useState(false);
-  const changeMode = (next: "login" | "register") => {
+  const changeMode = (next: "login" | "register" | "forgot") => {
     setMode(next);
     setError("");
     if (next === "register") {
@@ -1178,37 +1388,12 @@ function Login({
   };
   return (
     <div className="login-page">
-      <div className="login-art">
-        <div className="brand light">
-          <img className="brand-full-logo" src="/veinstock-logo-transparent-v2.png?v=20260724" alt="VEINSTOCK" />
-        </div>
-        <div className="hero-copy">
-          <span>UNTUK SEMUA UMKM</span>
-          <h1>
-            Satu stok.
-            <br />
-            Semua outlet.
-            <br />
-            <i>Selalu sinkron.</i>
-          </h1>
-          <p>Setiap usaha memiliki ruang kerja dan data privatnya sendiri.</p>
-        </div>
-        <div className="login-stats">
-          <div>
-            <b>Aman</b>
-            <span>Data terpisah</span>
-          </div>
-          <div>
-            <b>Fleksibel</b>
-            <span>Multi outlet</span>
-          </div>
-          <div>
-            <b>24/7</b>
-            <span>Terpantau</span>
-          </div>
-        </div>
+      <div className="login-art" style={{ backgroundImage: 'url(/login-bg.png)', backgroundSize: 'contain', backgroundPosition: 'center', backgroundRepeat: 'no-repeat', padding: 0, backgroundColor: '#f5fbfa' }}>
       </div>
       <div className="login-panel">
+        {mode === "forgot" ? (
+          <ForgotPasswordFlow onBack={() => changeMode("login")} />
+        ) : (
         <form
           className="login-box"
           onSubmit={async (e) => {
@@ -1284,17 +1469,23 @@ function Login({
             />
           </Field>
           <Field label="Password">
-            <input
-              type="password"
+            <PasswordInput
               minLength={8}
               required
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPassword(e.target.value)}
               autoComplete={
                 mode === "login" ? "current-password" : "new-password"
               }
             />
           </Field>
+          {mode === "login" && (
+            <div style={{ textAlign: 'right', marginTop: '-8px' }}>
+              <button type="button" className="link-btn" onClick={() => changeMode("forgot")}>
+                Lupa password?
+              </button>
+            </div>
+          )}
           {error && <div className="login-error">{error}</div>}
           <button className="primary login-submit" disabled={loading}>
             {loading
@@ -1307,7 +1498,104 @@ function Login({
             🔒 Data setiap UMKM terisolasi dan aktivitas stok tercatat.
           </div>
         </form>
+        )}
       </div>
+    </div>
+  );
+}
+
+function ForgotPasswordFlow({ onBack }: { onBack: () => void }) {
+  const [step, setStep] = useState<"request" | "verify">("request"),
+    [email, setEmail] = useState(""),
+    [otp, setOtp] = useState(""),
+    [newPassword, setNewPassword] = useState(""),
+    [confirmPassword, setConfirmPassword] = useState(""),
+    [loading, setLoading] = useState(false),
+    [error, setError] = useState(""),
+    [success, setSuccess] = useState("");
+
+  const requestOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(""); setLoading(true);
+    try {
+      const res = await fetch('/api/auth/forgot-password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email }) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message);
+      setStep("verify");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Gagal mengirim OTP');
+    } finally { setLoading(false); }
+  };
+
+  const resetPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    if (newPassword !== confirmPassword) return setError('Konfirmasi password tidak cocok');
+    if (newPassword.length < 8) return setError('Password minimal 8 karakter');
+    setLoading(true);
+    try {
+      const res = await fetch('/api/auth/reset-password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, otp, newPassword }) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message);
+      setSuccess(data.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Gagal mereset password');
+    } finally { setLoading(false); }
+  };
+
+  return (
+    <div className="login-box forgot-flow">
+      <button type="button" className="back-btn" onClick={onBack}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m15 18-6-6 6-6"/></svg>
+        Kembali ke Login
+      </button>
+      {success ? (
+        <div className="forgot-success">
+          <div className="forgot-success-icon">✅</div>
+          <h2>Password Berhasil Direset!</h2>
+          <p>{success}</p>
+          <button className="primary" style={{ width: '100%', marginTop: '24px' }} onClick={onBack}>Masuk Sekarang</button>
+        </div>
+      ) : step === "request" ? (
+        <form onSubmit={requestOtp}>
+          <small>LUPA PASSWORD</small>
+          <h2>Reset Password</h2>
+          <p>Masukkan email akun Anda. Kami akan mengirimkan kode OTP 6 angka ke email tersebut.</p>
+          <Field label="Alamat email">
+            <input type="email" required value={email} onChange={e => setEmail(e.target.value)} placeholder="email@usaha.com" autoComplete="username" />
+          </Field>
+          {error && <div className="login-error">{error}</div>}
+          <button className="primary login-submit" disabled={loading}>{loading ? 'Mengirim...' : 'Kirim Kode OTP'}</button>
+        </form>
+      ) : (
+        <form onSubmit={resetPassword}>
+          <small>LUPA PASSWORD · LANGKAH 2</small>
+          <h2>Masukkan Kode OTP</h2>
+          <p>Kode OTP 6 angka telah dikirim ke <strong>{email}</strong>. Berlaku 15 menit.</p>
+          <Field label="Kode OTP">
+            <input
+              required
+              value={otp}
+              onChange={e => setOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
+              placeholder="123456"
+              maxLength={6}
+              inputMode="numeric"
+              className="otp-input"
+            />
+          </Field>
+          <Field label="Password Baru">
+            <PasswordInput required minLength={8} value={newPassword} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNewPassword(e.target.value)} autoComplete="new-password" placeholder="Minimal 8 karakter" />
+          </Field>
+          <Field label="Konfirmasi Password Baru">
+            <PasswordInput required minLength={8} value={confirmPassword} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setConfirmPassword(e.target.value)} autoComplete="new-password" placeholder="Ulangi password baru" />
+          </Field>
+          {error && <div className="login-error">{error}</div>}
+          <button className="primary login-submit" disabled={loading}>{loading ? 'Menyimpan...' : 'Reset Password'}</button>
+          <button type="button" className="link-btn" style={{ width: '100%', marginTop: '8px' }} onClick={() => { setStep('request'); setOtp(''); setNewPassword(''); setConfirmPassword(''); setError(''); }}>
+            Kirim ulang kode OTP
+          </button>
+        </form>
+      )}
     </div>
   );
 }
@@ -1319,9 +1607,17 @@ function Dashboard({
   setPage,
   organizationName,
   canEdit,
+  role,
+  outletId,
 }: any) {
-  const today = data.sales.reduce((s: any, x: any) => s + x.total, 0);
-  const low = data.balances.filter(
+  const isPic = role === "pic" && outletId;
+  const sales = isPic ? data.sales.filter((s: any) => s.locationId === outletId) : data.sales;
+  const balances = isPic ? data.balances.filter((b: any) => b.locationId === outletId) : data.balances;
+  const transfers = isPic ? data.transfers.filter((t: any) => t.fromId === outletId || t.toId === outletId) : data.transfers;
+  const myLocations = isPic ? data.locations.filter((l: any) => l.id === outletId) : data.locations;
+
+  const today = sales.reduce((s: any, x: any) => s + x.total, 0);
+  const low = balances.filter(
     (b: any) => b.quantity < (variants[b.variantId]?.minStock || 0),
   );
   return (
@@ -1350,12 +1646,12 @@ function Dashboard({
         />
         <Stat
           label="Stok seluruh lokasi"
-          value={`${data.balances.length} saldo`}
+          value={`${balances.length} saldo`}
           sub={`${data.products.flatMap((p: any) => p.variants).length} varian aktif`}
         />
         <Stat
           label="Transfer berjalan"
-          value={data.transfers.filter((t: any) => t.status === "sent").length}
+          value={transfers.filter((t: any) => t.status === "sent").length}
           sub="Menunggu penerimaan"
           tone="amber"
         />
@@ -1373,7 +1669,7 @@ function Dashboard({
           onAction={() => setPage("stock")}
         >
           <div className="location-list">
-            {data.locations.map((l: any) => {
+            {myLocations.map((l: any) => {
               return (
                 <div key={l.id}>
                   <div className="location-icon">
@@ -1383,7 +1679,7 @@ function Dashboard({
                     <b>{l.name}</b>
                     <span>
                       {
-                        data.balances.filter((b: any) => b.locationId === l.id)
+                        balances.filter((b: any) => b.locationId === l.id)
                           .length
                       }{" "}
                       varian tercatat
@@ -1400,7 +1696,7 @@ function Dashboard({
         <Card title="Penjualan berdasarkan kanal">
           <div className="channel-bars">
             {(["offline", "online", "reseller"] as Channel[]).map((c, i) => {
-              const val = data.sales
+              const val = sales
                 .filter((s: any) => s.channel === c)
                 .reduce((a: any, s: any) => a + s.total, 0);
               return (
@@ -1427,7 +1723,7 @@ function Dashboard({
           action="Lihat semua"
           onAction={() => setPage("history")}
         >
-          <Activity data={data} variants={variants} locations={locations} />
+          <Activity data={data} variants={variants} locations={locations} role={role} outletId={outletId} />
         </Card>
       </section>
     </>
@@ -1449,10 +1745,13 @@ const Card = ({ title, action, onAction, children }: any) => (
     {children}
   </article>
 );
-function Activity({ data, variants, locations }: any) {
+function Activity({ data, variants, locations, role, outletId }: any) {
+  const movements = role === "pic" && outletId 
+    ? data.movements.filter((m: any) => m.locationId === outletId)
+    : data.movements;
   return (
     <div className="activity">
-      {data.movements.slice(0, 5).map((m: any) => (
+      {movements.slice(0, 5).map((m: any) => (
         <div key={m.id}>
           <i className={m.quantity >= 0 ? "in" : "out"}>
             {m.quantity >= 0 ? "+" : "−"}
@@ -1478,7 +1777,7 @@ function Activity({ data, variants, locations }: any) {
 }
 
 function Products({ data, open, edit }: any) {
-  const [search,setSearch]=useState("");
+  const [search, setSearch] = useState("");
   return (
     <PageBlock
       title="Daftar produk"
@@ -1488,44 +1787,49 @@ function Products({ data, open, edit }: any) {
     >
       <ListSearch value={search} setValue={setSearch} placeholder="Cari produk, varian, SKU, atau kategori" />
       <div className="product-grid">
-        {data.products.map((p: any) =>
-          p.variants.filter((v:any)=>`${p.name} ${p.category} ${v.name} ${v.sku}`.toLowerCase().includes(search.toLowerCase())).map((v: any) => (
-            <article className="product-card" key={v.id}>
-              <button
-                className="card-edit"
-                aria-label={`Edit ${p.name} ${v.name}`}
-                onClick={() => edit(p.id, v.id)}
-              >
-                <Settings />
+        {data.products
+          .filter((p: any) => 
+            `${p.name} ${p.category}`.toLowerCase().includes(search.toLowerCase()) || 
+            p.variants.some((v:any) => `${v.name} ${v.sku}`.toLowerCase().includes(search.toLowerCase()))
+          )
+          .map((p: any) => (
+            <article className="product-card clickable-card" key={p.id} onClick={() => edit(p.id)}>
+              <button className="card-edit" aria-label={`Edit ${p.name}`} onClick={(e) => { e.stopPropagation(); edit(p.id); }}>
+                <Settings size={18} />
               </button>
-              <div className="product-img">
-                {v.imageUrl || (p.variants.length === 1 ? p.imageUrl : undefined) ? (
-                  <img src={v.imageUrl || p.imageUrl} alt={`${p.name} ${v.name}`} loading="lazy" />
-                ) : (
-                  v.name.slice(0, 2).toUpperCase()
-                )}
+              
+              <div className="product-head">
+                <div className="product-img">
+                  {p.imageUrl || p.variants[0]?.imageUrl ? (
+                    <img src={p.imageUrl || p.variants[0]?.imageUrl} alt={p.name} loading="lazy" />
+                  ) : (
+                    p.name.slice(0, 2).toUpperCase()
+                  )}
+                </div>
+                
+                <div className="product-info">
+                  <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                    <span className="badge">{p.category}</span>
+                    {!p.active && <span className="status danger">Nonaktif</span>}
+                  </div>
+                  <h3>{p.name}</h3>
+                </div>
               </div>
-              <span className="badge">{p.category}</span>
-              {(!p.active||v.active===false)&&<span className="status danger">Nonaktif</span>}
-              <h3>
-                {p.name} · {v.name}
-              </h3>
-              <code>{v.sku}</code>
-              <div>
-                <small>Harga jual per {p.unit}</small>
-                <b>{money(v.price)}</b>
+
+              <div className="product-variants">
+                <div className="variant-count">{p.variants.length} Varian</div>
+                {p.variants.map((v: any) => (
+                  <div key={v.id} className="variant-item">
+                    <div>
+                      <b>{v.name} {v.active === false && <span className="inactive-badge">(Nonaktif)</span>}</b>
+                      <code>{v.sku}</code>
+                    </div>
+                    <strong>{money(v.price)}</strong>
+                  </div>
+                ))}
               </div>
-              <footer>
-                <span>
-                  {p.unit === "gram" && v.gramsPerCup
-                    ? `1 gelas = ${v.gramsPerCup} gr`
-                    : `Satuan: ${p.unit}`}
-                </span>
-                <span>Min. {qty(v.minStock, p.unit)}</span>
-              </footer>
             </article>
-          )),
-        )}
+        ))}
       </div>
     </PageBlock>
   );
@@ -1549,7 +1853,7 @@ function LocationsPage({ data, open, edit }: any) {
       />
       <div className="user-grid">
         {rows.map((location: any) => (
-          <article key={location.id}>
+          <article className="clickable-card" key={location.id} onClick={() => edit(location.id)}>
             <div className="location-icon">
               {location.type === "warehouse" ? <Warehouse /> : <Store />}
             </div>
@@ -1567,7 +1871,6 @@ function LocationsPage({ data, open, edit }: any) {
             <button
               className="icon-btn user-edit"
               aria-label={`Edit ${location.name}`}
-              onClick={() => edit(location.id)}
             >
               <Settings />
             </button>
@@ -1577,7 +1880,7 @@ function LocationsPage({ data, open, edit }: any) {
     </PageBlock>
   );
 }
-function ReceiptsPage({ data, variants, locations, open, cancel }: any) {
+function ReceiptsPage({ data, variants, locations, open, edit, cancel }: any) {
   const [search, setSearch] = useState("");
   const rows = (data.receipts || []).filter((x: any) =>
     `${x.supplierName || ""} ${locations[x.locationId]?.name || ""} ${variants[x.variantId]?.name || ""}`
@@ -1638,12 +1941,20 @@ function ReceiptsPage({ data, variants, locations, open, cancel }: any) {
                   </td>
                   <td>
                     {item.status !== "cancelled" && (
-                      <button
-                        className="table-action danger-text"
-                        onClick={() => cancel(item.id)}
-                      >
-                        Batalkan
-                      </button>
+                      <div style={{ display: 'flex', gap: '12px' }}>
+                        <button
+                          className="table-action"
+                          onClick={() => edit(item.id)}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          className="table-action danger-text"
+                          onClick={() => cancel(item.id)}
+                        >
+                          Batalkan
+                        </button>
+                      </div>
                     )}
                   </td>
                 </tr>
@@ -1657,9 +1968,11 @@ function ReceiptsPage({ data, variants, locations, open, cancel }: any) {
     </PageBlock>
   );
 }
-function ReturnsPage({ data, variants, locations, open, cancel }: any) {
+function ReturnsPage({ data, variants, locations, open, cancel, role, outletId }: any) {
   const [search, setSearch] = useState("");
-  const rows = (data.returns || []).filter((x: any) =>
+  const isPic = role === "pic" && outletId;
+  const filteredReturns = isPic ? (data.returns || []).filter((x: any) => x.locationId === outletId) : (data.returns || []);
+  const rows = filteredReturns.filter((x: any) =>
     `${x.reason} ${locations[x.locationId]?.name || ""} ${variants[x.variantId]?.name || ""}`
       .toLowerCase()
       .includes(search.toLowerCase()),
@@ -1769,8 +2082,10 @@ function BusinessPage({ data, open }: any) {
     </PageBlock>
   );
 }
-function Stock({ data, variants }: any) {
-  const [loc, setLoc] = useState(data.locations[0].id),
+function Stock({ data, variants, role, outletId }: any) {
+  const isPic = role === "pic" && outletId;
+  const myLocations = isPic ? data.locations.filter((l: any) => l.id === outletId) : data.locations;
+  const [loc, setLoc] = useState(myLocations[0]?.id || data.locations[0]?.id),
     [search, setSearch] = useState("");
   const rows = data.balances.filter(
     (b: any) =>
@@ -1786,20 +2101,17 @@ function Stock({ data, variants }: any) {
     >
       <div className="filters">
         <select value={loc} onChange={(e) => setLoc(e.target.value)}>
-          {data.locations.map((l: any) => (
+          {myLocations.map((l: any) => (
             <option key={l.id} value={l.id}>
               {l.name}
             </option>
           ))}
         </select>
-        <label>
-          <Search />
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Cari varian atau SKU"
-          />
-        </label>
+        <ListSearch
+          value={search}
+          setValue={setSearch}
+          placeholder="Cari varian atau SKU"
+        />
       </div>
       <div className="table-wrap">
         <table>
@@ -1860,7 +2172,11 @@ function Transfers({
   detail,
 }: any) {
   const [search, setSearch] = useState("");
-  const rows = data.transfers.filter((t: any) =>
+  const isPic = role === "pic" && outletId;
+  const filteredTransfers = isPic
+    ? data.transfers.filter((t: any) => t.fromId === outletId || t.toId === outletId)
+    : data.transfers;
+  const rows = filteredTransfers.filter((t: any) =>
     `${locations[t.fromId]?.name} ${locations[t.toId]?.name} ${variants[t.variantId]?.name}`
       .toLowerCase()
       .includes(search.toLowerCase()),
@@ -1892,7 +2208,7 @@ function Transfers({
     <PageBlock
       title="Transfer antar lokasi"
       desc="Stok tujuan bertambah setelah penerima mengonfirmasi barang."
-      action={role === "owner" ? "Buat Transfer" : undefined}
+      action={(role === "owner" || role === "pic") ? "Buat Transfer" : undefined}
       onAction={open}
     >
       <ListSearch
@@ -1975,10 +2291,12 @@ function Transfers({
     </PageBlock>
   );
 }
-function Sales({ data, variants, locations, open, cancel, detail }: any) {
+function Sales({ data, variants, locations, open, cancel, detail, role, outletId }: any) {
   const [search, setSearch] = useState(""),
     [channel, setChannel] = useState("all");
-  const rows = data.sales.filter(
+  const isPic = role === "pic" && outletId;
+  const filteredSales = isPic ? data.sales.filter((s: any) => s.locationId === outletId) : data.sales;
+  const rows = filteredSales.filter(
     (s: any) =>
       (channel === "all" || s.channel === channel) &&
       `${locations[s.locationId]?.name} ${s.channel} ${variants[s.items[0]?.variantId]?.name}`
@@ -2075,7 +2393,9 @@ function Sales({ data, variants, locations, open, cancel, detail }: any) {
     </PageBlock>
   );
 }
-function Opname({ data, variants, locations, open }: any) {
+function Opname({ data, variants, locations, open, edit, cancel, role, outletId }: any) {
+  const isPic = role === "pic" && outletId;
+  const stockCounts = isPic ? data.stockCounts.filter((o: any) => o.locationId === outletId) : data.stockCounts;
   return (
     <PageBlock
       title="Stock opname"
@@ -2094,15 +2414,16 @@ function Opname({ data, variants, locations, open }: any) {
               <th>Fisik</th>
               <th>Selisih</th>
               <th>Alasan</th>
+              <th>Aksi</th>
             </tr>
           </thead>
           <tbody>
-            {data.stockCounts.length ? (
-              data.stockCounts.map((o: any) => (
-                <tr>
+            {stockCounts.length ? (
+              stockCounts.map((o: any) => (
+                <tr key={o.id} className={o.status === "cancelled" ? "cancelled" : ""}>
                   <td>{new Date(o.createdAt).toLocaleString("id-ID")}</td>
-                  <td>{locations[o.locationId].name}</td>
-                  <td>{variants[o.variantId].name}</td>
+                  <td>{locations[o.locationId]?.name}</td>
+                  <td>{variants[o.variantId]?.name}</td>
                   <td>{qty(o.systemQty, variants[o.variantId]?.unit)}</td>
                   <td>{qty(o.actualQty, variants[o.variantId]?.unit)}</td>
                   <td>
@@ -2113,7 +2434,19 @@ function Opname({ data, variants, locations, open }: any) {
                       {qty(o.difference, variants[o.variantId]?.unit)}
                     </strong>
                   </td>
-                  <td>{o.reason}</td>
+                  <td>{o.status === "cancelled" ? `Dibatalkan: ${o.cancelReason}` : o.reason}</td>
+                  <td>
+                    <div className="table-actions">
+                      {o.status !== "cancelled" && (
+                        <>
+                          <button onClick={() => edit(o.id)}>Edit</button>
+                          <button className="danger" onClick={() => cancel(o.id)}>
+                            Batalkan
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </td>
                 </tr>
               ))
             ) : (
@@ -2125,14 +2458,16 @@ function Opname({ data, variants, locations, open }: any) {
     </PageBlock>
   );
 }
-function HistoryPage({ data, variants, locations }: any) {
+function HistoryPage({ data, variants, locations, role, outletId }: any) {
+  const isPic = role === "pic" && outletId;
+  const movements = isPic ? data.movements.filter((m: any) => m.locationId === outletId) : data.movements;
   return (
     <PageBlock
       title="Jejak stok"
       desc="Setiap perubahan tersimpan permanen untuk audit operasional."
     >
       <div className="timeline">
-        {data.movements.map((m: any) => (
+        {movements.map((m: any) => (
           <div>
             <i className={m.quantity >= 0 ? "in" : "out"} />
             <time>{new Date(m.createdAt).toLocaleString("id-ID")}</time>
@@ -2357,7 +2692,7 @@ function UsersPage({ data, currentUser, businessLogo, open, edit }: any) {
               ? { ...stored, ...currentUser }
               : stored;
           return (
-            <article key={u.id}>
+            <article className="clickable-card" key={u.id} onClick={() => edit(u.id)}>
               <div className={`avatar ${u.role}`}>
                 {u.avatarUrl||(u.role==='owner'&&businessLogo)?<img src={u.avatarUrl||businessLogo} alt={u.name}/>:u.name.slice(0, 2).toUpperCase()}
               </div>
@@ -2371,7 +2706,6 @@ function UsersPage({ data, currentUser, businessLogo, open, edit }: any) {
               <button
                 className="icon-btn user-edit"
                 aria-label={`Edit ${u.name}`}
-                onClick={() => edit(u.id)}
               >
                 <Settings />
               </button>
@@ -2432,211 +2766,194 @@ function ProductModal({
   save,
   uploadImage,
   product,
-  variant: initialVariant,
+  onDelete,
 }: any) {
-  const editing = Boolean(product && initialVariant),
+  const editing = Boolean(product),
     [name, setName] = useState(product?.name || ""),
     [category, setCategory] = useState(product?.category || "Umum"),
     [unit, setUnit] = useState<StockUnit>(product?.unit || "pcs"),
-    [variantName, setVariantName] = useState(initialVariant?.name || ""),
-    [sku, setSku] = useState(initialVariant?.sku || ""),
-    [cost, setCost] = useState(initialVariant?.cost || 0),
-    [price, setPrice] = useState(initialVariant?.price || 0),
-    [resellerPrice, setResellerPrice] = useState(
-      initialVariant?.resellerPrice || 0,
-    ),
-    [minimum, setMinimum] = useState(initialVariant?.minStock || 0),
-    [cup, setCup] = useState(initialVariant?.gramsPerCup || 40),
-    [additionalVariants, setAdditionalVariants] = useState(""),
     [active, setActive] = useState(product?.active ?? true),
-    [variantActive, setVariantActive] = useState(initialVariant?.active ?? true),
     [file, setFile] = useState<File | null>(null),
     [error, setError] = useState(""),
     [loading, setLoading] = useState(false);
+
+  const [variants, setVariants] = useState<any[]>(
+    product?.variants || [
+      { id: newId("v"), name: "", sku: "", cost: 0, price: 0, resellerPrice: 0, minStock: 0, active: true }
+    ]
+  );
+
+  const [bulkCost, setBulkCost] = useState("");
+  const [bulkPrice, setBulkPrice] = useState("");
+  const [bulkReseller, setBulkReseller] = useState("");
+  const [bulkMinStock, setBulkMinStock] = useState("");
+
+  const applyBulk = () => {
+    setVariants(variants.map(v => ({
+      ...v,
+      cost: bulkCost !== "" ? Number(bulkCost) : v.cost,
+      price: bulkPrice !== "" ? Number(bulkPrice) : v.price,
+      resellerPrice: bulkReseller !== "" ? Number(bulkReseller) : v.resellerPrice,
+      minStock: bulkMinStock !== "" ? Number(bulkMinStock) : v.minStock
+    })));
+    setBulkCost("");
+    setBulkPrice("");
+    setBulkReseller("");
+    setBulkMinStock("");
+  };
+
+  const updateVariant = (index: number, field: string, value: any) => {
+    const newVariants = [...variants];
+    newVariants[index] = { ...newVariants[index], [field]: value };
+    setVariants(newVariants);
+  };
+  const removeVariant = (index: number) => {
+    setVariants(variants.filter((_, i) => i !== index));
+  };
+  const addVariant = () => {
+    setVariants([...variants, { id: newId("v"), name: "", sku: "", cost: 0, price: 0, resellerPrice: 0, minStock: 0, active: true }]);
+  };
+
   return (
     <Modal
       title={editing ? "Edit produk & varian" : "Tambah produk"}
-      desc="Atur produk sesuai jenis usaha dan satuan stoknya."
+      desc="Kelola informasi produk dan variannya."
       close={close}
     >
       <form
         onSubmit={async (e) => {
           e.preventDefault();
+          if (variants.length === 0) return setError("Minimal harus ada 1 varian");
+          if (variants.some(v => !v.name)) return setError("Nama varian tidak boleh kosong");
           setError("");
           setLoading(true);
           try {
-            const uploadedUrl = file ? await uploadImage(file) : undefined,
-              updatedVariant = {
-                id: initialVariant?.id || newId("v"),
-                name: variantName,
-                sku:
-                  sku ||
-                  `VST-${variantName.slice(0, 3).toUpperCase()}-${Date.now().toString().slice(-3)}`,
-                cost,
-                price,
-                resellerPrice: resellerPrice || price,
-                minStock: minimum,
-                gramsPerCup: unit === "gram" ? cup : 0,
-                active: variantActive,
-                imageUrl: uploadedUrl || initialVariant?.imageUrl || (editing ? product.imageUrl : undefined),
-              },
-              updatedProduct: Product = editing
-                ? {
-                    ...product,
-                    name,
-                    category,
-                    unit,
-                    active,
-                    imageUrl: uploadedUrl ? undefined : product.imageUrl,
-                    variants: product.variants.map((item: any) =>
-                      item.id === initialVariant.id ? updatedVariant : item,
-                    ),
-                  }
-                : {
-                    id: newId("prod"),
-                    name,
-                    category,
-                    unit,
-                    active: true,
-                    imageUrl: undefined,
-                    variants: [updatedVariant, ...additionalVariants.split(",").map((value:string)=>value.trim()).filter(Boolean).map((value:string,index:number)=>({...updatedVariant,id:newId("v"),name:value,sku:`VST-${value.slice(0,3).toUpperCase()}-${(Date.now()+index).toString().slice(-3)}`}))],
-                  };
+            const uploadedUrl = file ? await uploadImage(file) : undefined;
+            const updatedProduct: Product = {
+              id: product?.id || newId("prod"),
+              name,
+              category,
+              unit,
+              active,
+              imageUrl: uploadedUrl || product?.imageUrl,
+              variants: variants.map((v, index) => ({
+                ...v,
+                sku: v.sku || `VST-${v.name.slice(0, 3).toUpperCase()}-${Date.now().toString().slice(-3)}${index}`,
+              })),
+            };
             save(updatedProduct);
           } catch (err) {
-            setError(
-              err instanceof Error ? err.message : "Gagal menyimpan produk",
-            );
+            setError(err instanceof Error ? err.message : "Gagal menyimpan produk");
             setLoading(false);
           }
         }}
       >
-        <Field label="Gambar produk (opsional)">
-          <input
-            type="file"
-            accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
-            onChange={(e) => setFile(e.target.files?.[0] || null)}
-          />
-        </Field>
-        <small className="upload-hint">
-          {editing && (initialVariant?.imageUrl || product.imageUrl)
-            ? "Gambar lama tetap digunakan jika tidak memilih file baru. "
-            : ""}
-          Maksimal 5 MB, WebP 1200×1200 px.
-        </small>
-        <div className="form-grid">
-          <Field label="Nama produk">
+        <div style={{ background: '#f8fafc', padding: '16px', borderRadius: '8px', marginBottom: '24px', border: '1px solid #e2e8f0' }}>
+          <h3 style={{ margin: '0 0 16px', fontSize: '16px' }}>Informasi Produk</h3>
+          <Field label="Gambar produk (opsional)">
             <input
-              required
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Contoh: Kaos Polos"
+              type="file"
+              accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
+              onChange={(e) => setFile(e.target.files?.[0] || null)}
             />
+            <span className="upload-hint" style={{ marginTop: '10px' }}>Rekomendasi: Gambar persegi (1:1), ukuran maksimal 2MB, format JPG/PNG/WEBP.</span>
           </Field>
-          <Field label="Kategori">
-            <input
-              required
-              value={category}
-              onChange={(e) => setCategory(e.target.value)}
-              placeholder="Contoh: Fashion"
-            />
-          </Field>
+          <div className="form-grid">
+            <Field label="Nama produk">
+              <input required value={name} onChange={(e) => setName(e.target.value)} placeholder="Contoh: Kaos Polos" />
+            </Field>
+            <Field label="Kategori">
+              <input required value={category} onChange={(e) => setCategory(e.target.value)} placeholder="Contoh: Fashion" />
+            </Field>
+          </div>
+          <div className="form-grid">
+            <Field label="Satuan stok">
+              <select value={unit} onChange={(e) => setUnit(e.target.value as StockUnit)}>
+                <option value="pcs">Pcs</option>
+                <option value="gram">Gram</option>
+                <option value="ml">Mililiter</option>
+              </select>
+            </Field>
+            {editing && (
+              <label className="toggle-field" style={{ alignSelf: 'end', marginBottom: '8px' }}>
+                <input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} />
+                <span>Produk aktif dijual</span>
+              </label>
+            )}
+          </div>
         </div>
-        {!editing && <Field label="Varian tambahan sekaligus (pisahkan dengan koma)"><input value={additionalVariants} onChange={(e)=>setAdditionalVariants(e.target.value)} placeholder="Contoh: Hitam / M, Putih / L, Merah / XL"/></Field>}
-        {editing && <div className="form-grid"><label className="toggle-field"><input type="checkbox" checked={active} onChange={(e)=>setActive(e.target.checked)}/><span>Produk aktif dan masih dijual</span></label><label className="toggle-field"><input type="checkbox" checked={variantActive} onChange={(e)=>setVariantActive(e.target.checked)}/><span>Varian aktif</span></label></div>}
-        <div className="form-grid">
-          <Field label="Nama varian">
-            <input
-              required
-              value={variantName}
-              onChange={(e) => setVariantName(e.target.value)}
-              placeholder="Contoh: Hitam / L"
-            />
-          </Field>
-          <Field label="SKU">
-            <input
-              value={sku}
-              onChange={(e) => setSku(e.target.value)}
-              placeholder="Otomatis jika kosong"
-            />
-          </Field>
+
+        <div style={{ background: '#f8fafc', padding: '16px', borderRadius: '8px', marginBottom: '24px', border: '1px solid #e2e8f0' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+            <h3 style={{ margin: 0, fontSize: '14px', color: '#0f172a' }}>Isi Cepat (Terapkan ke Semua Varian)</h3>
+            <button type="button" onClick={applyBulk} style={{ background: 'var(--green)', color: 'white', border: 'none', padding: '6px 12px', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer' }}>Terapkan</button>
+          </div>
+          <div className="form-grid">
+            <Field label="Harga Modal"><input type="number" min="0" value={bulkCost} onChange={(e) => setBulkCost(e.target.value.replace(/^0+(?=\d)/, ''))} placeholder="Opsional" style={{ background: 'white' }} /></Field>
+            <Field label="Harga Jual"><input type="number" min="0" value={bulkPrice} onChange={(e) => setBulkPrice(e.target.value.replace(/^0+(?=\d)/, ''))} placeholder="Opsional" style={{ background: 'white' }} /></Field>
+            <Field label="Harga Reseller"><input type="number" min="0" value={bulkReseller} onChange={(e) => setBulkReseller(e.target.value.replace(/^0+(?=\d)/, ''))} placeholder="Opsional" style={{ background: 'white' }} /></Field>
+            <Field label="Min Stok"><input type="number" min="0" value={bulkMinStock} onChange={(e) => setBulkMinStock(e.target.value.replace(/^0+(?=\d)/, ''))} placeholder="Opsional" style={{ background: 'white' }} /></Field>
+          </div>
         </div>
-        <Field label="Satuan stok">
-          <select
-            value={unit}
-            onChange={(e) => setUnit(e.target.value as StockUnit)}
-          >
-            <option value="pcs">Pcs</option>
-            <option value="gram">Gram</option>
-            <option value="ml">Mililiter</option>
-          </select>
-        </Field>
-        {unit === "gram" && (
-          <Field label="Gram per gelas">
-            <input
-              type="number"
-              min="1"
-              value={cup}
-              onChange={(e) => setCup(+e.target.value)}
-            />
-          </Field>
-        )}
-        <div className="form-grid">
-          <Field label={`Harga modal per ${unit}`}>
-            <input
-              type="number"
-              min="0"
-              required
-              value={cost}
-              onChange={(e) => setCost(+e.target.value)}
-            />
-          </Field>
-          <Field label={`Harga jual per ${unit}`}>
-            <input
-              type="number"
-              min="0"
-              required
-              value={price}
-              onChange={(e) => setPrice(+e.target.value)}
-            />
-          </Field>
-        </div>
-        <div className="form-grid">
-          <Field label={`Harga reseller per ${unit}`}>
-            <input
-              type="number"
-              min="0"
-              value={resellerPrice}
-              onChange={(e) => setResellerPrice(+e.target.value)}
-            />
-          </Field>
-          <Field label={`Minimum stok (${unit})`}>
-            <input
-              type="number"
-              min="0"
-              value={minimum}
-              onChange={(e) => setMinimum(+e.target.value)}
-            />
-          </Field>
-        </div>
+
+        <h3 style={{ margin: '0 0 16px', fontSize: '16px' }}>Daftar Varian</h3>
+        {variants.map((v, index) => (
+          <div key={v.id} style={{ padding: '16px', border: '1px solid #e2e8f0', borderRadius: '8px', marginBottom: '16px', background: '#fff' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+              <b style={{ fontSize: '14px' }}>Varian {index + 1}</b>
+              {variants.length > 1 && (
+                <button type="button" onClick={() => removeVariant(index)} style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '12px', fontWeight: 'bold' }}>
+                  <Trash2 size={14} /> Hapus
+                </button>
+              )}
+            </div>
+            <div className="form-grid">
+              <Field label="Nama varian">
+                <input required value={v.name} onChange={(e) => updateVariant(index, 'name', e.target.value)} placeholder="Contoh: Hitam / L" />
+              </Field>
+              <Field label="SKU (Otomatis jika kosong)">
+                <input value={v.sku} onChange={(e) => updateVariant(index, 'sku', e.target.value)} />
+              </Field>
+              <Field label="Harga Modal">
+                <input required type="number" min="0" value={v.cost === 0 ? '' : v.cost} onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); updateVariant(index, 'cost', +e.target.value) }} />
+              </Field>
+              <Field label="Harga Jual">
+                <input required type="number" min="0" value={v.price === 0 ? '' : v.price} onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); updateVariant(index, 'price', +e.target.value) }} />
+              </Field>
+              <Field label="Harga Reseller">
+                <input type="number" min="0" value={v.resellerPrice === 0 ? '' : v.resellerPrice} onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); updateVariant(index, 'resellerPrice', +e.target.value) }} />
+              </Field>
+              <Field label="Minimum Stok">
+                <input type="number" min="0" value={v.minStock === 0 ? '' : v.minStock} onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); updateVariant(index, 'minStock', +e.target.value) }} />
+              </Field>
+            </div>
+            {editing && (
+              <label className="toggle-field" style={{ marginTop: '12px' }}>
+                <input type="checkbox" checked={v.active !== false} onChange={(e) => updateVariant(index, 'active', e.target.checked)} />
+                <span>Varian aktif</span>
+              </label>
+            )}
+          </div>
+        ))}
+        
+        <button type="button" className="secondary" onClick={addVariant} style={{ width: '100%', marginBottom: '24px', borderStyle: 'dashed' }}>
+          + Tambah Varian Lainnya
+        </button>
+
         {error && <div className="login-error">{error}</div>}
         <footer className="modal-actions">
-          <button type="button" className="secondary" onClick={close}>
-            Batal
-          </button>
+          <button type="button" className="secondary" onClick={close}>Batal</button>
+          {onDelete && <button type="button" className="danger-button" onClick={onDelete}><Trash2 size={16} /> Hapus Produk</button>}
           <button className="primary" disabled={loading}>
             <Check />
-            {loading
-              ? "Mengoptimalkan..."
-              : editing
-                ? "Simpan Perubahan"
-                : "Simpan"}
+            {loading ? "Menyimpan..." : "Simpan Produk"}
           </button>
         </footer>
       </form>
     </Modal>
   );
 }
-function LocationModal({ close, save, location }: any) {
+function LocationModal({ close, save, location, onDelete }: any) {
   const editing=Boolean(location),[name, setName] = useState(location?.name||""),
     [type, setType] = useState<"warehouse" | "outlet">(location?.type||"outlet"),[address,setAddress]=useState(location?.address||""),[active,setActive]=useState(location?.active??true);
   return (
@@ -2670,12 +2987,12 @@ function LocationModal({ close, save, location }: any) {
             <option value="warehouse">Gudang</option>
           </select>
         </Field>
-        <ModalActions close={close} />
+        <ModalActions close={close} onDelete={onDelete} />
       </form>
     </Modal>
   );
 }
-function UserModal({ data, close, save, user, uploadImage }: any) {
+function UserModal({ data, close, save, user, uploadImage, onDelete }: any) {
   const editing = Boolean(user),
     isOwner = user?.role === "owner",
     [name, setName] = useState(user?.name || ""),
@@ -2692,7 +3009,8 @@ function UserModal({ data, close, save, user, uploadImage }: any) {
     [active, setActive] = useState(user?.active ?? true),
     [file,setFile]=useState<File|null>(null),
     [error, setError] = useState(""),
-    [loading, setLoading] = useState(false);
+    [loading, setLoading] = useState(false),
+    [showPasswordEdit, setShowPasswordEdit] = useState(false);
   return (
     <Modal
       title={editing ? "Edit profil pengguna" : "Tambah pengguna"}
@@ -2746,17 +3064,43 @@ function UserModal({ data, close, save, user, uploadImage }: any) {
             onChange={(e) => setEmail(e.target.value)}
           />
         </Field>
-        <Field label={editing ? "Password baru (opsional)" : "Password awal"}>
-          <input
-            type="password"
-            autoComplete="new-password"
-            minLength={8}
-            required={!editing}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder={editing ? "Kosongkan jika tidak diubah" : ""}
-          />
-        </Field>
+        {editing ? (
+          showPasswordEdit ? (
+            <Field label="Ganti Password">
+              <PasswordInput
+                autoComplete="new-password"
+                minLength={8}
+                value={password}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPassword(e.target.value)}
+                placeholder="Masukkan password baru pengguna ini"
+              />
+              <small className="upload-hint" style={{marginTop: 8, display: 'block'}}>
+                Biarkan form kosong jika Anda batal mengganti password.
+              </small>
+            </Field>
+          ) : (
+            <Field label="Keamanan">
+              <button
+                type="button"
+                className="table-action"
+                style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px' }}
+                onClick={() => setShowPasswordEdit(true)}
+              >
+                <KeyRound size={16} /> Ganti Password
+              </button>
+            </Field>
+          )
+        ) : (
+          <Field label="Password awal">
+            <PasswordInput
+              autoComplete="new-password"
+              minLength={8}
+              required
+              value={password}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPassword(e.target.value)}
+            />
+          </Field>
+        )}
         <Field label="Peran">
           <select
             value={role}
@@ -2797,9 +3141,8 @@ function UserModal({ data, close, save, user, uploadImage }: any) {
         )}
         {error && <div className="login-error">{error}</div>}
         <footer className="modal-actions">
-          <button type="button" className="secondary" onClick={close}>
-            Batal
-          </button>
+          <button type="button" className="secondary" onClick={close}>Batal</button>
+          {onDelete && <button type="button" className="danger-button" onClick={onDelete}><Trash2 size={16} /> Hapus</button>}
           <button className="primary" disabled={loading}>
             <Check />
             {loading ? "Menyimpan..." : editing ? "Simpan Perubahan" : "Simpan"}
@@ -2809,7 +3152,7 @@ function UserModal({ data, close, save, user, uploadImage }: any) {
     </Modal>
   );
 }
-function ReceiptModal({ data, close, save }: any) {
+function ReceiptModal({ data, receipt, close, save }: any) {
   const variants = data.products
       .filter((p: any) => p.active)
       .flatMap((p: any) =>
@@ -2818,21 +3161,21 @@ function ReceiptModal({ data, close, save }: any) {
           .map((v: any) => ({ ...v, unit: p.unit, productName: p.name })),
       ),
     [sourceType, setSourceType] = useState<"supplier" | "production">(
-      "supplier",
+      receipt?.sourceType || "supplier",
     ),
-    [supplierName, setSupplierName] = useState(""),
+    [supplierName, setSupplierName] = useState(receipt?.supplierName || ""),
     [locationId, setLocationId] = useState(
-      data.locations.find((l: any) => l.active)?.id || "",
+      receipt?.locationId || data.locations.find((l: any) => l.active)?.id || "",
     ),
-    [variantId, setVariantId] = useState(variants[0]?.id || ""),
-    [quantity, setQuantity] = useState(1),
-    [unitCost, setUnitCost] = useState(variants[0]?.cost || 0),
-    [note, setNote] = useState(""),
+    [variantId, setVariantId] = useState(receipt?.variantId || variants[0]?.id || ""),
+    [quantity, setQuantity] = useState(receipt?.quantity || 1),
+    [unitCost, setUnitCost] = useState(receipt?.unitCost ?? (variants[0]?.cost || 0)),
+    [note, setNote] = useState(receipt?.note || ""),
     selected = variants.find((v: any) => v.id === variantId);
   return (
     <Modal
-      title="Catat stok masuk"
-      desc="Saldo langsung bertambah dan aktivitas tercatat dalam histori."
+      title={receipt ? "Edit stok masuk" : "Catat stok masuk"}
+      desc={receipt ? "Perbarui informasi transaksi stok masuk ini." : "Saldo langsung bertambah dan aktivitas tercatat dalam histori."}
       close={close}
     >
       <form
@@ -2876,10 +3219,10 @@ function ReceiptModal({ data, close, save }: any) {
             onChange={(e) => setLocationId(e.target.value)}
           >
             {data.locations
-              .filter((l: any) => l.active)
+              .filter((l: any) => l.active || l.id === locationId)
               .map((l: any) => (
                 <option key={l.id} value={l.id}>
-                  {l.name}
+                  {l.type === 'warehouse' ? '🏢 Gudang: ' : '🏪 Outlet: '} {l.name}
                 </option>
               ))}
           </select>
@@ -2906,7 +3249,7 @@ function ReceiptModal({ data, close, save }: any) {
               type="number"
               min="1"
               value={quantity}
-              onChange={(e) => setQuantity(+e.target.value)}
+              onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); setQuantity(+e.target.value); }}
             />
           </Field>
           <Field label={`Harga modal per ${selected?.unit || "unit"}`}>
@@ -2914,7 +3257,7 @@ function ReceiptModal({ data, close, save }: any) {
               type="number"
               min="0"
               value={unitCost}
-              onChange={(e) => setUnitCost(+e.target.value)}
+              onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); setUnitCost(+e.target.value); }}
             />
           </Field>
         </div>
@@ -2998,7 +3341,7 @@ function ReturnModal({ data, close, save }: any) {
             type="number"
             min="1"
             value={quantity}
-            onChange={(e) => setQuantity(+e.target.value)}
+            onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); setQuantity(+e.target.value); }}
           />
         </Field>
         <Field label="Alasan retur">
@@ -3104,7 +3447,7 @@ function BusinessModal({ data, close, save, uploadImage }: any) {
     </Modal>
   );
 }
-function TransferModal({ data, close, save }: any) {
+function TransferModal({ data, close, save, fixedFrom }: any) {
   const activeLocations=data.locations.filter((l:any)=>l.active),variants = data.products.filter((p:any)=>p.active).flatMap((p: any) =>
       p.variants.filter((item:any)=>item.active!==false).map((item: any) => ({
         ...item,
@@ -3112,11 +3455,11 @@ function TransferModal({ data, close, save }: any) {
         productName: p.name,
       })),
     ),
-    [from, setFrom] = useState(activeLocations[0].id),
-    [to, setTo] = useState(activeLocations[1].id),
-    [v, setV] = useState(variants[0].id),
+    [from, setFrom] = useState(fixedFrom || activeLocations[0]?.id || ""),
+    [to, setTo] = useState(activeLocations.find((l: any) => l.id !== (fixedFrom || activeLocations[0]?.id))?.id || ""),
+    [v, setV] = useState(variants[0]?.id || ""),
     [q, setQ] = useState(1),
-    selected = variants.find((item: any) => item.id === v);
+    selected = variants.find((item: any) => item.id === v) || variants[0] || {};
   return (
     <Modal
       title="Buat transfer stok"
@@ -3130,6 +3473,13 @@ function TransferModal({ data, close, save }: any) {
         }}
       >
         <Field label="Lokasi asal">
+          {fixedFrom ? (
+            <input
+              readOnly
+              value={activeLocations.find((l: any) => l.id === fixedFrom)?.name || fixedFrom}
+              className="input-readonly"
+            />
+          ) : (
           <select
             value={from}
             onChange={(e) => {
@@ -3145,6 +3495,7 @@ function TransferModal({ data, close, save }: any) {
               </option>
             ))}
           </select>
+          )}
         </Field>
         <Field label="Lokasi tujuan">
           <select value={to} onChange={(e) => setTo(e.target.value)}>
@@ -3171,7 +3522,7 @@ function TransferModal({ data, close, save }: any) {
             type="number"
             min="1"
             value={q}
-            onChange={(e) => setQ(+e.target.value)}
+            onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); setQ(+e.target.value); }}
           />
         </Field>
         <ModalActions close={close} />
@@ -3188,15 +3539,15 @@ function SaleModal({ data, close, save, fixedLocation }: any) {
       })),
     ),
     [loc, setLoc] = useState(
-      fixedLocation || activeLocations[1]?.id || activeLocations[0].id,
+      fixedLocation || activeLocations[1]?.id || activeLocations[0]?.id || "",
     ),
     [channel, setChannel] = useState<Channel>("offline"),
-    [v, setV] = useState(variants[0].id),
+    [v, setV] = useState(variants[0]?.id || ""),
     [amount, setAmount] = useState(1),
     [useCups, setUseCups] = useState(false),
     [payment, setPayment] = useState("QRIS"),
-    selected = variants.find((item: any) => item.id === v),
-    canUseCups = selected.unit === "gram" && Boolean(selected.gramsPerCup);
+    selected = variants.find((item: any) => item.id === v) || variants[0] || {},
+    canUseCups = selected?.unit === "gram" && Boolean(selected?.gramsPerCup);
   return (
     <Modal
       title="Catat penjualan"
@@ -3280,7 +3631,7 @@ function SaleModal({ data, close, save, fixedLocation }: any) {
               step={useCups ? "0.25" : "1"}
               min={useCups ? "0.25" : "1"}
               value={amount}
-              onChange={(e) => setAmount(+e.target.value)}
+              onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); setAmount(+e.target.value); }}
             />
           </Field>
           <Field label="Pembayaran">
@@ -3299,21 +3650,21 @@ function SaleModal({ data, close, save, fixedLocation }: any) {
     </Modal>
   );
 }
-function OpnameModal({ data, close, save, fixedLocation }: any) {
+function OpnameModal({ data, item, close, save, fixedLocation }: any) {
   const variants = data.products.flatMap((p: any) =>
-      p.variants.map((item: any) => ({
-        ...item,
+      p.variants.map((variantItem: any) => ({
+        ...variantItem,
         unit: p.unit,
         productName: p.name,
       })),
     ),
     [loc, setLoc] = useState(
-      fixedLocation || data.locations[1]?.id || data.locations[0].id,
+      item?.locationId || fixedLocation || data.locations[1]?.id || data.locations[0]?.id || "",
     ),
-    [v, setV] = useState(variants[0].id),
-    [actual, setActual] = useState(0),
-    [reason, setReason] = useState("Hasil hitung fisik akhir hari"),
-    selected = variants.find((item: any) => item.id === v);
+    [v, setV] = useState(item?.variantId || variants[0]?.id || ""),
+    [actual, setActual] = useState(item?.actualQty || 0),
+    [reason, setReason] = useState(item?.reason || "Hasil hitung fisik akhir hari"),
+    selected = variants.find((variantItem: any) => variantItem.id === v) || variants[0] || {};
   return (
     <Modal
       title="Catat stock opname"
@@ -3353,7 +3704,7 @@ function OpnameModal({ data, close, save, fixedLocation }: any) {
             type="number"
             min="0"
             value={actual}
-            onChange={(e) => setActual(+e.target.value)}
+            onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); setActual(+e.target.value); }}
           />
         </Field>
         <Field label="Alasan / catatan">
@@ -3369,8 +3720,149 @@ function OpnameModal({ data, close, save, fixedLocation }: any) {
   );
 }
 function CancelModal({close,save}:any){const[reason,setReason]=useState("");return <Modal title="Batalkan transaksi" desc="Stok akan dikoreksi otomatis. Transaksi asli dan alasan tetap ada dalam histori." close={close}><form onSubmit={(e)=>{e.preventDefault();save(reason)}}><Field label="Alasan pembatalan / koreksi"><textarea required minLength={5} value={reason} onChange={(e)=>setReason(e.target.value)} placeholder="Contoh: Salah memilih produk atau jumlah"/></Field><footer className="modal-actions"><button type="button" className="secondary" onClick={close}>Kembali</button><button className="danger-button" type="submit"><RotateCcw/>Batalkan transaksi</button></footer></form></Modal>}
-function SaleDetail({item,variants,locations,close}:any){if(!item)return null;return <Modal title={`Detail transaksi ${item.id}`} desc="Rincian lengkap transaksi penjualan." close={close}><div className="detail-list"><p><span>Waktu</span><b>{new Date(item.createdAt).toLocaleString('id-ID')}</b></p><p><span>Lokasi</span><b>{locations[item.locationId]?.name}</b></p><p><span>Kanal / pembayaran</span><b>{item.channel} · {item.payment}</b></p>{item.items.map((line:any)=><p key={line.variantId}><span>{variants[line.variantId]?.productName} · {variants[line.variantId]?.name}</span><b>{qty(line.quantity,variants[line.variantId]?.unit)}</b></p>)}<p><span>Total</span><b>{money(item.total)}</b></p><p><span>Status</span><b>{item.status==='cancelled'?`Dibatalkan: ${item.cancelReason}`:'Selesai'}</b></p></div></Modal>}
-function TransferDetail({item,business,variants,locations,close,notify}:any){if(!item)return null;const html=`<!doctype html><meta charset="utf-8"><title>Bukti ${item.id}</title><style>body{font:16px Arial;max-width:700px;margin:50px auto;color:#10233b}h1{color:#063858}table{width:100%;border-collapse:collapse}td{padding:12px;border-bottom:1px solid #ddd}td:last-child{text-align:right;font-weight:bold}</style><h1>${business?.name||'VEINSTOCK'}</h1><h2>Bukti Transfer Stok</h2><table><tr><td>Nomor</td><td>${item.id}</td></tr><tr><td>Tanggal</td><td>${new Date(item.createdAt).toLocaleString('id-ID')}</td></tr><tr><td>Rute</td><td>${locations[item.fromId]?.name} → ${locations[item.toId]?.name}</td></tr><tr><td>Produk</td><td>${variants[item.variantId]?.productName} · ${variants[item.variantId]?.name}</td></tr><tr><td>Jumlah</td><td>${qty(item.quantity,variants[item.variantId]?.unit)}</td></tr><tr><td>Status</td><td>${item.status}</td></tr></table>`;const download=()=>{const url=URL.createObjectURL(new Blob([html],{type:'text/html;charset=utf-8'})),a=document.createElement('a');a.href=url;a.download=`bukti-transfer-${item.id}.html`;a.click();URL.revokeObjectURL(url);notify('Bukti transfer diunduh. Cek folder Unduhan/Downloads pada perangkat Anda.')};const print=()=>{const win=window.open('','_blank');if(!win)return notify('Izinkan popup browser untuk mencetak bukti.');win.document.write(html);win.document.close();win.print()};return <Modal title="Bukti transfer stok" desc="Bukti dapat dicetak atau diunduh dan dibuka kembali." close={close}><div className="detail-list"><p><span>Nomor</span><b>{item.id}</b></p><p><span>Rute</span><b>{locations[item.fromId]?.name} → {locations[item.toId]?.name}</b></p><p><span>Produk</span><b>{variants[item.variantId]?.productName} · {variants[item.variantId]?.name}</b></p><p><span>Jumlah</span><b>{qty(item.quantity,variants[item.variantId]?.unit)}</b></p><p><span>Status</span><b>{item.status}</b></p></div><footer className="modal-actions"><button className="secondary" onClick={print}>Cetak</button><button className="primary" onClick={download}><Download/>Unduh Bukti</button></footer></Modal>}
+function SaleDetail({ item, variants, locations, close }: any) {
+  if (!item) return null;
+  return (
+    <Modal
+      title={`Detail transaksi ${item.id}`}
+      desc="Rincian lengkap transaksi penjualan."
+      close={close}
+    >
+      <div className="detail-list">
+        <p>
+          <span>Waktu</span>
+          <b>{new Date(item.createdAt).toLocaleString("id-ID")}</b>
+        </p>
+        <p>
+          <span>Lokasi</span>
+          <b>{locations[item.locationId]?.name}</b>
+        </p>
+        <p>
+          <span>Kanal / pembayaran</span>
+          <b>
+            {item.channel} &middot; {item.payment}
+          </b>
+        </p>
+        {item.items.map((line: any) => (
+          <p key={line.variantId}>
+            <span>
+              {variants[line.variantId]?.productName} &middot; {variants[line.variantId]?.name}
+            </span>
+            <b>{qty(line.quantity, variants[line.variantId]?.unit)}</b>
+          </p>
+        ))}
+        <p>
+          <span>Total</span>
+          <b>{money(item.total)}</b>
+        </p>
+        <p>
+          <span>Status</span>
+          <b>
+            {item.status === "cancelled"
+              ? `Dibatalkan: ${item.cancelReason}`
+              : "Selesai"}
+          </b>
+        </p>
+      </div>
+      <footer className="modal-actions">
+        <button type="button" className="secondary" onClick={close}>
+          Tutup
+        </button>
+      </footer>
+    </Modal>
+  );
+}
+function TransferDetail({
+  item,
+  business,
+  variants,
+  locations,
+  close,
+  notify,
+}: any) {
+  if (!item) return null;
+  const html = `<!doctype html><meta charset="utf-8"><title>Bukti ${
+    item.id
+  }</title><style>body{font:16px Arial;max-width:700px;margin:50px auto;color:#10233b}h1{color:#063858}table{width:100%;border-collapse:collapse}td{padding:12px;border-bottom:1px solid #ddd}td:last-child{text-align:right;font-weight:bold}</style><h1>${
+    business?.name || "VEINSTOCK"
+  }</h1><h2>Bukti Transfer Stok</h2><table><tr><td>Nomor</td><td>${
+    item.id
+  }</td></tr><tr><td>Tanggal</td><td>${new Date(item.createdAt).toLocaleString(
+    "id-ID",
+  )}</td></tr><tr><td>Rute</td><td>${locations[item.fromId]?.name} &rarr; ${
+    locations[item.toId]?.name
+  }</td></tr><tr><td>Produk</td><td>${variants[item.variantId]?.productName} &middot; ${
+    variants[item.variantId]?.name
+  }</td></tr><tr><td>Jumlah</td><td>${qty(
+    item.quantity,
+    variants[item.variantId]?.unit,
+  )}</td></tr><tr><td>Status</td><td>${item.status}</td></tr></table>`;
+  const download = () => {
+    const url = URL.createObjectURL(
+      new Blob([html], { type: "text/html;charset=utf-8" }),
+    );
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `bukti-transfer-${item.id}.html`;
+    a.click();
+    URL.revokeObjectURL(url);
+    notify(
+      "Bukti transfer diunduh. Cek folder Unduhan/Downloads pada perangkat Anda.",
+    );
+  };
+  const print = () => {
+    const win = window.open("", "_blank");
+    if (!win) return notify("Izinkan popup browser untuk mencetak bukti.");
+    win.document.write(html);
+    win.document.close();
+    win.print();
+  };
+  return (
+    <Modal
+      title="Bukti transfer stok"
+      desc="Bukti dapat dicetak atau diunduh dan dibuka kembali."
+      close={close}
+    >
+      <div className="detail-list">
+        <p>
+          <span>Nomor</span>
+          <b>{item.id}</b>
+        </p>
+        <p>
+          <span>Rute</span>
+          <b>
+            {locations[item.fromId]?.name} &rarr; {locations[item.toId]?.name}
+          </b>
+        </p>
+        <p>
+          <span>Produk</span>
+          <b>
+            {variants[item.variantId]?.productName} &middot; {variants[item.variantId]?.name}
+          </b>
+        </p>
+        <p>
+          <span>Jumlah</span>
+          <b>{qty(item.quantity, variants[item.variantId]?.unit)}</b>
+        </p>
+        <p>
+          <span>Status</span>
+          <b>{item.status}</b>
+        </p>
+      </div>
+      <footer className="modal-actions">
+        <button type="button" className="secondary" onClick={close}>
+          Tutup
+        </button>
+        <button type="button" className="secondary" onClick={print}>
+          Cetak
+        </button>
+        <button type="button" className="primary" onClick={download}>
+          <Download size={16} /> Unduh Bukti
+        </button>
+      </footer>
+    </Modal>
+  );
+}
 function Notifications({data,variants,locations,close,act}:any){const low=data.balances.filter((b:any)=>b.quantity<(variants[b.variantId]?.minStock||0));return <Modal title="Notifikasi stok" desc="Setiap pemberitahuan dilengkapi tindakan yang dapat dilakukan." close={close}>{low.length?<div className="notification-list">{low.map((b:any)=><article key={`${b.locationId}-${b.variantId}`}><div><b>{variants[b.variantId]?.productName} · {variants[b.variantId]?.name}</b><span>{locations[b.locationId]?.name}: tersisa {qty(b.quantity,variants[b.variantId]?.unit)}, minimum {qty(variants[b.variantId]?.minStock,variants[b.variantId]?.unit)}</span></div><button className="small-primary" onClick={()=>act('receipts')}>Tambah stok</button></article>)}</div>:<div className="empty standalone"><Check/><b>Semua stok aman</b><span>Tidak ada saldo di bawah batas minimum.</span></div>}</Modal>}
 const ListSearch=({value,setValue,placeholder}:any)=><label className="list-search"><Search/><input value={value} onChange={(e)=>setValue(e.target.value)} placeholder={placeholder}/></label>;
 const Field = ({ label, children }: any) => (
@@ -3379,15 +3871,174 @@ const Field = ({ label, children }: any) => (
     {children}
   </label>
 );
-const ModalActions = ({ close }: any) => (
-  <footer className="modal-actions">
-    <button type="button" className="secondary" onClick={close}>
-      Batal
-    </button>
-    <button className="primary" type="submit">
-      <Check />
-      Simpan
-    </button>
-  </footer>
-);
+function ChangePasswordModal({ token, close, notify }: { token: string | null; close: () => void; notify: (msg: string) => void }) {
+  const [current, setCurrent] = useState(""),
+    [newPwd, setNewPwd] = useState(""),
+    [confirm, setConfirm] = useState(""),
+    [error, setError] = useState(""),
+    [loading, setLoading] = useState(false);
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    if (newPwd !== confirm) return setError("Konfirmasi password tidak cocok");
+    if (newPwd.length < 8) return setError("Password baru minimal 8 karakter");
+    setLoading(true);
+    try {
+      const res = await fetch('/api/profile/password', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ currentPassword: current, newPassword: newPwd }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message);
+      notify(data.message);
+      close();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Gagal mengubah password');
+    } finally { setLoading(false); }
+  };
+  return (
+    <Modal title="Ganti Password" desc="Pastikan Anda ingat password baru sebelum menyimpan." close={close}>
+      <form onSubmit={submit}>
+        <Field label="Password Lama">
+          <PasswordInput required value={current} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setCurrent(e.target.value)} autoComplete="current-password" />
+        </Field>
+        <Field label="Password Baru">
+          <PasswordInput required minLength={8} value={newPwd} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNewPwd(e.target.value)} autoComplete="new-password" placeholder="Minimal 8 karakter" />
+        </Field>
+        <Field label="Konfirmasi Password Baru">
+          <PasswordInput required minLength={8} value={confirm} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setConfirm(e.target.value)} autoComplete="new-password" placeholder="Ulangi password baru" />
+        </Field>
+        {error && <div className="login-error" style={{ marginTop: '4px' }}>{error}</div>}
+        <ModalActions close={close}>
+          <button className="primary" disabled={loading}>{loading ? 'Menyimpan...' : 'Simpan Password'}</button>
+        </ModalActions>
+      </form>
+    </Modal>
+  );
+}
+function PasswordInput({ value, onChange, autoComplete, minLength, required, placeholder }: any) {
+  const [show, setShow] = useState(false);
+  return (
+    <div className="password-input-wrap">
+      <input
+        type={show ? "text" : "password"}
+        value={value}
+        onChange={onChange}
+        autoComplete={autoComplete}
+        minLength={minLength}
+        required={required}
+        placeholder={placeholder}
+      />
+      <button
+        type="button"
+        className="password-toggle"
+        onClick={() => setShow((s) => !s)}
+        tabIndex={-1}
+        aria-label={show ? "Sembunyikan password" : "Tampilkan password"}
+      >
+        {show ? <EyeOff size={18} /> : <Eye size={18} />}
+      </button>
+    </div>
+  );
+}
+const ModalActions = ({ close, onDelete }: any) => (
+    <footer className="modal-actions">
+      <button type="button" className="secondary" onClick={close}>Batal</button>
+      {onDelete && <button type="button" className="danger-button" onClick={onDelete}><Trash2 size={16} /> Hapus</button>}
+      <button className="primary" type="submit">
+        <Check />
+        Simpan
+      </button>
+    </footer>
+);function HelpPage() {
+  const [openSection, setOpenSection] = useState<string | null>(null);
+
+  const toggle = (id: string) => setOpenSection(openSection === id ? null : id);
+
+  const sections = [
+    {
+      id: "setup",
+      icon: <Archive />,
+      title: "Setup Awal & Produk",
+      desc: "Menambah produk, varian, dan lokasi usaha untuk pertama kali.",
+      steps: [
+        "Buka menu Produk & Varian untuk menambahkan daftar barang.",
+        "Jika barang memiliki warna/ukuran, masukkan sebagai Varian.",
+        "Buka menu Lokasi Usaha untuk menambahkan outlet cabang atau gudang utama."
+      ]
+    },
+    {
+      id: "stock",
+      icon: <Boxes />,
+      title: "Manajemen Stok",
+      desc: "Mencatat stok masuk, perpindahan, dan opname (penyesuaian).",
+      steps: [
+        "Stok Masuk: Gunakan menu ini saat ada pembelian atau barang baru tiba di lokasi.",
+        "Transfer Stok: Pindahkan barang dari satu lokasi (misal gudang) ke lokasi lain (misal outlet).",
+        "Stock Opname: Lakukan pencocokan stok fisik secara berkala. Jika ada selisih, buat penyesuaian untuk merapikan saldo akhir."
+      ]
+    },
+    {
+      id: "sales",
+      icon: <ShoppingCart />,
+      title: "Penjualan & Retur",
+      desc: "Mencatat transaksi yang mengurangi stok atau retur yang mengembalikan stok.",
+      steps: [
+        "Penjualan: Buka menu Penjualan, pilih produk yang terjual, tentukan lokasi dan kanal (Offline/Online/Reseller). Stok akan otomatis berkurang.",
+        "Retur: Jika ada barang rusak atau dikembalikan pelanggan, buka menu Retur untuk mencatat pengembalian tersebut."
+      ]
+    },
+    {
+      id: "team",
+      icon: <Users />,
+      title: "Manajemen Tim & Akses",
+      desc: "Cara mengelola akun pegawai dan membatasi hak akses mereka.",
+      steps: [
+        "Buka menu Pengguna & Akses (hanya bisa diakses oleh akun tingkat Owner).",
+        "Klik 'Tambah Pengguna' dan tentukan perannya: Owner (Full), PIC (Cabang tertentu), atau Keuangan.",
+        "PIC hanya bisa melihat stok dan melakukan tindakan (seperti opname atau penjualan) di lokasi yang ditetapkan untuk mereka."
+      ]
+    }
+  ];
+
+  return (
+    <div className="help-page">
+      <div className="help-hero">
+        <LifeBuoy />
+        <div>
+          <h2>Pusat Bantuan VEINSTOCK</h2>
+          <p>Panduan ringkas penggunaan fitur aplikasi. Pilih topik di bawah ini untuk melihat langkah-langkah selengkapnya.</p>
+        </div>
+      </div>
+      <div className="help-grid">
+        {sections.map(s => (
+          <article key={s.id} className={`help-card ${openSection === s.id ? "open" : ""}`}>
+            <header onClick={() => toggle(s.id)}>
+              <div className="icon-wrap">{s.icon}</div>
+              <div className="help-card-text">
+                <h3>{s.title}</h3>
+                <p>{s.desc}</p>
+              </div>
+              <button className="icon-btn">
+                {openSection === s.id ? <ChevronUp /> : <ChevronDown />}
+              </button>
+            </header>
+            {openSection === s.id && (
+              <div className="help-content">
+                {s.steps.map((step, idx) => (
+                  <div key={idx} className="help-step">
+                    <Check />
+                    <span>{step}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </article>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default App;

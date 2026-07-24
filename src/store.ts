@@ -44,7 +44,21 @@ export const createEmptyData = (organizationName: string, owner: Pick<SessionUse
   products: [], balances: [], transfers: [], sales: [], movements: [], stockCounts: [], suppliers: [], receipts: [], returns: [],
 });
 
-export const normalizeData = (data: AppData): AppData => ({ ...data, business: data.business || { name: 'Usaha Saya', ownerName: data.users.find(item=>item.role==='owner')?.name || 'Owner' }, suppliers: data.suppliers || [], receipts: data.receipts || [], returns: data.returns || [] });
+export const normalizeData = (data: AppData): AppData => ({
+  ...data,
+  business: data.business || { name: 'Usaha Saya', ownerName: data.users?.find(item=>item.role==='owner')?.name || 'Owner' },
+  users: data.users || [],
+  locations: data.locations || [],
+  products: data.products || [],
+  balances: data.balances || [],
+  transfers: data.transfers || [],
+  sales: data.sales || [],
+  movements: data.movements || [],
+  stockCounts: data.stockCounts || [],
+  suppliers: data.suppliers || [],
+  receipts: data.receipts || [],
+  returns: data.returns || []
+});
 
 const keyFor = (organizationId = 'demo') => `veinstock_data_v2_${organizationId}`;
 export const loadData = (organizationId?: string): AppData => { try { return normalizeData(JSON.parse(localStorage.getItem(keyFor(organizationId)) || '')) } catch { return normalizeData(seedData) } };
