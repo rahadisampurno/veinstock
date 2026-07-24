@@ -6,7 +6,7 @@ export interface SessionUser extends User { organizationId: string; organization
 export interface BusinessProfile { name: string; ownerName: string; phone?: string; email?: string; address?: string; logoUrl?: string }
 export interface Location { id: string; name: string; type: 'warehouse' | 'outlet'; address?: string; active: boolean }
 export type StockUnit = 'gram' | 'pcs' | 'ml';
-export interface Variant { id: string; name: string; sku: string; cost: number; price: number; resellerPrice: number; minStock: number; gramsPerCup?: number; active?: boolean; imageUrl?: string }
+export interface Variant { id: string; name: string; sku: string; cost: number; price: number; resellerPrice: number; minStock: number; minStockByLocation?: Record<string, number>; gramsPerCup?: number; active?: boolean; imageUrl?: string }
 export interface Product { id: string; name: string; category: string; unit: StockUnit; active: boolean; imageUrl?: string; variants: Variant[] }
 export interface Balance { locationId: string; variantId: string; quantity: number }
 export interface Transfer { id: string; fromId: string; toId: string; variantId: string; quantity: number; status: 'sent' | 'received' | 'cancelled'; createdAt: string; receivedAt?: string; cancelledAt?: string; cancelReason?: string }
