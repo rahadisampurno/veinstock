@@ -248,24 +248,49 @@ app.post('/api/register',async(req,res)=>{
 });
 function requireAuth(req,res,next){ const token=req.headers.authorization?.replace(/^Bearer\s+/,''); if(!token)return res.status(401).json({message:'Silakan masuk kembali'}); try{req.auth=jwt.verify(token,jwtSecret);next()}catch{return res.status(401).json({message:'Sesi telah berakhir'})} }
 const same = (a,b) => JSON.stringify(a) === JSON.stringify(b);
-function validatePicChange(previous,next,user){
+function validateRoleChange(previous,next,user){
   if(!previous) return 'Data awal hanya dapat dibuat oleh Owner';
-  if(!same(previous.users,next.users)||!same(previous.locations,next.locations)||!same(previous.products,next.products)) return 'PIC tidak dapat mengubah master data';
-  const outletId=user.outlet_id||user.outletId;
-  if(!outletId) return 'Akun PIC belum terhubung ke outlet';
+  const role = user.role;
   const appendOnly=(oldItems,newItems)=>oldItems.every(old=>newItems.some(item=>item.id===old.id&&same(item,old)));
-  if(!appendOnly(previous.sales,next.sales)||!appendOnly(previous.stockCounts,next.stockCounts)||!appendOnly(previous.movements,next.movements))return 'Riwayat transaksi lama tidak boleh diubah atau dihapus';
-  const oldSales=new Set(previous.sales.map(item=>item.id));
-  if(next.sales.some(item=>!oldSales.has(item.id)&&item.locationId!==outletId)) return 'PIC hanya dapat mencatat penjualan outletnya';
-  const oldCounts=new Set(previous.stockCounts.map(item=>item.id));
-  if(next.stockCounts.some(item=>!oldCounts.has(item.id)&&item.locationId!==outletId)) return 'PIC hanya dapat melakukan opname outletnya';
-  const oldMovements=new Set(previous.movements.map(item=>item.id));
-  if(next.movements.some(item=>!oldMovements.has(item.id)&&item.locationId!==outletId))return 'PIC hanya dapat mencatat pergerakan stok outletnya';
-  const oldTransfers=new Map(previous.transfers.map(item=>[item.id,item]));
-  if(next.transfers.some(item=>!oldTransfers.has(item.id))) return 'Transfer baru hanya dapat dibuat oleh Owner';
-  for(const item of next.transfers){const old=oldTransfers.get(item.id);if(old&&!same(old,item)&&(old.toId!==outletId||old.status!=='sent'||item.status!=='received'))return 'PIC hanya dapat mengonfirmasi transfer ke outletnya';}
-  const changedBalances=next.balances.filter(item=>{const old=previous.balances.find(value=>value.locationId===item.locationId&&value.variantId===item.variantId);return !old||old.quantity!==item.quantity});
-  if(changedBalances.some(item=>item.locationId!==outletId)) return 'PIC hanya dapat mengubah stok outletnya';
+  
+  if (role === 'admin') {
+    if(!same(previous.business,next.business)) return 'Admin tidak dapat mengubah profil usaha';
+    if(!appendOnly(previous.sales,next.sales)||!appendOnly(previous.stockCounts,next.stockCounts)||!appendOnly(previous.movements,next.movements))return 'Riwayat lama tidak boleh diubah atau dihapus';
+  }
+  
+  if (role === 'warehouse') {
+    if(!same(previous.business,next.business)) return 'Staf Gudang tidak dapat mengubah profil usaha';
+    if(!same(previous.locations,next.locations)||!same(previous.products,next.products)) return 'Staf Gudang tidak dapat mengubah master data';
+    if(!same(previous.sales,next.sales)) return 'Staf Gudang tidak dapat mencatat penjualan';
+    if(!appendOnly(previous.stockCounts,next.stockCounts)||!appendOnly(previous.movements,next.movements))return 'Riwayat lama tidak boleh diubah atau dihapus';
+  }
+  
+  if (role === 'cashier') {
+    if(!same(previous.business,next.business)) return 'Kasir tidak dapat mengubah profil usaha';
+    if(!same(previous.locations,next.locations)||!same(previous.products,next.products)) return 'Kasir tidak dapat mengubah master data';
+    if(!same(previous.stockCounts,next.stockCounts)||!same(previous.movements,next.movements)||!same(previous.transfers,next.transfers)) return 'Kasir hanya dapat mencatat penjualan';
+    if(!appendOnly(previous.sales,next.sales))return 'Riwayat penjualan lama tidak boleh diubah atau dihapus';
+  }
+  
+  if (role === 'pic') {
+    if(!same(previous.business,next.business)) return 'PIC tidak dapat mengubah profil usaha';
+    if(!same(previous.locations,next.locations)||!same(previous.products,next.products)) return 'PIC tidak dapat mengubah master data';
+    const outletId=user.outlet_id||user.outletId;
+    if(!outletId) return 'Akun PIC belum terhubung ke outlet';
+    if(!appendOnly(previous.sales,next.sales)||!appendOnly(previous.stockCounts,next.stockCounts)||!appendOnly(previous.movements,next.movements))return 'Riwayat transaksi lama tidak boleh diubah atau dihapus';
+    const oldSales=new Set(previous.sales.map(item=>item.id));
+    if(next.sales.some(item=>!oldSales.has(item.id)&&item.locationId!==outletId)) return 'PIC hanya dapat mencatat penjualan outletnya';
+    const oldCounts=new Set(previous.stockCounts.map(item=>item.id));
+    if(next.stockCounts.some(item=>!oldCounts.has(item.id)&&item.locationId!==outletId)) return 'PIC hanya dapat melakukan opname outletnya';
+    const oldMovements=new Set(previous.movements.map(item=>item.id));
+    if(next.movements.some(item=>!oldMovements.has(item.id)&&item.locationId!==outletId))return 'PIC hanya dapat mencatat pergerakan stok outletnya';
+    const oldTransfers=new Map(previous.transfers.map(item=>[item.id,item]));
+    if(next.transfers.some(item=>!oldTransfers.has(item.id))) return 'Transfer baru hanya dapat dibuat oleh Owner';
+    for(const item of next.transfers){const old=oldTransfers.get(item.id);if(old&&!same(old,item)&&(old.toId!==outletId||old.status!=='sent'||item.status!=='received'))return 'PIC hanya dapat mengonfirmasi transfer ke outletnya';}
+    const changedBalances=next.balances.filter(item=>{const old=previous.balances.find(value=>value.locationId===item.locationId&&value.variantId===item.variantId);return !old||old.quantity!==item.quantity});
+    if(changedBalances.some(item=>item.locationId!==outletId)) return 'PIC hanya dapat mengubah stok outletnya';
+  }
+  
   if(next.balances.length<previous.balances.length) return 'Saldo stok tidak boleh dihapus';
   return null;
 }
@@ -456,7 +481,7 @@ app.put('/api/state', requireAuth, async (req, res) => {
   if(actor.role==='finance')return res.status(403).json({message:'Akun Keuangan hanya memiliki akses baca'});
   if (!conn) {
     const state=demoStates.get(req.auth.org)||{version:0,data:null};
-    const denied=actor.role==='pic'&&validatePicChange(state.data,data,actor);
+    const denied=actor.role!=='owner'&&actor.role!=='finance'&&validateRoleChange(state.data,data,actor);
     if(denied)return res.status(403).json({message:denied});
     if(Number(version)!==state.version)return res.status(409).json({message:'Data telah berubah di perangkat lain. Muat ulang sebelum menyimpan.'});
     const nextVersion=state.version+1;demoStates.set(req.auth.org,{version:nextVersion,data});return res.json({version:nextVersion});
@@ -468,7 +493,7 @@ app.put('/api/state', requireAuth, async (req, res) => {
     if (rows.length && Number(rows[0].version) !== Number(version)) { await connection.rollback(); return res.status(409).json({ message: 'Data telah berubah di perangkat lain. Muat ulang sebelum menyimpan.' }); }
     const [stateRows]=await connection.execute('SELECT payload FROM app_state WHERE id=?',[req.auth.org]);
     const previous=stateRows[0]?.payload||null;
-    const denied=actor.role==='pic'&&validatePicChange(previous,data,actor);
+    const denied=actor.role!=='owner'&&actor.role!=='finance'&&validateRoleChange(previous,data,actor);
     if(denied){await connection.rollback();return res.status(403).json({message:denied});}
     const next = Number(version) + 1;
     await connection.execute('INSERT INTO app_state (id,version,payload) VALUES (?,?,?) ON DUPLICATE KEY UPDATE version=VALUES(version), payload=VALUES(payload)', [req.auth.org, next, JSON.stringify(data)]);
