@@ -373,10 +373,7 @@ app.post('/api/auth/reset-password', async (req, res) => {
     const u = demoUsers.find(u => u.email === email);
     if (u) u.demo_password = newPassword;
   }
-  if (mailer) {
-    const { subject, html } = buildChangePasswordEmail(entry.name);
-    try { await mailer.sendMail({ from: `"${APP_NAME}" <${FROM_ADDRESS}>`, to: email, subject, html }); } catch {}
-  }
+  // Not sending email for password changes anymore to save tokens
   res.json({ message: 'Password berhasil direset. Silakan masuk kembali.' });
 });
 
@@ -406,10 +403,7 @@ app.patch('/api/profile/password', requireAuth, async (req, res) => {
   } else {
     user.demo_password = newPassword;
   }
-  if (mailer) {
-    const { subject, html } = buildChangePasswordEmail(user.name);
-    try { await mailer.sendMail({ from: `"${APP_NAME}" <${FROM_ADDRESS}>`, to: user.email, subject, html }); } catch {}
-  }
+  // Not sending email for password changes anymore to save tokens
   res.json({ message: 'Password berhasil diubah' });
 });
 app.post('/api/uploads/image',requireAuth,imageUpload.single('image'),async(req,res)=>{
