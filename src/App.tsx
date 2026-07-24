@@ -1215,7 +1215,7 @@ function App() {
         />
       )}
       {modal === "user" && (
-        <UserModal data={data} close={() => setModal(null)} save={addUser} uploadImage={uploadImage}/>
+        <UserModal data={data} close={() => setModal(null)} save={addUser} uploadImage={uploadImage} goToHelp={() => { setModal(null); setPage("help"); }}/>
       )}
       {modal?.startsWith("user:") &&
         (() => {
@@ -3176,7 +3176,7 @@ function LocationModal({ close, save, location, onDelete }: any) {
     </Modal>
   );
 }
-function UserModal({ data, close, save, user, uploadImage, onDelete }: any) {
+function UserModal({ data, close, save, user, uploadImage, onDelete, goToHelp }: any) {
   const editing = Boolean(user),
     isOwner = user?.role === "owner",
     [name, setName] = useState(user?.name || ""),
@@ -3289,7 +3289,12 @@ function UserModal({ data, close, save, user, uploadImage, onDelete }: any) {
             />
           </Field>
         )}
-        <Field label="Peran">
+        <Field label={
+          <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', width:'100%'}}>
+            <span>Peran</span>
+            {goToHelp && <button type="button" onClick={goToHelp} style={{background:'none',border:'none',color:'var(--green)',fontSize:'10px',cursor:'pointer',textDecoration:'underline',padding:0,fontWeight:700}}>Pelajari hak akses</button>}
+          </div>
+        }>
           <select
             value={role}
             disabled={isOwner}
@@ -4168,40 +4173,52 @@ const ModalActions = ({ close, onDelete }: any) => (
       desc: "Menambah produk, varian, dan lokasi usaha untuk pertama kali.",
       steps: [
         "Buka menu Produk & Varian untuk menambahkan daftar barang.",
-        "Jika barang memiliki warna/ukuran, masukkan sebagai Varian.",
-        "Buka menu Lokasi Usaha untuk menambahkan outlet cabang atau gudang utama."
+        "Jika barang memiliki variasi (warna, ukuran, dsb.), tambahkan di bagian Varian saat membuat produk.",
+        "Buka menu Lokasi Usaha untuk mendaftarkan titik-titik outlet fisik Anda beserta gudang penyimpanannya."
       ]
     },
     {
       id: "stock",
       icon: <Boxes />,
       title: "Manajemen Stok",
-      desc: "Mencatat stok masuk, perpindahan, dan opname (penyesuaian).",
+      desc: "Mencatat pergerakan barang, transfer antar-lokasi, dan stok opname.",
       steps: [
-        "Stok Masuk: Gunakan menu ini saat ada pembelian atau barang baru tiba di lokasi.",
-        "Transfer Stok: Pindahkan barang dari satu lokasi (misal gudang) ke lokasi lain (misal outlet).",
-        "Stock Opname: Lakukan pencocokan stok fisik secara berkala. Jika ada selisih, buat penyesuaian untuk merapikan saldo akhir."
+        "Stok Masuk: Gunakan fitur ini untuk mencatat suplai barang baru (kulakan) atau hasil produksi.",
+        "Transfer Stok: Kirim barang dari gudang utama ke outlet cabang. Outlet cabang perlu melakukan 'Konfirmasi Terima'.",
+        "Stock Opname: Lakukan penghitungan fisik secara berkala dan catat penyesuaian (bertambah/berkurang) agar sinkron dengan sistem.",
+        "Histori Stok: Lacak jejak keluar-masuk setiap satuan barang per lokasi untuk audit."
       ]
     },
     {
       id: "sales",
       icon: <ShoppingCart />,
       title: "Penjualan & Retur",
-      desc: "Mencatat transaksi yang mengurangi stok atau retur yang mengembalikan stok.",
+      desc: "Mencatat arus keluar barang, pendapatan, serta retur.",
       steps: [
-        "Penjualan: Buka menu Penjualan, pilih produk yang terjual, tentukan lokasi dan kanal (Offline/Online/Reseller). Stok akan otomatis berkurang.",
-        "Retur: Jika ada barang rusak atau dikembalikan pelanggan, buka menu Retur untuk mencatat pengembalian tersebut."
+        "Penjualan: Pilih barang terjual, tentukan lokasi, harga, metode pembayaran, dan kanal (Offline/Online). Stok akan langsung dipotong otomatis.",
+        "Retur: Gunakan menu ini untuk mengembalikan stok ke sistem jika ada pelanggan yang mengembalikan barang atau Anda meretur barang rusak ke supplier."
+      ]
+    },
+    {
+      id: "analytics",
+      icon: <BarChart3 />,
+      title: "Analitik & Laporan",
+      desc: "Memantau performa usaha, nilai aset, peringatan stok, dan mencetak laporan.",
+      steps: [
+        "Dashboard (Analitik Bisnis): Layar pantauan real-time untuk melihat omset hari ini, grafik tren bulanan, serta daftar stok menipis.",
+        "Laporan: Unduh data mutasi keseluruhan, ringkasan nilai stok, dan transaksi dalam format Excel atau PDF.",
+        "Gunakan filter pada rentang waktu atau spesifik lokasi untuk membedah data per cabang."
       ]
     },
     {
       id: "team",
       icon: <Users />,
       title: "Manajemen Tim & Akses",
-      desc: "Cara mengelola akun pegawai dan membatasi hak akses mereka.",
+      desc: "Mendelegasikan pekerjaan ke staf sesuai dengan wewenang (role).",
       steps: [
-        "Buka menu Pengguna & Akses (hanya bisa diakses oleh akun tingkat Owner).",
-        "Klik 'Tambah Pengguna' dan tentukan perannya: Owner (Full), PIC (Cabang tertentu), atau Keuangan.",
-        "PIC hanya bisa melihat stok dan melakukan tindakan (seperti opname atau penjualan) di lokasi yang ditetapkan untuk mereka."
+        "Buka menu Pengguna & Akses, lalu klik Tambah Pengguna.",
+        "Pilih peran yang sesuai: Admin Cabang (Bisa ubah stok & penjualan cabang), PIC Outlet (Kepala toko), Staf Gudang, Kasir, atau Keuangan.",
+        "Sistem secara otomatis akan memblokir fitur-fitur sensitif (seperti menu Laporan atau Profil Usaha) bagi pegawai yang tidak berwenang."
       ]
     }
   ];
