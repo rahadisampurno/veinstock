@@ -1215,7 +1215,7 @@ function App() {
         />
       )}
       {modal === "user" && (
-        <UserModal data={data} close={() => setModal(null)} save={addUser} uploadImage={uploadImage} goToHelp={() => { setModal(null); setPage("help"); }}/>
+        <UserModal data={data} close={() => setModal(null)} save={addUser} uploadImage={uploadImage}/>
       )}
       {modal?.startsWith("user:") &&
         (() => {
@@ -3176,7 +3176,7 @@ function LocationModal({ close, save, location, onDelete }: any) {
     </Modal>
   );
 }
-function UserModal({ data, close, save, user, uploadImage, onDelete, goToHelp }: any) {
+function UserModal({ data, close, save, user, uploadImage, onDelete }: any) {
   const editing = Boolean(user),
     isOwner = user?.role === "owner",
     [name, setName] = useState(user?.name || ""),
@@ -3194,7 +3194,8 @@ function UserModal({ data, close, save, user, uploadImage, onDelete, goToHelp }:
     [file,setFile]=useState<File|null>(null),
     [error, setError] = useState(""),
     [loading, setLoading] = useState(false),
-    [showPasswordEdit, setShowPasswordEdit] = useState(false);
+    [showPasswordEdit, setShowPasswordEdit] = useState(false),
+    [showHelp, setShowHelp] = useState(false);
   return (
     <Modal
       title={editing ? "Edit profil pengguna" : "Tambah pengguna"}
@@ -3292,7 +3293,7 @@ function UserModal({ data, close, save, user, uploadImage, onDelete, goToHelp }:
         <Field label={
           <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', width:'100%'}}>
             <span>Peran</span>
-            {goToHelp && <button type="button" onClick={goToHelp} style={{background:'none',border:'none',color:'var(--green)',fontSize:'10px',cursor:'pointer',textDecoration:'underline',padding:0,fontWeight:700}}>Pelajari hak akses</button>}
+            <button type="button" onClick={() => setShowHelp(!showHelp)} style={{background:'none',border:'none',color:'var(--green)',fontSize:'10px',cursor:'pointer',textDecoration:'underline',padding:0,fontWeight:700}}>Pelajari hak akses</button>
           </div>
         }>
           <select
@@ -3307,6 +3308,17 @@ function UserModal({ data, close, save, user, uploadImage, onDelete, goToHelp }:
             <option value="cashier">Kasir</option>
             <option value="finance">Keuangan</option>
           </select>
+          {showHelp && (
+            <div style={{ marginTop: '8px', padding: '12px', background: 'var(--mint)', borderRadius: '8px', fontSize: '11.5px', color: 'var(--text)', border: '1px solid #d8f6e8', lineHeight: 1.5 }}>
+              <div style={{ display: 'grid', gap: '8px' }}>
+                <div><b>Admin Cabang:</b> Mengelola operasional cabang (stok & penjualan), tanpa akses laporan keuangan.</div>
+                <div><b>PIC Outlet:</b> Kepala operasional toko/outlet.</div>
+                <div><b>Staf Gudang:</b> Khusus mencatat mutasi stok di gudang, tanpa melihat harga jual/omset.</div>
+                <div><b>Kasir:</b> Hanya bisa mengakses dan melayani transaksi di menu Penjualan.</div>
+                <div><b>Keuangan:</b> Memantau laporan omset dan laba, tanpa bisa memodifikasi stok fisik.</div>
+              </div>
+            </div>
+          )}
         </Field>
         {role === "pic" && (
           <Field label="Outlet PIC">
