@@ -15,6 +15,7 @@ import {
   LogOut,
   Menu,
   PackagePlus,
+
   Plus,
   RotateCcw,
   Search,
@@ -31,6 +32,8 @@ import {
   LifeBuoy,
   ChevronDown,
   ChevronUp,
+  ChevronLeft,
+  ChevronRight,
   TrendingUp
 } from "lucide-react";
 import type {
@@ -73,28 +76,48 @@ type Page =
 const money = (n: number) => `Rp ${Math.round(n).toLocaleString("id-ID")}`;
 const qty = (n: number, unit?: StockUnit) =>
   `${n.toLocaleString("id-ID")} ${unit === "pcs" ? "pcs" : unit || "unit"}`;
+const savedSessionKey = "veinstock_saved_session";
+
+const readSession = () => {
+  const current = sessionStorage.getItem(savedSessionKey);
+  const saved = localStorage.getItem(savedSessionKey);
+  try {
+    const session = JSON.parse(current || saved || "null") as {
+      user: SessionUser;
+      token: string;
+    } | null;
+    if (session?.user && session.token) return session;
+
+    // Pertahankan sesi dari versi aplikasi sebelumnya saat pengguna memperbarui aplikasi.
+    const legacyUser = sessionStorage.getItem("veinstock_user");
+    const legacyToken = sessionStorage.getItem("veinstock_token");
+    return legacyUser && legacyToken
+      ? { user: JSON.parse(legacyUser) as SessionUser, token: legacyToken }
+      : null;
+  } catch {
+    return null;
+  }
+};
 
 function App() {
   const [data, setData] = useState<AppData>(loadData);
-  const [authUser, setAuthUser] = useState<SessionUser | null>(() => {
-    try {
-      return JSON.parse(sessionStorage.getItem("veinstock_user") || "null");
-    } catch {
-      return null;
-    }
-  });
-  const [token, setToken] = useState<string | null>(() =>
-    sessionStorage.getItem("veinstock_token"),
+  const [authUser, setAuthUser] = useState<SessionUser | null>(
+    () => readSession()?.user || null,
   );
+  const [token, setToken] = useState<string | null>(() => readSession()?.token || null);
   const [hydrated, setHydrated] = useState(false);
   const [page, setPage] = useState<Page>("dashboard");
   const [sidebar, setSidebar] = useState(false);
+  const [desktopSidebar, setDesktopSidebar] = useState(true);
   const [modal, setModal] = useState<string | null>(null);
   const [toast, setToast] = useState("");
   const [confirm, setConfirm] = useState<{ message: string, onConfirm: () => void } | null>(null);
   const serverVersion = useRef(0);
   const serverReady = useRef(false);
   const skipNextSync = useRef(false);
+  // Menahan pembaruan dari perangkat lain saat Owner masih memiliki perubahan
+  // lokal yang belum selesai dikirim ke server.
+  const hasPendingLocalChanges = useRef(false);
   const user = authUser;
   useEffect(() => {
     if (user) saveData(data, user.organizationId);
@@ -102,6 +125,7 @@ function App() {
       skipNextSync.current = false;
       return;
     }
+    hasPendingLocalChanges.current = true;
     const timer = window.setTimeout(async () => {
       try {
         const response = await fetch("/api/state", {
@@ -124,6 +148,7 @@ function App() {
           return;
         }
         serverVersion.current = result.version;
+        hasPendingLocalChanges.current = false;
       } catch {
         /* Mode lokal tetap dapat digunakan saat API belum aktif. */
       }
@@ -139,6 +164,8 @@ function App() {
     fetch("/api/state", { headers: { Authorization: `Bearer ${token}` } })
       .then((r) => {
         if (r.status === 401 || r.status === 403) {
+          sessionStorage.removeItem(savedSessionKey);
+          localStorage.removeItem(savedSessionKey);
           sessionStorage.removeItem("veinstock_user");
           sessionStorage.removeItem("veinstock_token");
           setAuthUser(null);
@@ -172,6 +199,31 @@ function App() {
     // Identitas profil tidak boleh memicu hydrate ulang; data tenant hanya berubah saat token/organisasi berubah.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, user?.organizationId]);
+  useEffect(() => {
+    if (!token || user?.role !== "owner" || !serverReady.current) return;
+
+    const refreshFromServer = async () => {
+      if (hasPendingLocalChanges.current) return;
+      try {
+        const response = await fetch("/api/state", {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!response.ok) return;
+        const result = await response.json();
+        if (!result.data || Number(result.version) <= serverVersion.current) return;
+
+        serverVersion.current = Number(result.version);
+        skipNextSync.current = true;
+        setData(normalizeData(result.data));
+        setToast("Data aktivitas tim telah diperbarui.");
+      } catch {
+        // Koneksi yang putus tidak boleh mengganggu pekerjaan Owner.
+      }
+    };
+
+    const interval = window.setInterval(refreshFromServer, 5_000);
+    return () => window.clearInterval(interval);
+  }, [token, user?.role, user?.organizationId]);
   const variantMap = useMemo(
     () =>
       Object.fromEntries(
@@ -192,7 +244,7 @@ function App() {
     setToast(message);
     window.setTimeout(() => setToast(""), 3000);
   };
-  const authenticate = async (endpoint: string, payload: object) => {
+  const authenticate = async (endpoint: string, payload: object, remember = false) => {
     const response = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -203,16 +255,20 @@ function App() {
     setHydrated(false);
     setAuthUser(result.user);
     setToken(result.token);
-    sessionStorage.setItem("veinstock_user", JSON.stringify(result.user));
-    sessionStorage.setItem("veinstock_token", result.token);
+    const session = JSON.stringify({ user: result.user, token: result.token });
+    sessionStorage.setItem(savedSessionKey, session);
+    sessionStorage.removeItem("veinstock_user");
+    sessionStorage.removeItem("veinstock_token");
+    if (remember) localStorage.setItem(savedSessionKey, session);
+    else localStorage.removeItem(savedSessionKey);
     notify(
       endpoint === "/api/login"
         ? "Berhasil masuk ke Dashboard"
         : "Pendaftaran berhasil, selamat datang di VEINSTOCK!"
     );
   };
-  const login = (email: string, password: string) =>
-    authenticate("/api/login", { email, password });
+  const login = (email: string, password: string, remember: boolean) =>
+    authenticate("/api/login", { email, password }, remember);
   const register = (
     organizationName: string,
     name: string,
@@ -265,7 +321,12 @@ function App() {
         organizationName: user.organizationName,
       };
       setAuthUser(updated);
-      sessionStorage.setItem("veinstock_user", JSON.stringify(updated));
+      const currentSession = readSession();
+      if (currentSession) {
+        const session = JSON.stringify({ ...currentSession, user: updated });
+        sessionStorage.setItem(savedSessionKey, session);
+        if (localStorage.getItem(savedSessionKey)) localStorage.setItem(savedSessionKey, session);
+      }
     }
     setModal(null);
     notify("Profil pengguna berhasil diperbarui");
@@ -292,6 +353,8 @@ function App() {
     setHydrated(false);
     setPage("dashboard");
     serverReady.current = false;
+    sessionStorage.removeItem(savedSessionKey);
+    localStorage.removeItem(savedSessionKey);
     sessionStorage.removeItem("veinstock_user");
     sessionStorage.removeItem("veinstock_token");
   };
@@ -594,7 +657,10 @@ function App() {
   };
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${!desktopSidebar ? "sidebar-collapsed" : ""}`}>
+      {sidebar && (
+        <div className="sidebar-overlay" onClick={() => setSidebar(false)}></div>
+      )}
       <aside className={sidebar ? "sidebar open" : "sidebar"}>
         <div className="brand">
           <div className="brand-mark"><img src="/veinstock-icon-192.png" alt="VEINSTOCK" /></div>
@@ -609,7 +675,7 @@ function App() {
             aria-label="Tutup menu"
             onClick={() => setSidebar(false)}
           >
-            <X />
+            <X size={20} />
           </button>
         </div>
         <div className="workspace">
@@ -667,13 +733,16 @@ function App() {
             </button>
           </div>
         </div>
+        <button className="sidebar-tab-toggle" onClick={() => setDesktopSidebar(!desktopSidebar)}>
+          {desktopSidebar ? <ChevronLeft size={16} /> : <ChevronRight size={16} />}
+        </button>
       </aside>
       <main>
         <header>
           <button
             className="icon-btn menu-btn"
             aria-label="Buka menu"
-            onClick={() => setSidebar(true)}
+            onClick={() => { setSidebar(true); setDesktopSidebar(true); }}
           >
             <Menu />
           </button>
@@ -1399,7 +1468,7 @@ function Login({
   onLogin,
   onRegister,
 }: {
-  onLogin: (email: string, password: string) => Promise<void>;
+  onLogin: (email: string, password: string, remember: boolean) => Promise<void>;
   onRegister: (
     organizationName: string,
     name: string,
@@ -1412,6 +1481,7 @@ function Login({
     [name, setName] = useState(""),
     [email, setEmail] = useState(""),
     [password, setPassword] = useState(""),
+    [remember, setRemember] = useState(false),
     [error, setError] = useState(""),
     [loading, setLoading] = useState(false);
   const changeMode = (next: "login" | "register" | "forgot") => {
@@ -1437,7 +1507,7 @@ function Login({
             setError("");
             setLoading(true);
             try {
-              if (mode === "login") await onLogin(email, password);
+              if (mode === "login") await onLogin(email, password, remember);
               else await onRegister(organization, name, email, password);
             } catch (err) {
               setError(
@@ -1516,7 +1586,15 @@ function Login({
             />
           </Field>
           {mode === "login" && (
-            <div style={{ textAlign: 'right', marginTop: '-8px' }}>
+            <div className="login-options">
+              <label className="toggle-field">
+                <input
+                  type="checkbox"
+                  checked={remember}
+                  onChange={(e) => setRemember(e.target.checked)}
+                />
+                Ingat akun di perangkat ini
+              </label>
               <button type="button" className="link-btn" onClick={() => changeMode("forgot")}>
                 Lupa password?
               </button>
@@ -3082,8 +3160,12 @@ function UserModal({ data, close, save, user, uploadImage, onDelete }: any) {
           }
         }}
       >
-        <Field label="Foto profil (opsional)"><input type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif" onChange={(e)=>setFile(e.target.files?.[0]||null)}/></Field>
-        <small className="upload-hint">Foto otomatis dikompresi. {editing&&user.avatarUrl?'Kosongkan jika foto tidak diubah.':''}</small>
+        {!isOwner && (
+          <>
+            <Field label="Foto profil (opsional)"><input type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif" onChange={(e)=>setFile(e.target.files?.[0]||null)}/></Field>
+            <small className="upload-hint">Foto otomatis dikompresi. {editing&&user.avatarUrl?'Kosongkan jika foto tidak diubah.':''}</small>
+          </>
+        )}
         <Field label="Nama lengkap">
           <input
             required
