@@ -584,19 +584,14 @@ function App() {
     analytics: "Analisis Kinerja Bisnis",
     help: "Pusat Bantuan VEINSTOCK",
   };
-  const allowed = (p: Page) =>
-    user.role === "owner" ||
-    (user.role === "pic"
-      ? ![
-          "users",
-          "reports",
-          "products",
-          "locations",
-          "receipts",
-          "business",
-          "analytics",
-        ].includes(p)
-      : ["dashboard", "sales", "reports", "history"].includes(p));
+  const allowed = (p: Page) => {
+    if (user.role === "owner") return true;
+    if (user.role === "admin") return !["users", "business", "analytics"].includes(p);
+    if (user.role === "warehouse") return ["dashboard", "receipts", "stock", "transfers", "opname", "history", "returns"].includes(p);
+    if (user.role === "cashier") return ["dashboard", "sales", "stock"].includes(p);
+    if (user.role === "finance") return ["dashboard", "analytics", "reports"].includes(p);
+    return ["dashboard", "sales", "reports", "history"].includes(p); // pic
+  };
 
   return (
     <div className="app-shell">
@@ -660,11 +655,7 @@ function App() {
           <div>
             <b>{user.name}</b>
             <small>
-              {user.role === "owner"
-                ? "Owner"
-                : user.role === "pic"
-                  ? "PIC Outlet"
-                  : "Keuangan"}
+              {user.role === "owner" ? "Owner" : user.role === "admin" ? "Admin Cabang" : user.role === "warehouse" ? "Staf Gudang" : user.role === "cashier" ? "Kasir" : user.role === "pic" ? "PIC Outlet" : "Keuangan"}
             </small>
           </div>
           <div className="sidebar-user-actions">
@@ -2745,7 +2736,7 @@ function UsersPage({ data, currentUser, businessLogo, open, edit }: any) {
                 <h3>{u.name}</h3>
                 <p>{u.email}</p>
                 <span className={`status ${u.active ? "ok" : "danger"}`}>
-                  {u.active ? u.role : "nonaktif"}
+                  {u.active ? (u.role === "owner" ? "Owner" : u.role === "admin" ? "Admin Cabang" : u.role === "warehouse" ? "Staf Gudang" : u.role === "cashier" ? "Kasir" : u.role === "finance" ? "Keuangan" : "PIC Outlet") : "nonaktif"}
                 </span>
               </div>
               <button
@@ -3043,7 +3034,7 @@ function UserModal({ data, close, save, user, uploadImage, onDelete }: any) {
     [name, setName] = useState(user?.name || ""),
     [email, setEmail] = useState(user?.email || ""),
     [password, setPassword] = useState(""),
-    [role, setRole] = useState<"owner" | "pic" | "finance">(
+    [role, setRole] = useState<"owner" | "pic" | "finance" | "admin" | "warehouse" | "cashier">(
       user?.role || "pic",
     ),
     [outletId, setOutletId] = useState(
@@ -3150,10 +3141,13 @@ function UserModal({ data, close, save, user, uploadImage, onDelete }: any) {
           <select
             value={role}
             disabled={isOwner}
-            onChange={(e) => setRole(e.target.value as "pic" | "finance")}
+            onChange={(e) => setRole(e.target.value as "owner" | "pic" | "finance" | "admin" | "warehouse" | "cashier")}
           >
             {isOwner && <option value="owner">Owner</option>}
+            <option value="admin">Admin Cabang</option>
             <option value="pic">PIC Outlet</option>
+            <option value="warehouse">Staf Gudang</option>
+            <option value="cashier">Kasir</option>
             <option value="finance">Keuangan</option>
           </select>
         </Field>

@@ -1,4 +1,4 @@
-export type Role = 'owner' | 'pic' | 'finance';
+export type Role = 'owner' | 'pic' | 'finance' | 'admin' | 'warehouse' | 'cashier';
 export type Channel = 'offline' | 'online' | 'reseller';
 
 export interface User { id: string; name: string; email: string; role: Role; outletId?: string; active: boolean; avatarUrl?: string }
