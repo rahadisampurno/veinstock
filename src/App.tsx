@@ -974,10 +974,24 @@ function App() {
       </main>
       {modal === "product" && (
         <ProductModal
+          user={user}
+          locations={visibleLocations}
           close={() => setModal(null)}
           uploadImage={uploadImage}
-          save={(p: Product) => {
-            setData((d) => ({ ...d, products: [...d.products, p] }));
+          save={(p: Product, initialStocks?: any[]) => {
+            setData((d) => {
+              const newBalances = [...d.balances];
+              const newMovements = [...d.movements];
+              
+              if (initialStocks && initialStocks.length > 0) {
+                initialStocks.forEach(st => {
+                  newBalances.push({ locationId: st.locationId, variantId: st.variantId, quantity: st.quantity });
+                  newMovements.push(movement(st.variantId, st.locationId, "INITIAL_BALANCE", st.quantity, "Saldo awal saat pembuatan produk", user?.name || "Sistem"));
+                });
+              }
+              
+              return { ...d, products: [...d.products, p], balances: newBalances, movements: newMovements };
+            });
             setModal(null);
             notify("Produk dan varian berhasil ditambahkan");
           }}
@@ -989,6 +1003,8 @@ function App() {
             product = data.products.find((item) => item.id === productId);
           return product ? (
             <ProductModal
+              user={user}
+              locations={visibleLocations}
               product={product}
               close={() => setModal(null)}
               uploadImage={uploadImage}
@@ -2649,16 +2665,16 @@ function HistoryPage({ data, variants, locations, role, outletId }: any) {
     >
       <div className="timeline">
         {movements.map((m: any) => (
-          <div>
+          <div key={m.id || Math.random()}>
             <i className={m.quantity >= 0 ? "in" : "out"} />
             <time>{new Date(m.createdAt).toLocaleString("id-ID")}</time>
             <section>
-              <b>{m.type}</b>
+              <b>{m.type === 'INITIAL_BALANCE' ? 'Saldo Awal Produk' : m.type}</b>
               <span>
                 {variants[m.variantId]?.name} · {locations[m.locationId]?.name}
               </span>
               <small>
-                {m.note} · oleh {m.user}
+                {m.type === 'INITIAL_BALANCE' ? 'Stok awal saat produk dibuat' : m.note} · oleh {m.user}
               </small>
             </section>
             <strong className={m.quantity >= 0 ? "positive" : "negative"}>
@@ -2956,6 +2972,8 @@ function ProductModal({
   uploadImage,
   product,
   onDelete,
+  locations,
+  user
 }: any) {
   const editing = Boolean(product),
     [name, setName] = useState(product?.name || ""),
@@ -2968,9 +2986,12 @@ function ProductModal({
 
   const [variants, setVariants] = useState<any[]>(
     product?.variants || [
-      { id: newId("v"), name: "", sku: "", cost: 0, price: 0, resellerPrice: 0, minStock: 0, active: true }
+      { id: newId("v"), name: "", sku: "", cost: 0, price: 0, resellerPrice: 0, minStock: 0, active: true, initialStock: 0 }
     ]
   );
+  
+  const [includeInitialStock, setIncludeInitialStock] = useState(false);
+  const [initialStockLocationId, setInitialStockLocationId] = useState(locations?.length === 1 ? locations[0].id : "");
 
   const [bulkCost, setBulkCost] = useState("");
   const [bulkPrice, setBulkPrice] = useState("");
@@ -3000,7 +3021,7 @@ function ProductModal({
     setVariants(variants.filter((_, i) => i !== index));
   };
   const addVariant = () => {
-    setVariants([...variants, { id: newId("v"), name: "", sku: "", cost: 0, price: 0, resellerPrice: 0, minStock: 0, active: true }]);
+    setVariants([...variants, { id: newId("v"), name: "", sku: "", cost: 0, price: 0, resellerPrice: 0, minStock: 0, active: true, initialStock: 0 }]);
   };
 
   return (
@@ -3025,12 +3046,21 @@ function ProductModal({
               unit,
               active,
               imageUrl: uploadedUrl || product?.imageUrl,
-              variants: variants.map((v, index) => ({
-                ...v,
-                sku: v.sku || `VST-${v.name.slice(0, 3).toUpperCase()}-${Date.now().toString().slice(-3)}${index}`,
-              })),
+              variants: variants.map((v, index) => {
+                const { initialStock, ...rest } = v;
+                return {
+                  ...rest,
+                  sku: v.sku || `VST-${v.name.slice(0, 3).toUpperCase()}-${Date.now().toString().slice(-3)}${index}`,
+                };
+              }),
             };
-            save(updatedProduct);
+            const initialStocks = (!editing && includeInitialStock) ? variants.filter(v => v.initialStock > 0).map(v => ({
+              variantId: v.id,
+              locationId: initialStockLocationId,
+              quantity: v.initialStock,
+              cost: v.cost
+            })) : [];
+            save(updatedProduct, initialStocks);
           } catch (err) {
             setError(err instanceof Error ? err.message : "Gagal menyimpan produk");
             setLoading(false);
@@ -3085,6 +3115,33 @@ function ProductModal({
           </div>
         </div>
 
+        {!editing && (
+          <div style={{ background: '#f8fafc', padding: '16px', borderRadius: '8px', marginBottom: '24px', border: '1px solid #e2e8f0' }}>
+            <h3 style={{ margin: '0 0 8px', fontSize: '16px' }}>Stok Awal Produk</h3>
+            <label className="toggle-field" style={{ marginBottom: includeInitialStock ? '16px' : '0' }}>
+              <input type="checkbox" checked={includeInitialStock} onChange={(e) => setIncludeInitialStock(e.target.checked)} />
+              <span style={{ fontWeight: 500 }}>Masukkan stok yang sudah tersedia</span>
+            </label>
+            {!includeInitialStock && (
+              <p style={{ margin: 0, fontSize: '12px', color: '#64748b', marginTop: '8px' }}>Bagian ini bersifat opsional. Anda juga dapat menambahkan stok melalui menu Stok Masuk setelah produk dibuat.</p>
+            )}
+            {includeInitialStock && (
+              <>
+                <p style={{ margin: '0 0 16px', fontSize: '12px', color: '#64748b' }}>Stok yang dimasukkan akan tercatat sebagai saldo awal pada riwayat stok.</p>
+                <Field label="Lokasi penyimpanan">
+                  <select required={includeInitialStock} value={initialStockLocationId} onChange={(e) => setInitialStockLocationId(e.target.value)}>
+                    <option value="" disabled>Pilih gudang atau outlet</option>
+                    {locations?.map((l: any) => (
+                      <option key={l.id} value={l.id}>{l.name}</option>
+                    ))}
+                  </select>
+                  <span className="upload-hint" style={{ marginTop: '4px' }}>Pilih lokasi tempat stok barang saat ini disimpan.</span>
+                </Field>
+              </>
+            )}
+          </div>
+        )}
+
         <h3 style={{ margin: '0 0 16px', fontSize: '16px' }}>Daftar Varian</h3>
         {variants.map((v, index) => (
           <div key={v.id} style={{ padding: '16px', border: '1px solid #e2e8f0', borderRadius: '8px', marginBottom: '16px', background: '#fff' }}>
@@ -3115,6 +3172,15 @@ function ProductModal({
               <Field label="Minimum Stok">
                 <input type="number" min="0" value={v.minStock === 0 ? '' : v.minStock} onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); updateVariant(index, 'minStock', +e.target.value) }} />
               </Field>
+              {!editing && includeInitialStock && (
+                <Field label="Stok Awal">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <input type="number" min="0" value={v.initialStock === 0 ? '' : v.initialStock} onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); updateVariant(index, 'initialStock', +e.target.value) }} placeholder="0" style={{ flex: 1 }} />
+                    <span style={{ fontSize: '14px', color: '#64748b' }}>{unit}</span>
+                  </div>
+                  <span className="upload-hint" style={{ marginTop: '4px' }}>Isi jumlah barang yang sudah tersedia.</span>
+                </Field>
+              )}
             </div>
             {editing && (
               <label className="toggle-field" style={{ marginTop: '12px' }}>
@@ -3128,6 +3194,16 @@ function ProductModal({
         <button type="button" className="secondary" onClick={addVariant} style={{ width: '100%', marginBottom: '24px', borderStyle: 'dashed' }}>
           + Tambah Varian Lainnya
         </button>
+
+        {!editing && includeInitialStock && (
+           <div style={{ background: '#f8fafc', padding: '16px', borderRadius: '8px', marginBottom: '24px', border: '1px solid #e2e8f0' }}>
+              <h4 style={{ margin: '0 0 8px', fontSize: '14px' }}>Ringkasan stok awal</h4>
+              <p style={{ margin: '0 0 4px', fontSize: '13px', color: '#475569' }}>Lokasi: <b>{locations?.find((l:any) => l.id === initialStockLocationId)?.name || '-'}</b></p>
+              <p style={{ margin: '0 0 4px', fontSize: '13px', color: '#475569' }}>Jumlah varian: <b>{variants.filter(v => v.initialStock > 0).length} varian</b></p>
+              <p style={{ margin: '0 0 8px', fontSize: '13px', color: '#475569' }}>Total stok: <b>{variants.reduce((sum, v) => sum + (Number(v.initialStock) || 0), 0)} {unit}</b></p>
+              <p style={{ margin: 0, fontSize: '12px', color: '#0369a1', fontStyle: 'italic' }}>Stok akan langsung tersedia setelah produk berhasil disimpan.</p>
+           </div>
+        )}
 
         {error && <div className="login-error">{error}</div>}
         <footer className="modal-actions">
