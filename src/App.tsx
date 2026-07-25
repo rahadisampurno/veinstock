@@ -1761,7 +1761,7 @@ function Dashboard({
   role,
   outletId,
 }: any) {
-  const isPic = role === "pic" && outletId;
+  const isPic = ["pic", "warehouse", "cashier", "admin"].includes(role) && outletId;
   const sales = isPic ? data.sales.filter((s: any) => s.locationId === outletId) : data.sales;
   const balances = isPic ? data.balances.filter((b: any) => b.locationId === outletId) : data.balances;
   const transfers = isPic ? data.transfers.filter((t: any) => t.fromId === outletId || t.toId === outletId) : data.transfers;
@@ -2121,7 +2121,7 @@ function ReceiptsPage({ data, variants, locations, open, edit, cancel }: any) {
 }
 function ReturnsPage({ data, variants, locations, open, cancel, role, outletId }: any) {
   const [search, setSearch] = useState("");
-  const isPic = role === "pic" && outletId;
+  const isPic = ["pic", "warehouse", "cashier", "admin"].includes(role) && outletId;
   const filteredReturns = isPic ? (data.returns || []).filter((x: any) => x.locationId === outletId) : (data.returns || []);
   const rows = filteredReturns.filter((x: any) =>
     `${x.reason} ${locations[x.locationId]?.name || ""} ${variants[x.variantId]?.name || ""}`
@@ -2234,7 +2234,7 @@ function BusinessPage({ data, open }: any) {
   );
 }
 function Stock({ data, setData, variants, role, outletId }: any) {
-  const isPic = role === "pic" && outletId;
+  const isPic = ["pic", "warehouse", "cashier", "admin"].includes(role) && outletId;
   const myLocations = isPic ? data.locations.filter((l: any) => l.id === outletId) : data.locations;
   const [loc, setLoc] = useState(myLocations[0]?.id || data.locations[0]?.id),
     [search, setSearch] = useState("");
@@ -2348,7 +2348,7 @@ function Transfers({
   detail,
 }: any) {
   const [search, setSearch] = useState("");
-  const isPic = role === "pic" && outletId;
+  const isPic = ["pic", "warehouse", "cashier", "admin"].includes(role) && outletId;
   const filteredTransfers = isPic
     ? data.transfers.filter((t: any) => t.fromId === outletId || t.toId === outletId)
     : data.transfers;
@@ -2470,7 +2470,7 @@ function Transfers({
 function Sales({ data, variants, locations, open, cancel, detail, role, outletId, canCancel }: any) {
   const [search, setSearch] = useState(""),
     [channel, setChannel] = useState("all");
-  const isPic = role === "pic" && outletId;
+  const isPic = ["pic", "warehouse", "cashier", "admin"].includes(role) && outletId;
   const filteredSales = isPic ? data.sales.filter((s: any) => s.locationId === outletId) : data.sales;
   const rows = filteredSales.filter(
     (s: any) =>
@@ -2570,7 +2570,7 @@ function Sales({ data, variants, locations, open, cancel, detail, role, outletId
   );
 }
 function Opname({ data, variants, locations, open, edit, cancel, role, outletId, canCorrect }: any) {
-  const isPic = role === "pic" && outletId;
+  const isPic = ["pic", "warehouse", "cashier", "admin"].includes(role) && outletId;
   const stockCounts = isPic ? data.stockCounts.filter((o: any) => o.locationId === outletId) : data.stockCounts;
   return (
     <PageBlock
@@ -2635,7 +2635,7 @@ function Opname({ data, variants, locations, open, edit, cancel, role, outletId,
   );
 }
 function HistoryPage({ data, variants, locations, role, outletId }: any) {
-  const isPic = role === "pic" && outletId;
+  const isPic = ["pic", "warehouse", "cashier", "admin"].includes(role) && outletId;
   const movements = isPic ? data.movements.filter((m: any) => m.locationId === outletId) : data.movements;
   return (
     <PageBlock
@@ -2680,7 +2680,7 @@ function Reports({ data, variants, locations, notify, role, outletId }: any) {
           : period === "month"
             ? now - 30 * 864e5
             : 0;
-  const isPic = role === "pic" && outletId;
+  const isPic = ["pic", "warehouse", "cashier", "admin"].includes(role) && outletId;
   const visibleLocations = isPic
     ? data.locations.filter((item: any) => item.id === outletId)
     : data.locations;
