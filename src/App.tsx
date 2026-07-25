@@ -1975,7 +1975,12 @@ function Products({ data, open, edit }: any) {
                       <b>{v.name} {v.active === false && <span className="inactive-badge">(Nonaktif)</span>}</b>
                       <code>{v.sku}</code>
                     </div>
-                    <strong>{money(v.price)}</strong>
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px' }}>
+                      <strong>{money(v.price)}</strong>
+                      <span style={{ fontSize: '0.75rem', color: '#64748b', fontWeight: 600, background: '#f1f5f9', padding: '2px 6px', borderRadius: '4px' }}>
+                        Stok: {data.balances?.filter((b: any) => b.variantId === v.id).reduce((sum: number, b: any) => sum + b.quantity, 0) || 0} {p.unit || 'Pcs'}
+                      </span>
+                    </div>
                   </div>
                 ))}
               </div>
