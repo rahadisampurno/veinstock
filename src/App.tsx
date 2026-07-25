@@ -3219,7 +3219,7 @@ function UserModal({ data, close, save, user, uploadImage, onDelete }: any) {
               email,
               password: password || undefined,
               role,
-              outletId: role === "pic" ? outletId : undefined,
+              outletId: ["pic", "warehouse", "cashier", "admin"].includes(role) ? outletId : undefined,
               active,
               avatarUrl,
             });
@@ -3320,15 +3320,20 @@ function UserModal({ data, close, save, user, uploadImage, onDelete }: any) {
             </div>
           )}
         </Field>
-        {role === "pic" && (
-          <Field label="Outlet PIC">
+        {["pic", "warehouse", "cashier", "admin"].includes(role) && (
+          <Field label="Lokasi Penempatan">
             <select
               required
               value={outletId}
               onChange={(e) => setOutletId(e.target.value)}
             >
+              <option value="">Pilih Lokasi</option>
               {data.locations
-                .filter((item: any) => item.type === "outlet")
+                .filter((item: any) => {
+                  if (role === "warehouse") return item.type === "warehouse";
+                  if (role === "pic" || role === "cashier") return item.type === "outlet";
+                  return true; // admin can see all for now
+                })
                 .map((item: any) => (
                   <option key={item.id} value={item.id}>
                     {item.name}
