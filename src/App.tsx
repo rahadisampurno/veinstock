@@ -1243,7 +1243,7 @@ function App() {
               throw new Error(err.message || 'Gagal menyimpan profil usaha');
             }
             // Update user organizationName if ownerName changed
-            setUser((u: any) => ({ ...u, organizationName: profile.name }));
+            setAuthUser((u: any) => ({ ...u, organizationName: profile.name }));
             setData((d) => ({ ...d, business: profile }));
             setModal(null);
             notify("Profil usaha berhasil diperbarui");
