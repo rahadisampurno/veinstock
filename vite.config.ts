@@ -20,7 +20,10 @@ export default defineConfig({
         { src: '/veinstock-icon-512-v2.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
       ],
     },
-    workbox: { navigateFallback: '/index.html' },
+    workbox: { 
+      navigateFallback: '/index.html',
+      maximumFileSizeToCacheInBytes: 5 * 1024 * 1024 
+    },
   })],
   server: { proxy: { '/api': 'http://127.0.0.1:8787' } },
 })

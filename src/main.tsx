@@ -12,6 +12,10 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+window.onerror = function(msg, _url, _line, _col, error) {
+  document.body.innerHTML = '<div style="color:red;padding:20px;font-family:monospace;background:white;z-index:9999;position:fixed;top:0;left:0;right:0;bottom:0;"><h3>APP CRASHED</h3><p>' + msg + '</p><pre>' + (error && error.stack) + '</pre></div>';
+};
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <App />

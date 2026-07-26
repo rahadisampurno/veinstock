@@ -22,10 +22,3 @@ describe('inventory balance', () => {
   });
 });
 
-describe('mix conversion', () => {
-  it('converts fractional cups to grams', () => {
-    const variant = seedData.products[0].variants.find(item => item.id === 'v-balado')!;
-    expect(variant.gramsPerCup! * 1.5).toBe(60);
-    expect(variant.gramsPerCup! * 0.25).toBe(10);
-  });
-});

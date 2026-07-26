@@ -17,11 +17,11 @@ export const seedData: AppData = {
   products: [{
     id: 'prod-cemilan', name: 'Cemilan Mix Meneng', category: 'Cemilan', unit: 'gram', active: true,
     variants: [
-      { id: 'v-balado', name: 'Balado', sku: 'MNG-BLD-001', cost: 52, price: 100, resellerPrice: 82, minStock: 1500, gramsPerCup: 40 },
-      { id: 'v-jagung', name: 'Jagung Bakar', sku: 'MNG-JGB-002', cost: 50, price: 100, resellerPrice: 80, minStock: 1500, gramsPerCup: 35 },
-      { id: 'v-keju', name: 'Keju', sku: 'MNG-KJU-003', cost: 56, price: 110, resellerPrice: 88, minStock: 1200, gramsPerCup: 42 },
-      { id: 'v-pedas', name: 'Pedas Daun Jeruk', sku: 'MNG-PDJ-004', cost: 54, price: 110, resellerPrice: 86, minStock: 1200, gramsPerCup: 38 },
-      { id: 'v-original', name: 'Original', sku: 'MNG-ORI-005', cost: 47, price: 95, resellerPrice: 76, minStock: 1500, gramsPerCup: 36 },
+      { id: 'v-balado', name: 'Balado', sku: 'MNG-BLD-001', cost: 52, price: 100, resellerPrice: 82, minStock: 1500 },
+      { id: 'v-jagung', name: 'Jagung Bakar', sku: 'MNG-JGB-002', cost: 50, price: 100, resellerPrice: 80, minStock: 1500 },
+      { id: 'v-keju', name: 'Keju', sku: 'MNG-KJU-003', cost: 56, price: 110, resellerPrice: 88, minStock: 1200 },
+      { id: 'v-pedas', name: 'Pedas Daun Jeruk', sku: 'MNG-PDJ-004', cost: 54, price: 110, resellerPrice: 86, minStock: 1200 },
+      { id: 'v-original', name: 'Original', sku: 'MNG-ORI-005', cost: 47, price: 95, resellerPrice: 76, minStock: 1500 },
     ],
   }],
   balances: [
@@ -30,9 +30,9 @@ export const seedData: AppData = {
   ],
   transfers: [], stockCounts: [], suppliers: [], receipts: [], returns: [],
   sales: [
-    { id: 'sale-1', locationId: ids.outlet, channel: 'offline', total: 1850000, payment: 'QRIS', createdAt: now(), items: [{ variantId: 'v-balado', quantity: 800, unit: 'gram' }] },
-    { id: 'sale-2', locationId: ids.warehouse, channel: 'online', total: 975000, payment: 'Transfer', createdAt: now(), items: [{ variantId: 'v-original', quantity: 500, unit: 'gram' }] },
-    { id: 'sale-3', locationId: ids.warehouse, channel: 'reseller', customer: 'Reseller Nisa', total: 620000, payment: 'Transfer', createdAt: now(), items: [{ variantId: 'v-keju', quantity: 700, unit: 'gram' }] },
+    { id: 'sale-1', locationId: ids.outlet, channel: 'offline', total: 1850000, payment: 'QRIS', createdAt: now(), items: [{ variantId: 'v-balado', quantity: 800, unit: 'gram', unitCost: 52, subtotal: 80000 }], status: 'completed' },
+    { id: 'sale-2', locationId: ids.warehouse, channel: 'online', total: 975000, payment: 'Transfer', createdAt: now(), items: [{ variantId: 'v-original', quantity: 500, unit: 'gram', unitCost: 47, subtotal: 47500 }], status: 'completed' },
+    { id: 'sale-3', locationId: ids.warehouse, channel: 'reseller', customer: 'Reseller Nisa', total: 620000, payment: 'Transfer', createdAt: now(), items: [{ variantId: 'v-keju', quantity: 700, unit: 'gram', unitCost: 56, subtotal: 77000 }], status: 'completed' },
   ],
   movements: [{ id: 'mov-seed', variantId: 'v-balado', locationId: ids.warehouse, type: 'Stok awal', quantity: 9000, note: 'Saldo awal sistem', user: 'Owner Meneng', createdAt: now() }],
 };

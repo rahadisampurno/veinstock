@@ -11,6 +11,8 @@ import nodemailer from 'nodemailer';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveUserScope, authorizeAction } from './rbac.mjs';
+import { syncStateToSQL, getStateFromSQL } from './sqlState.mjs';
 
 const app = express();
 const port = Number(process.env.PORT || 8787);
@@ -369,49 +371,102 @@ app.post('/api/register',async(req,res)=>{
 function requireAuth(req,res,next){ const token=req.headers.authorization?.replace(/^Bearer\s+/,''); if(!token)return res.status(401).json({message:'Silakan masuk kembali'}); try{req.auth=jwt.verify(token,jwtSecret);next()}catch{return res.status(401).json({message:'Sesi telah berakhir'})} }
 const same = (a,b) => JSON.stringify(a) === JSON.stringify(b);
 function validateRoleChange(previous,next,user){
-  if(!previous) return 'Data awal hanya dapat dibuat oleh Owner';
+  if(!previous) {
+    const auth = authorizeAction({ user, action: 'product.create' });
+    if (!auth.allowed) return 'Data awal hanya dapat dibuat oleh Owner/Admin';
+    return null;
+  }
+
   const role = user.role;
-  const appendOnly=(oldItems,newItems)=>oldItems.every(old=>newItems.some(item=>item.id===old.id&&same(item,old)));
-  
-  if (role === 'admin') {
-    if(!same(previous.business,next.business)) return 'Admin tidak dapat mengubah profil usaha';
-    if(!appendOnly(previous.sales,next.sales)||!appendOnly(previous.stockCounts,next.stockCounts)||!appendOnly(previous.movements,next.movements))return 'Riwayat lama tidak boleh diubah atau dihapus';
+  const oldSales = new Map(previous.sales.map(s => [s.id, s]));
+  const oldTransfers = new Map(previous.transfers.map(t => [t.id, t]));
+  const oldCounts = new Map(previous.stockCounts.map(c => [c.id, c]));
+  const oldReceipts = new Map((previous.receipts || []).map(r => [r.id, r]));
+
+  // Profile and Master Data
+  if (!same(previous.business, next.business) || !same(previous.locations, next.locations)) {
+    const auth = authorizeAction({ user, action: 'location.update' });
+    if (!auth.allowed) return auth.reason;
   }
   
-  if (role === 'warehouse') {
-    if(!same(previous.business,next.business)) return 'Staf Gudang tidak dapat mengubah profil usaha';
-    if(!same(previous.locations,next.locations)||!same(previous.products,next.products)) return 'Staf Gudang tidak dapat mengubah master data';
-    if(!same(previous.sales,next.sales)) return 'Staf Gudang tidak dapat mencatat penjualan';
-    if(!appendOnly(previous.stockCounts,next.stockCounts)||!appendOnly(previous.movements,next.movements))return 'Riwayat lama tidak boleh diubah atau dihapus';
+  if (!same(previous.products, next.products)) {
+    const auth = authorizeAction({ user, action: 'product.update' });
+    if (!auth.allowed) return auth.reason;
   }
-  
-  if (role === 'cashier') {
-    if(!same(previous.business,next.business)) return 'Kasir tidak dapat mengubah profil usaha';
-    if(!same(previous.locations,next.locations)||!same(previous.products,next.products)) return 'Kasir tidak dapat mengubah master data';
-    if(!same(previous.stockCounts,next.stockCounts)||!same(previous.movements,next.movements)||!same(previous.transfers,next.transfers)) return 'Kasir hanya dapat mencatat penjualan';
-    if(!appendOnly(previous.sales,next.sales))return 'Riwayat penjualan lama tidak boleh diubah atau dihapus';
+
+  // Sales validation
+  for (const s of next.sales) {
+    const old = oldSales.get(s.id);
+    if (!old) { // New sale
+      const auth = authorizeAction({ user, action: 'sale.create', locationId: s.locationId });
+      if (!auth.allowed) return auth.reason;
+    } else if (!same(s, old)) {
+      if (old.status !== 'voided' && s.status === 'voided') {
+        const auth = authorizeAction({ user, action: 'sale.void', locationId: s.locationId });
+        if (!auth.allowed) return auth.reason;
+      } else {
+        if (role !== 'owner' && role !== 'admin') return 'Penjualan yang sudah tersimpan tidak dapat diedit langsung. Gunakan pembatalan (Void).';
+      }
+    }
   }
-  
-  if (role === 'pic') {
-    if(!same(previous.business,next.business)) return 'PIC tidak dapat mengubah profil usaha';
-    if(!same(previous.locations,next.locations)||!same(previous.products,next.products)) return 'PIC tidak dapat mengubah master data';
-    const outletId=user.outlet_id||user.outletId;
-    if(!outletId) return 'Akun PIC belum terhubung ke outlet';
-    if(!appendOnly(previous.sales,next.sales)||!appendOnly(previous.stockCounts,next.stockCounts)||!appendOnly(previous.movements,next.movements))return 'Riwayat transaksi lama tidak boleh diubah atau dihapus';
-    const oldSales=new Set(previous.sales.map(item=>item.id));
-    if(next.sales.some(item=>!oldSales.has(item.id)&&item.locationId!==outletId)) return 'PIC hanya dapat mencatat penjualan outletnya';
-    const oldCounts=new Set(previous.stockCounts.map(item=>item.id));
-    if(next.stockCounts.some(item=>!oldCounts.has(item.id)&&item.locationId!==outletId)) return 'PIC hanya dapat melakukan opname outletnya';
-    const oldMovements=new Set(previous.movements.map(item=>item.id));
-    if(next.movements.some(item=>!oldMovements.has(item.id)&&item.locationId!==outletId))return 'PIC hanya dapat mencatat pergerakan stok outletnya';
-    const oldTransfers=new Map(previous.transfers.map(item=>[item.id,item]));
-    if(next.transfers.some(item=>!oldTransfers.has(item.id))) return 'Transfer baru hanya dapat dibuat oleh Owner';
-    for(const item of next.transfers){const old=oldTransfers.get(item.id);if(old&&!same(old,item)&&(old.toId!==outletId||old.status!=='sent'||item.status!=='received'))return 'PIC hanya dapat mengonfirmasi transfer ke outletnya';}
-    const changedBalances=next.balances.filter(item=>{const old=previous.balances.find(value=>value.locationId===item.locationId&&value.variantId===item.variantId);return !old||old.quantity!==item.quantity});
-    if(changedBalances.some(item=>item.locationId!==outletId)) return 'PIC hanya dapat mengubah stok outletnya';
+
+  // Stock In / Receipts
+  for (const r of (next.receipts || [])) {
+    if (!oldReceipts.has(r.id)) {
+      const auth = authorizeAction({ user, action: 'stock.in', locationId: r.locationId });
+      if (!auth.allowed) return auth.reason;
+    }
   }
+
+  // Stock Opname
+  for (const c of next.stockCounts) {
+    if (!oldCounts.has(c.id)) {
+      const auth = authorizeAction({ user, action: 'stock.opname', locationId: c.locationId });
+      if (!auth.allowed) return auth.reason;
+    }
+  }
+
+  // Transfers
+  for (const t of next.transfers) {
+    const old = oldTransfers.get(t.id);
+    if (!old) {
+      const auth = authorizeAction({ user, action: 'transfer.create', locationId: t.fromId });
+      if (!auth.allowed) return auth.reason;
+    } else if (!same(t, old)) {
+      if (old.status === 'draft' && t.status === 'sent') {
+        const auth = authorizeAction({ user, action: 'transfer.send', locationId: t.fromId });
+        if (!auth.allowed) return auth.reason;
+      } else if (old.status === 'sent' && t.status === 'received') {
+        const auth = authorizeAction({ user, action: 'transfer.receive', locationId: t.toId });
+        if (!auth.allowed) return auth.reason;
+      } else if (old.status !== 'cancelled' && t.status === 'cancelled') {
+        const auth = authorizeAction({ user, action: 'transfer.cancel', locationId: t.fromId });
+        if (!auth.allowed) return auth.reason;
+      }
+    }
+  }
+
+  // General strict checks for deletion
+  if (role !== 'owner' && role !== 'admin') {
+    if (next.sales.length < previous.sales.length || next.movements.length < previous.movements.length) {
+      return 'Penghapusan riwayat transaksi secara paksa hanya dapat dilakukan oleh Owner atau Admin.';
+    }
+    if (next.balances.length < previous.balances.length) {
+      return 'Saldo stok tidak boleh dihapus.';
+    }
+  }
+
+  // Location catch-all check on balances
+  const changedBalances = next.balances.filter(item => {
+    const old = previous.balances.find(value => value.locationId === item.locationId && value.variantId === item.variantId);
+    return !old || old.quantity !== item.quantity;
+  });
   
-  if(next.balances.length<previous.balances.length) return 'Saldo stok tidak boleh dihapus';
+  for (const b of changedBalances) {
+    const auth = authorizeAction({ user, action: 'stock.view', locationId: b.locationId }); 
+    if (!auth.allowed) return `Akses ditolak: Anda merubah stok di lokasi yang tidak memiliki izin (${b.locationId}).`;
+  }
+
   return null;
 }
 function validateState(data){
@@ -582,45 +637,113 @@ app.get('/api/health', async (_req, res) => {
 });
 app.get('/api/state', requireAuth, async (req, res) => {
   const conn = await db();
-  const actor=await currentUser(conn,req.auth);
-  if(!actor)return res.status(401).json({message:'Akun tidak aktif atau sesi tidak valid'});
-  if (!conn) {const state=demoStates.get(req.auth.org)||{version:0,data:null},users=demoUsers.filter(item=>item.organization_id===req.auth.org).map(safeUser).map(user=>({...state.data?.users?.find(item=>item.id===user.id),...user}));return res.json({...state,data:state.data?{...state.data,users}:null});}
-  const [rows] = await conn.execute('SELECT version, payload FROM app_state WHERE id=?', [req.auth.org]);
-  if (!rows.length) return res.json({ version: 0, data: null });
-  const [userRows]=await conn.execute('SELECT id,organization_id,name,email,role,outlet_id,active FROM users WHERE organization_id=? ORDER BY created_at',[req.auth.org]);
-  res.json({ version: Number(rows[0].version), data: {...rows[0].payload,users:userRows.map(safeUser).map(user=>({...rows[0].payload?.users?.find(item=>item.id===user.id),...user}))} });
+  const actor = await currentUser(conn, req.auth);
+  if (!actor) return res.status(401).json({ message: 'Akun tidak aktif atau sesi tidak valid' });
+  
+  const scope = resolveUserScope(actor);
+  const sanitize = (data) => {
+    if (!data) return data;
+    if (scope.scopeType === 'all') return data;
+    return {
+      ...data,
+      balances: (data.balances||[]).filter(b => scope.allowedLocationIds.includes(b.locationId)),
+      sales: (data.sales||[]).filter(s => scope.allowedLocationIds.includes(s.locationId)),
+      movements: (data.movements||[]).filter(m => scope.allowedLocationIds.includes(m.locationId)),
+      stockCounts: (data.stockCounts||[]).filter(sc => scope.allowedLocationIds.includes(sc.locationId)),
+      receipts: (data.receipts||[]).filter(r => scope.allowedLocationIds.includes(r.locationId)),
+      returns: (data.returns||[]).filter(r => scope.allowedLocationIds.includes(r.locationId)),
+      transfers: (data.transfers||[]).filter(t => scope.allowedLocationIds.includes(t.fromId) || scope.allowedLocationIds.includes(t.toId))
+    };
+  };
+
+  if (!conn) {
+    const state = demoStates.get(req.auth.org) || { version: 0, data: null };
+    const users = demoUsers.filter(item => item.organization_id === req.auth.org).map(safeUser).map(user => ({...state.data?.users?.find(item => item.id === user.id), ...user}));
+    return res.json({ ...state, data: state.data ? sanitize({ ...state.data, users }) : null });
+  }
+  
+  try {
+    const sqlState = await getStateFromSQL(conn, req.auth.org);
+    if (!sqlState.data) return res.json({ version: 0, data: null });
+    const [userRows] = await conn.execute('SELECT id, organization_id, name, email, role, outlet_id, active FROM users WHERE organization_id = ? ORDER BY created_at', [req.auth.org]);
+    const users = userRows.map(safeUser);
+    res.json({ version: sqlState.version, data: sanitize({ ...sqlState.data, users }) });
+  } catch (err) {
+    console.error('Failed to get SQL state:', err);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
 });
 app.put('/api/state', requireAuth, async (req, res) => {
   const { data, version = 0 } = req.body || {};
   if (!data) return res.status(400).json({ message: 'Data wajib diisi' });
-  const invalid=validateState(data);
-  if(invalid)return res.status(400).json({message:invalid});
+  const invalid = validateState(data);
+  if (invalid) return res.status(400).json({ message: invalid });
+  
   const conn = await db();
-  const actor=await currentUser(conn,req.auth);
-  if(!actor)return res.status(401).json({message:'Akun tidak aktif'});
-  if(actor.role==='finance')return res.status(403).json({message:'Akun Keuangan hanya memiliki akses baca'});
+  const actor = await currentUser(conn, req.auth);
+  if (!actor) return res.status(401).json({ message: 'Akun tidak aktif' });
+  if (actor.role === 'finance') return res.status(403).json({ message: 'Akun Keuangan hanya memiliki akses baca' });
+  
   if (!conn) {
-    const state=demoStates.get(req.auth.org)||{version:0,data:null};
-    const denied=actor.role!=='owner'&&actor.role!=='finance'&&validateRoleChange(state.data,data,actor);
-    if(denied)return res.status(403).json({message:denied});
-    if(Number(version)!==state.version)return res.status(409).json({message:'Data telah berubah di perangkat lain. Muat ulang sebelum menyimpan.'});
-    const nextVersion=state.version+1;demoStates.set(req.auth.org,{version:nextVersion,data});return res.json({version:nextVersion});
+    const state = demoStates.get(req.auth.org) || { version: 0, data: null };
+    const denied = actor.role !== 'owner' && actor.role !== 'finance' && validateRoleChange(state.data, data, actor);
+    if (denied) return res.status(403).json({ message: denied });
+    if (Number(version) !== state.version) return res.status(409).json({ message: 'Data telah berubah di perangkat lain. Muat ulang sebelum menyimpan.' });
+    const nextVersion = state.version + 1;
+    demoStates.set(req.auth.org, { version: nextVersion, data });
+    return res.json({ version: nextVersion });
   }
+
   const connection = await conn.getConnection();
   try {
     await connection.beginTransaction();
     const [rows] = await connection.execute('SELECT version FROM app_state WHERE id=? FOR UPDATE', [req.auth.org]);
-    if (rows.length && Number(rows[0].version) !== Number(version)) { await connection.rollback(); return res.status(409).json({ message: 'Data telah berubah di perangkat lain. Muat ulang sebelum menyimpan.' }); }
-    const [stateRows]=await connection.execute('SELECT payload FROM app_state WHERE id=?',[req.auth.org]);
-    const previous=stateRows[0]?.payload||null;
-    const denied=actor.role!=='owner'&&actor.role!=='finance'&&validateRoleChange(previous,data,actor);
-    if(denied){await connection.rollback();return res.status(403).json({message:denied});}
+    if (rows.length && Number(rows[0].version) !== Number(version)) { 
+      await connection.rollback(); 
+      return res.status(409).json({ message: 'Data telah berubah di perangkat lain. Muat ulang sebelum menyimpan.' }); 
+    }
+    
+    // Fetch previous state from SQL to validate role
+    const sqlState = await getStateFromSQL(connection, req.auth.org);
+    const previous = sqlState.data || null;
+    const denied = actor.role !== 'owner' && actor.role !== 'finance' && validateRoleChange(previous, data, actor);
+    
+    if (denied) {
+      await connection.rollback();
+      return res.status(403).json({ message: denied });
+    }
+    
+    // Mencegah user dengan scope terbatas (seperti staf gudang) 
+    // menimpa data yang tidak mereka lihat dengan array yang sudah dipangkas.
+    if (previous) {
+      const mergeArrays = (oldArr, newArr) => {
+         const map = new Map();
+         oldArr.forEach(i => map.set(i.id, i));
+         newArr.forEach(i => map.set(i.id, i));
+         return Array.from(map.values());
+      };
+      data.receipts = mergeArrays(previous.receipts || [], data.receipts || []);
+      data.returns = mergeArrays(previous.returns || [], data.returns || []);
+      data.suppliers = mergeArrays(previous.suppliers || [], data.suppliers || []);
+    }
+    
     const next = Number(version) + 1;
-    await connection.execute('INSERT INTO app_state (id,version,payload) VALUES (?,?,?) ON DUPLICATE KEY UPDATE version=VALUES(version), payload=VALUES(payload)', [req.auth.org, next, JSON.stringify(data)]);
+    
+    // Legacy blob save (for backwards compatibility/raw dump)
+    await connection.execute('INSERT INTO app_state (id, version, payload) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE version=VALUES(version), payload=VALUES(payload)', [req.auth.org, next, JSON.stringify(data)]);
+    
+    // Sync into SQL Relational schema
+    await syncStateToSQL(connection, req.auth.org, data);
+
     await connection.commit();
     res.json({ version: next });
-  } catch (error) { await connection.rollback(); res.status(500).json({ message: 'Gagal menyimpan data' }); }
-  finally { connection.release(); }
+  } catch (error) { 
+    await connection.rollback(); 
+    console.error('Failed to put SQL state:', error);
+    res.status(500).json({ message: 'Gagal menyimpan data' }); 
+  } finally { 
+    connection.release(); 
+  }
 });
 
 app.use((error,_req,res,next)=>{

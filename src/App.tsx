@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { resolveUserScope, authorizeAction, type ActionType } from "./utils/rbac";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
 import {
   Archive,
@@ -12,10 +13,9 @@ import {
   Download,
   History,
   LayoutDashboard,
-  LogOut,
+  KeyRound,
   Menu,
   PackagePlus,
-
   Plus,
   RotateCcw,
   Search,
@@ -26,7 +26,6 @@ import {
   Users,
   Eye,
   EyeOff,
-  KeyRound,
   Warehouse,
   X,
   LifeBuoy,
@@ -36,6 +35,9 @@ import {
   ChevronRight,
   TrendingUp
 } from "lucide-react";
+import { sections, popularArticles } from "./data/helpData";
+import { downloadExcel } from "./utils/exportExcel";
+import { downloadPDF } from "./utils/exportPdf";
 import type {
   AppData,
   Channel,
@@ -73,10 +75,10 @@ type Page =
   | "users"
   | "help"
   | "analytics";
-const money = (n: number) => `Rp ${Math.round(n).toLocaleString("id-ID")}`;
-const qty = (n: number, unit?: StockUnit) =>
-  `${n.toLocaleString("id-ID")} ${unit === "pcs" ? "pcs" : unit || "unit"}`;
-const isPositiveNumber = (value: number) => Number.isFinite(value) && value > 0;
+const money = (n?: number | null) => `Rp ${Math.round(n || 0).toLocaleString("id-ID")}`;
+const qty = (n?: number | null, unit?: StockUnit) =>
+  `${(n || 0).toLocaleString("id-ID")} ${unit === "pcs" ? "pcs" : unit || "unit"}`;
+const isPositiveNumber = (value?: number | null) => typeof value === 'number' && Number.isFinite(value) && value > 0;
 const minimumFor = (variant: Variant | undefined, locationId: string) =>
   variant?.minStockByLocation?.[locationId] ?? variant?.minStock ?? 0;
 const savedSessionKey = "veinstock_saved_session";
@@ -110,8 +112,10 @@ function App() {
   const [token, setToken] = useState<string | null>(() => readSession()?.token || null);
   const [hydrated, setHydrated] = useState(false);
   const [page, setPage] = useState<Page>("dashboard");
+  const [helpSection, setHelpSection] = useState<string | null>(null);
   const [sidebar, setSidebar] = useState(false);
   const [desktopSidebar, setDesktopSidebar] = useState(true);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [modal, setModal] = useState<string | null>(null);
   const [toast, setToast] = useState("");
   const [confirm, setConfirm] = useState<{ message: string, onConfirm: () => void } | null>(null);
@@ -247,6 +251,11 @@ function App() {
     setToast(message);
     window.setTimeout(() => setToast(""), 3000);
   };
+  const checkAuth = (action: ActionType, locationId?: string) => {
+    const auth = authorizeAction(user, action, locationId);
+    if (!auth.allowed) notify(auth.reason || "Akses ditolak");
+    return auth.allowed;
+  };
   const authenticate = async (endpoint: string, payload: object, remember = false) => {
     const response = await fetch(endpoint, {
       method: "POST",
@@ -367,7 +376,7 @@ function App() {
         movements = d.movements;
       if (kind === "sale") {
         const item = d.sales.find((x: any) => x.id === id);
-        if (!item || item.status === "cancelled") return d;
+        if (!item || item.status === "voided") return d;
         item.items.forEach((line: any) => {
           balances = adjustBalance(
             balances,
@@ -379,7 +388,7 @@ function App() {
             movement(
               line.variantId,
               item.locationId,
-              "Pembatalan penjualan",
+              "Pembatalan Penjualan",
               line.quantity,
               reason,
               user?.name || "Pengguna",
@@ -395,7 +404,7 @@ function App() {
             x.id === id
               ? {
                   ...x,
-                  status: "cancelled",
+                  status: "voided",
                   cancelReason: reason,
                   cancelledAt: new Date().toISOString(),
                 }
@@ -577,6 +586,8 @@ function App() {
     setModal(null);
     notify("Transaksi dibatalkan. Histori dan alasan koreksi tetap tersimpan.");
   };
+
+  const scope = useMemo(() => resolveUserScope(user), [user]);
   if (!user || !token) return <Login onLogin={login} onRegister={register} />;
   if (!hydrated)
     return (
@@ -607,8 +618,8 @@ function App() {
         ["receipts", "Stok Masuk", ArrowDownToLine],
         ["stock", "Stok per Lokasi", Boxes],
         ["transfers", "Transfer Stok", ArrowRightLeft],
-        ["opname", "Stock Opname", ClipboardCheck],
-        ["history", "Histori Stok", History]
+        ["opname", "Stok Opname", ClipboardCheck],
+        ["history", "Riwayat Stok", History]
       ]
     },
     {
@@ -651,12 +662,17 @@ function App() {
     help: "Pusat Bantuan VEINSTOCK",
   };
   const allowed = (p: Page) => {
-    if (user.role === "owner") return true;
-    if (user.role === "admin") return !["users", "business", "analytics"].includes(p);
-    if (user.role === "warehouse") return ["dashboard", "receipts", "stock", "transfers", "opname", "history", "returns"].includes(p);
-    if (user.role === "cashier") return ["dashboard", "sales", "stock"].includes(p);
-    if (user.role === "finance") return ["dashboard", "analytics", "reports"].includes(p);
-    return ["dashboard", "stock", "transfers", "sales", "opname", "reports", "history"].includes(p); // pic
+    if (p === "dashboard" || p === "help") return true;
+    if (p === "business") return scope.role === "owner";
+    if (p === "users") return scope.permissions.has("user.view");
+    if (p === "locations" || p === "products") return scope.permissions.has("location.view") || scope.permissions.has("product.view");
+    if (p === "receipts" || p === "returns") return scope.permissions.has("stock.in") || scope.permissions.has("stock.out");
+    if (p === "sales") return scope.permissions.has("sale.view");
+    if (p === "stock" || p === "history") return scope.permissions.has("stock.view");
+    if (p === "transfers") return scope.permissions.has("transfer.create") || scope.permissions.has("transfer.send") || scope.permissions.has("transfer.receive");
+    if (p === "opname") return scope.permissions.has("stock.opname");
+    if (p === "reports" || p === "analytics") return scope.permissions.has("report.view");
+    return false;
   };
 
   return (
@@ -719,23 +735,7 @@ function App() {
             );
           })}
         </nav>
-        <div className="sidebar-user">
-          <div className="avatar">{user.avatarUrl||(user.role==='owner'&&data.business?.logoUrl)?<img src={user.avatarUrl||data.business?.logoUrl} alt={user.name}/>:user.name.slice(0, 2).toUpperCase()}</div>
-          <div>
-            <b>{user.name}</b>
-            <small>
-              {user.role === "owner" ? "Owner" : user.role === "admin" ? "Admin Cabang" : user.role === "warehouse" ? "Staf Gudang" : user.role === "cashier" ? "Kasir" : user.role === "pic" ? "PIC Outlet" : "Keuangan"}
-            </small>
-          </div>
-          <div className="sidebar-user-actions">
-            <button className="icon-btn" aria-label="Ganti Password" title="Ganti Password" onClick={() => setModal("change-password")}>
-              <KeyRound size={18} />
-            </button>
-            <button className="icon-btn" aria-label="Keluar" onClick={logout}>
-              <LogOut />
-            </button>
-          </div>
-        </div>
+
         <button className="sidebar-tab-toggle" onClick={() => setDesktopSidebar(!desktopSidebar)}>
           {desktopSidebar ? <ChevronLeft size={16} /> : <ChevronRight size={16} />}
         </button>
@@ -775,6 +775,32 @@ function App() {
                 })}
               </b>
             </div>
+            <div 
+              className="header-user" 
+              tabIndex={0} 
+              onBlur={(e) => {
+                if (!e.currentTarget.contains(e.relatedTarget)) setUserMenuOpen(false);
+              }}
+              style={{ position: 'relative', cursor: 'pointer', outline: 'none' }}
+            >
+              <div className="avatar">{user.avatarUrl||(user.role==='owner'&&data.business?.logoUrl)?<img src={user.avatarUrl||data.business?.logoUrl} alt={user.name}/>:user.name.slice(0, 2).toUpperCase()}</div>
+              <div onClick={() => setUserMenuOpen(!userMenuOpen)}>
+                <b style={{fontWeight: 700}}>Hai, {user.name}</b>
+              </div>
+              <button className="icon-btn" aria-label="Menu Pengguna" onClick={() => setUserMenuOpen(!userMenuOpen)}>
+                <Menu size={18} />
+              </button>
+              
+              {userMenuOpen && (
+                <div className="user-dropdown">
+                  {user.role === 'owner' && (
+                    <button onClick={() => { setModal('business'); setUserMenuOpen(false); }}>Edit Profile Usaha</button>
+                  )}
+                  <button onClick={() => { setModal('change-password'); setUserMenuOpen(false); }}>Ganti Password</button>
+                  <button onClick={() => { logout(); setUserMenuOpen(false); }} style={{color: 'var(--red)'}}>Logout</button>
+                </div>
+              )}
+            </div>
           </div>
         </header>
         <div className="content">
@@ -793,17 +819,15 @@ function App() {
           {page === "products" && (
             <Products
               data={data}
-              open={() => setModal("product")}
-              edit={(productId: string) =>
-                setModal(`product:${productId}`)
-              }
+              open={() => checkAuth('product.create') && setModal("product")}
+              edit={(productId: string) => checkAuth('product.update') && setModal(`product:${productId}`)}
             />
           )}
           {page === "locations" && (
             <LocationsPage
               data={data}
-              open={() => setModal("location")}
-              edit={(id: string) => setModal(`location:${id}`)}
+              open={() => checkAuth('location.create') && setModal("location")}
+              edit={(id: string) => checkAuth('location.update') && setModal(`location:${id}`)}
             />
           )}
           {page === "receipts" && (
@@ -812,17 +836,12 @@ function App() {
               variants={variantMap}
               locations={locationMap}
               open={() => {
-                if (
-                  !data.products.some(
-                    (p) =>
-                      p.active && p.variants.some((v) => v.active !== false),
-                  )
-                )
+                if (!data.products.some((p) => p.active && p.variants.some((v) => v.active !== false)))
                   return notify("Tambahkan produk aktif terlebih dahulu");
-                setModal("receipt");
+                if (checkAuth('stock.in')) setModal("receipt");
               }}
-              edit={(id: string) => setModal(`receipt:${id}`)}
-              cancel={(id: string) => setModal(`cancel:receipt:${id}`)}
+              edit={(id: string) => checkAuth('stock.in') && setModal(`receipt:${id}`)}
+              cancel={(id: string) => checkAuth('stock.in') && setModal(`cancel:receipt:${id}`)}
             />
           )}
           {page === "stock" && (
@@ -844,22 +863,16 @@ function App() {
               outletId={user.outletId}
               open={() => {
                 if (data.locations.filter((l) => l.active).length < 2)
-                  return notify(
-                    "Tambahkan minimal dua lokasi aktif terlebih dahulu",
-                  );
-                if (
-                  !data.products.some(
-                    (p) =>
-                      p.active && p.variants.some((v) => v.active !== false),
-                  )
-                )
+                  return notify("Tambahkan minimal dua lokasi aktif terlebih dahulu");
+                if (!data.products.some((p) => p.active && p.variants.some((v) => v.active !== false)))
                   return notify("Tambahkan produk aktif terlebih dahulu");
-                setModal("transfer");
+                if (checkAuth('transfer.create')) setModal("transfer");
               }}
               notify={notify}
               user={user.name}
-              cancel={(id: string) => setModal(`cancel:transfer:${id}`)}
+              cancel={(id: string) => checkAuth('transfer.cancel') && setModal(`cancel:transfer:${id}`)}
               detail={(id: string) => setModal(`transfer-detail:${id}`)}
+              helpAction={() => { setHelpSection("transfer"); setPage("help"); }}
             />
           )}
           {page === "sales" && (
@@ -869,26 +882,14 @@ function App() {
               locations={locationMap}
               role={user.role}
               outletId={user.outletId}
-              open={
-                user.role === "finance"
-                  ? undefined
-                  : () => {
-                      if (!data.locations.some((l) => l.active))
-                        return notify("Tambahkan lokasi aktif terlebih dahulu");
-                      if (
-                        !data.products.some(
-                          (p) =>
-                            p.active &&
-                            p.variants.some((v) => v.active !== false),
-                        )
-                      )
-                        return notify("Tambahkan produk aktif terlebih dahulu");
-                      setModal("sale");
-                    }
-              }
-              cancel={(id: string) => setModal(`cancel:sale:${id}`)}
+              open={() => {
+                if (!data.locations.some((l) => l.active)) return notify("Tambahkan lokasi aktif terlebih dahulu");
+                if (!data.products.some((p) => p.active && p.variants.some((v) => v.active !== false))) return notify("Tambahkan produk aktif terlebih dahulu");
+                if (checkAuth('sale.create')) setModal("sale");
+              }}
+              cancel={(id: string) => checkAuth('sale.void') && setModal(`cancel:sale:${id}`)}
               detail={(id: string) => setModal(`sale-detail:${id}`)}
-              canCancel={user.role === "owner"}
+              canCancel={true}
             />
           )}
           {page === "returns" && (
@@ -899,16 +900,11 @@ function App() {
               role={user.role}
               outletId={user.outletId}
               open={() => {
-                if (
-                  !data.products.some(
-                    (p) =>
-                      p.active && p.variants.some((v) => v.active !== false),
-                  )
-                )
+                if (!data.products.some((p) => p.active && p.variants.some((v) => v.active !== false)))
                   return notify("Tambahkan produk aktif terlebih dahulu");
-                setModal("return");
+                if (checkAuth('stock.in')) setModal("return");
               }}
-              cancel={(id: string) => setModal(`cancel:return:${id}`)}
+              cancel={(id: string) => checkAuth('stock.in') && setModal(`cancel:return:${id}`)}
             />
           )}
           {page === "opname" && (
@@ -920,22 +916,15 @@ function App() {
               role={user.role}
               outletId={user.outletId}
               open={() => {
-                if (!data.locations.some((l) => l.active))
-                  return notify("Tambahkan lokasi aktif terlebih dahulu");
-                if (
-                  !data.products.some(
-                    (p) =>
-                      p.active && p.variants.some((v) => v.active !== false),
-                  )
-                )
-                  return notify("Tambahkan produk aktif terlebih dahulu");
-                setModal("opname");
+                if (!data.locations.some((l) => l.active)) return notify("Tambahkan lokasi aktif terlebih dahulu");
+                if (!data.products.some((p) => p.active && p.variants.some((v) => v.active !== false))) return notify("Tambahkan produk aktif terlebih dahulu");
+                if (checkAuth('stock.opname')) setModal("opname");
               }}
               notify={notify}
               user={user.name}
-              edit={(id: string) => setModal(`opname:${id}`)}
-              cancel={(id: string) => setModal(`cancel:opname:${id}`)}
-              canCorrect={user.role === "owner"}
+              edit={(id: string) => checkAuth('stock.opname') && setModal(`opname:${id}`)}
+              cancel={(id: string) => checkAuth('stock.opname') && setModal(`cancel:opname:${id}`)}
+              canCorrect={true}
             />
           )}
           {page === "history" && (
@@ -968,14 +957,14 @@ function App() {
               edit={(id: string) => setModal(`user:${id}`)}
             />
           )}
-          {page === "help" && <HelpPage />}
-          {page === "analytics" && <AnalyticsPage data={data} />}
+          {page === "help" && <HelpPage initialSection={helpSection} clearInitialSection={() => setHelpSection(null)} />}
+          {page === "analytics" && <AnalyticsPage data={data} setData={setData} />}
         </div>
       </main>
       {modal === "product" && (
         <ProductModal
           user={user}
-          locations={visibleLocations}
+              locations={data.locations.filter((loc: any) => user?.role === "owner" || user?.role === "admin" || loc.id === ((user as any)?.outlet_id || user?.outletId))}
           close={() => setModal(null)}
           uploadImage={uploadImage}
           save={(p: Product, initialStocks?: any[]) => {
@@ -985,8 +974,10 @@ function App() {
               
               if (initialStocks && initialStocks.length > 0) {
                 initialStocks.forEach(st => {
-                  newBalances.push({ locationId: st.locationId, variantId: st.variantId, quantity: st.quantity });
-                  newMovements.push(movement(st.variantId, st.locationId, "INITIAL_BALANCE", st.quantity, "Saldo awal saat pembuatan produk", user?.name || "Sistem"));
+                  if (!newBalances.find(b => b.locationId === st.locationId && b.variantId === st.variantId)) {
+                    newBalances.push({ locationId: st.locationId, variantId: st.variantId, quantity: st.quantity });
+                    newMovements.push(movement(st.variantId, st.locationId, "INITIAL_BALANCE", st.quantity, "Saldo awal saat pembuatan produk", user?.name || "Sistem"));
+                  }
                 });
               }
               
@@ -1004,7 +995,7 @@ function App() {
           return product ? (
             <ProductModal
               user={user}
-              locations={visibleLocations}
+                  locations={data.locations.filter((loc: any) => user?.role === "owner" || user?.role === "admin" || loc.id === ((user as any)?.outlet_id || user?.outletId))}
               product={product}
               close={() => setModal(null)}
               uploadImage={uploadImage}
@@ -1116,48 +1107,66 @@ function App() {
               receipt={receipt}
               close={() => setModal(null)}
               save={(form: any) => {
-                if (!isPositiveNumber(form.quantity) || !Number.isFinite(form.unitCost) || form.unitCost < 0)
-                  return notify("Jumlah dan harga modal stok masuk harus valid");
+                if (!form.items || form.items.length === 0) return notify("Pilih minimal satu varian");
+                for (const item of form.items) {
+                   if (!isPositiveNumber(item.quantity) || !Number.isFinite(item.unitCost) || item.unitCost < 0)
+                     return notify("Jumlah dan harga modal stok masuk harus valid");
+                }
+
                 setData((d) => {
                   let b = d.balances;
+                  let newReceipts = [...(d.receipts || [])];
+                  let newMovements = [...(d.movements || [])];
+
                   if (receipt) {
                     b = adjustBalance(b, receipt.locationId, receipt.variantId, -receipt.quantity);
                   }
-                  b = adjustBalance(b, form.locationId, form.variantId, form.quantity);
+
+                  form.items.forEach((item: any) => {
+                    b = adjustBalance(b, form.locationId, item.variantId, item.quantity);
+
+                    if (receipt) {
+                      newReceipts = newReceipts.map((r: any) => r.id === receipt.id ? { ...r, ...form, variantId: item.variantId, quantity: item.quantity, unitCost: item.unitCost, createdBy: user?.name || r.createdBy } : r);
+                      newMovements = [
+                        movement(item.variantId, form.locationId, "Koreksi Stok Masuk", item.quantity, "Revisi transaksi", user?.name || "Sistem"),
+                        movement(receipt.variantId, receipt.locationId, "Koreksi Stok Masuk", -receipt.quantity, "Revisi transaksi (Pembatalan lama)", user?.name || "Sistem"),
+                        ...newMovements
+                      ];
+                    } else {
+                      newReceipts = [
+                        {
+                          id: newId("rcv"),
+                          ...form,
+                          variantId: item.variantId,
+                          quantity: item.quantity,
+                          unitCost: item.unitCost,
+                          status: "completed",
+                          createdBy: user?.name || "Sistem",
+                          createdAt: new Date().toISOString(),
+                        },
+                        ...newReceipts
+                      ];
+                      newMovements = [
+                        movement(
+                          item.variantId,
+                          form.locationId,
+                          form.sourceType === "production"
+                            ? "Hasil produksi"
+                            : form.supplierName || "Supplier",
+                          item.quantity,
+                          "",
+                          user?.name || "Sistem",
+                        ),
+                        ...newMovements
+                      ];
+                    }
+                  });
 
                   return {
                     ...d,
                     balances: b,
-                    receipts: receipt
-                      ? (d.receipts || []).map((r: any) => r.id === receipt.id ? { ...r, ...form } : r)
-                      : [
-                          {
-                            id: newId("rcv"),
-                            ...form,
-                            status: "completed",
-                            createdAt: new Date().toISOString(),
-                          },
-                          ...(d.receipts || []),
-                        ],
-                    movements: receipt
-                      ? [
-                          movement(form.variantId, form.locationId, "Koreksi Stok Masuk", form.quantity, "Revisi transaksi", user?.name || "Sistem"),
-                          movement(receipt.variantId, receipt.locationId, "Koreksi Stok Masuk", -receipt.quantity, "Revisi transaksi (Pembatalan lama)", user?.name || "Sistem"),
-                          ...(d.movements || [])
-                        ]
-                      : [
-                          movement(
-                            form.variantId,
-                            form.locationId,
-                            form.sourceType === "production"
-                              ? "Hasil produksi"
-                              : form.supplierName || "Supplier",
-                            form.quantity,
-                            "",
-                            user?.name || "Sistem",
-                          ),
-                          ...(d.movements || []),
-                        ],
+                    receipts: newReceipts,
+                    movements: newMovements,
                   };
                 });
                 setModal(null);
@@ -1172,46 +1181,46 @@ function App() {
           data={data}
           close={() => setModal(null)}
           save={(form: any) => {
-            if (!isPositiveNumber(form.quantity) || !form.reason?.trim())
-              return notify("Jumlah dan alasan retur harus diisi dengan benar");
-            const delta =
-              form.type === "customer" ? form.quantity : -form.quantity;
-            if (
-              delta < 0 &&
-              getBalance(data.balances, form.locationId, form.variantId) <
-                form.quantity
-            )
-              return notify("Stok tidak cukup untuk retur ke supplier");
-            setData((d) => ({
-              ...d,
-              balances: adjustBalance(
-                d.balances,
-                form.locationId,
-                form.variantId,
-                delta,
-              ),
-              returns: [
-                {
+            if (!form.reason?.trim() || form.items.length === 0)
+              return notify("Pilih produk dan isi alasan retur dengan benar");
+            
+            let balances = [...data.balances];
+            let newReturns = [...(data.returns || [])];
+            let newMovements = [...data.movements];
+
+            for (const item of form.items) {
+              const delta = form.type === "customer" ? item.quantity : -item.quantity;
+              if (delta < 0 && getBalance(balances, form.locationId, item.variantId) < item.quantity) {
+                 return notify(`Stok tidak cukup untuk produk dengan ID varian ${item.variantId}`);
+              }
+              balances = adjustBalance(balances, form.locationId, item.variantId, delta);
+              newReturns.unshift({
                   id: newId("ret"),
-                  ...form,
+                  type: form.type,
+                  locationId: form.locationId,
+                  variantId: item.variantId,
+                  quantity: item.quantity,
+                  reason: form.reason,
                   status: "completed",
                   createdAt: new Date().toISOString(),
-                },
-                ...(d.returns || []),
-              ],
-              movements: [
+              });
+              newMovements.unshift(
                 movement(
-                  form.variantId,
+                  item.variantId,
                   form.locationId,
-                  form.type === "customer"
-                    ? "Retur pelanggan"
-                    : "Retur ke supplier",
+                  form.type === "customer" ? "Retur pelanggan" : "Retur ke supplier",
                   delta,
                   form.reason,
                   user.name,
-                ),
-                ...d.movements,
-              ],
+                )
+              );
+            }
+
+            setData((d) => ({
+              ...d,
+              balances,
+              returns: newReturns,
+              movements: newMovements,
             }));
             setModal(null);
             notify("Retur berhasil dicatat dan saldo stok telah diperbarui");
@@ -1270,37 +1279,52 @@ function App() {
           data={data}
           close={() => setModal(null)}
           fixedFrom={user.role === "pic" ? user.outletId : undefined}
-          save={(f: string, t: string, v: string, q: number) => {
-            if (!isPositiveNumber(q) || f === t)
-              return notify("Pilih lokasi berbeda dan jumlah transfer yang valid");
-            if (getBalance(data.balances, f, v) < q)
-              return notify("Stok lokasi asal tidak mencukupi");
-            setData((d) => ({
-              ...d,
-              balances: adjustBalance(d.balances, f, v, -q),
-              transfers: [
-                {
+          save={(f: string, t: string, items: { variantId: string, quantity: number }[]) => {
+            if (f === t || items.length === 0)
+              return notify("Pilih lokasi berbeda dan minimal satu produk");
+            
+            let balances = [...data.balances];
+            let newTransfers = [...data.transfers];
+            let newMovements = [...data.movements];
+
+            for (const item of items) {
+               const currentStock = getBalance(balances, f, item.variantId);
+               if (currentStock < item.quantity) {
+                 const policy = data.business?.negativeStockPolicy || 'BLOCK';
+                 if (policy === 'BLOCK') {
+                   return notify(`Stok lokasi asal tidak mencukupi untuk varian ID ${item.variantId}`);
+                 }
+                 if (policy === 'WARN' && !window.confirm(`Peringatan: Stok lokasi asal tidak mencukupi untuk varian ID ${item.variantId} (Tersedia: ${currentStock}). Lanjutkan transfer?`)) {
+                   return;
+                 }
+               }
+               balances = adjustBalance(balances, f, item.variantId, -item.quantity);
+               newTransfers.unshift({
                   id: newId("trf"),
                   fromId: f,
                   toId: t,
-                  variantId: v,
-                  quantity: q,
+                  variantId: item.variantId,
+                  quantity: item.quantity,
                   status: "sent",
                   createdAt: new Date().toISOString(),
-                },
-                ...d.transfers,
-              ],
-              movements: [
-                movement(
-                  v,
-                  f,
-                  "Transfer keluar",
-                  -q,
-                  `Dikirim ke ${locationMap[t].name}`,
-                  user.name,
-                ),
-                ...d.movements,
-              ],
+               });
+               newMovements.unshift(
+                 movement(
+                   item.variantId,
+                   f,
+                   "Transfer keluar",
+                   -item.quantity,
+                   `Dikirim ke ${locationMap[t].name}`,
+                   user.name,
+                 )
+               );
+            }
+
+            setData((d) => ({
+              ...d,
+              balances,
+              transfers: newTransfers,
+              movements: newMovements,
             }));
             setModal(null);
             notify("Transfer dibuat, menunggu konfirmasi outlet");
@@ -1315,49 +1339,72 @@ function App() {
           save={(
             loc: string,
             channel: Channel,
-            v: string,
-            amount: number,
-            payment: string,
-            cups?: number,
+            cart: Array<{variantId: string, quantity: number}>,
+            payment: string
           ) => {
-            const variant = variantMap[v];
-            if (!variant || !isPositiveNumber(amount))
-              return notify("Jumlah penjualan harus lebih dari nol");
-            if (getBalance(data.balances, loc, v) < amount)
-              return notify("Stok tidak mencukupi");
-            const price =
-              channel === "reseller" ? variant.resellerPrice : variant.price;
+            const policy = data.business?.negativeStockPolicy || 'BLOCK';
+            let totalAmount = 0;
+            const itemsToSave: any[] = [];
+            let newBalances = data.balances;
+            const newMovements: any[] = [];
+            
+            for (const c of cart) {
+              const variant = variantMap[c.variantId];
+              if (!variant || !isPositiveNumber(c.quantity)) continue;
+              
+              const currentStock = getBalance(data.balances, loc, c.variantId);
+              if (currentStock < c.quantity) {
+                if (policy === 'BLOCK') {
+                  return notify(`Transaksi ditolak: Stok ${variant.productName} ${variant.name} tidak mencukupi. Tersedia ${currentStock} ${variant.unit}.`);
+                }
+                if (policy === 'WARN' && !window.confirm(`Peringatan: Stok ${variant.productName} ${variant.name} tidak mencukupi (Tersedia: ${currentStock} ${variant.unit}). Lanjutkan transaksi?`)) {
+                  return;
+                }
+              }
+              
+              const price = channel === "reseller" ? variant.resellerPrice : variant.price;
+              totalAmount += c.quantity * price;
+              
+              newBalances = adjustBalance(newBalances, loc, c.variantId, -c.quantity);
+              itemsToSave.push({
+                variantId: c.variantId,
+                quantity: c.quantity,
+                unit: variant.unit,
+                unitCost: variant.cost || 0,
+                subtotal: c.quantity * (variant.cost || 0),
+              });
+              
+              newMovements.push(
+                movement(
+                  c.variantId,
+                  loc,
+                  `Penjualan ${channel}`,
+                  -c.quantity,
+                  `${c.quantity} ${variant.unit}`,
+                  user.name
+                )
+              );
+            }
+            
+            if (itemsToSave.length === 0) return notify("Tidak ada produk valid di keranjang");
+
             setData((d) => ({
               ...d,
-              balances: adjustBalance(d.balances, loc, v, -amount),
+              balances: newBalances,
               sales: [
                 {
                   id: newId("sale"),
                   locationId: loc,
                   channel,
-                  total: amount * price,
+                  total: totalAmount,
                   payment,
                   createdAt: new Date().toISOString(),
-                  items: [
-                    {
-                      variantId: v,
-                      quantity: amount,
-                      unit: variant.unit,
-                      cups,
-                    },
-                  ],
+                  items: itemsToSave,
                 },
                 ...(d.sales || []),
               ],
               movements: [
-                movement(
-                  v,
-                  loc,
-                  `Penjualan ${channel}`,
-                  -amount,
-                  cups ? `${cups} gelas` : `${amount} ${variant.unit}`,
-                  user.name,
-                ),
+                ...newMovements,
                 ...d.movements,
               ],
             }));
@@ -1376,22 +1423,22 @@ function App() {
           }
           fixedLocation={user.role === "pic" ? user.outletId : undefined}
           close={() => setModal(null)}
-          save={(loc: string, v: string, actual: number, reason: string) => {
-            if (!Number.isFinite(actual) || actual < 0 || !reason.trim())
+          save={(loc: string, items: { variantId: string, actualQty: number, reason: string }[]) => {
+            if (items.length === 0)
               return notify("Isi stok fisik dan alasan opname dengan benar");
+            
             const isEdit = modal.includes(":");
             if (isEdit) {
               const id = modal.split(":")[1];
               const oldItem = data.stockCounts.find((x: any) => x.id === id);
               if (!oldItem) return;
+              const item = items[0]; // when editing, we only edit one item
               setData((d) => {
-                // Revert old effect
                 const revertedBalances = adjustBalance(d.balances, oldItem.locationId, oldItem.variantId, -oldItem.difference);
                 
-                // Apply new effect
-                const system = getBalance(revertedBalances, loc, v);
-                const newDiff = actual - system;
-                const finalBalances = adjustBalance(revertedBalances, loc, v, newDiff);
+                const system = getBalance(revertedBalances, loc, item.variantId);
+                const newDiff = item.actualQty - system;
+                const finalBalances = adjustBalance(revertedBalances, loc, item.variantId, newDiff);
 
                 return {
                   ...d,
@@ -1401,18 +1448,19 @@ function App() {
                       ? {
                           ...x,
                           locationId: loc,
-                          variantId: v,
+                          variantId: item.variantId,
                           systemQty: system,
-                          actualQty: actual,
+                          actualQty: item.actualQty,
                           difference: newDiff,
-                          reason,
+                          reason: item.reason,
+                          createdBy: user.name,
                           updatedAt: new Date().toISOString(),
                         }
                       : x,
                   ),
                   movements: [
-                    movement(v, loc, "Koreksi opname (Update)", newDiff, reason, user.name),
-                    movement(oldItem.variantId, oldItem.locationId, "Reversi update opname", -oldItem.difference, reason, user.name),
+                    movement(item.variantId, loc, "Koreksi opname (Update)", newDiff, item.reason, user.name),
+                    movement(oldItem.variantId, oldItem.locationId, "Reversi update opname", -oldItem.difference, item.reason, user.name),
                     ...d.movements,
                   ],
                 };
@@ -1420,28 +1468,36 @@ function App() {
               setModal(null);
               notify("Stock opname berhasil diperbarui");
             } else {
-              const system = getBalance(data.balances, loc, v),
-                diff = actual - system;
-              setData((d) => ({
-                ...d,
-                balances: adjustBalance(d.balances, loc, v, diff),
-                stockCounts: [
-                  {
+              let balances = [...data.balances];
+              let newStockCounts = [...(data.stockCounts || [])];
+              let newMovements = [...data.movements];
+
+              for (const item of items) {
+                const system = getBalance(balances, loc, item.variantId);
+                const diff = item.actualQty - system;
+                
+                balances = adjustBalance(balances, loc, item.variantId, diff);
+                newStockCounts.unshift({
                     id: newId("opn"),
                     locationId: loc,
-                    variantId: v,
+                    variantId: item.variantId,
                     systemQty: system,
-                    actualQty: actual,
+                    actualQty: item.actualQty,
                     difference: diff,
-                    reason,
+                    reason: item.reason,
+                    createdBy: user.name,
                     createdAt: new Date().toISOString(),
-                  },
-                  ...(d.stockCounts || []),
-                ],
-                movements: [
-                  movement(v, loc, "Koreksi opname", diff, reason, user.name),
-                  ...d.movements,
-                ],
+                });
+                newMovements.unshift(
+                  movement(item.variantId, loc, "Koreksi opname", diff, item.reason, user.name)
+                );
+              }
+
+              setData((d) => ({
+                ...d,
+                balances,
+                stockCounts: newStockCounts,
+                movements: newMovements,
               }));
               setModal(null);
               notify("Stock opname berhasil dicatat");
@@ -1945,6 +2001,10 @@ function Activity({ data, variants, locations, role, outletId }: any) {
 
 function Products({ data, open, edit }: any) {
   const [search, setSearch] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState("all");
+
+  const categories = Array.from(new Set(data.products.map((p: any) => p.category))).sort();
+
   return (
     <PageBlock
       title="Daftar produk"
@@ -1952,9 +2012,24 @@ function Products({ data, open, edit }: any) {
       action="Tambah Produk"
       onAction={open}
     >
-      <ListSearch value={search} setValue={setSearch} placeholder="Cari produk, varian, SKU, atau kategori" />
+      <div style={{ display: 'flex', gap: '12px' }}>
+        <div style={{ flex: 1 }}>
+          <ListSearch value={search} setValue={setSearch} placeholder="Cari produk, varian, SKU, atau kategori" />
+        </div>
+        <select 
+          style={{ width: '200px', height: '44px', borderRadius: '12px', border: '1px solid #d9e1e8', padding: '0 14px', outline: 'none', background: '#fff' }} 
+          value={categoryFilter} 
+          onChange={(e) => setCategoryFilter(e.target.value)}
+        >
+          <option value="all">Semua Kategori</option>
+          {categories.map((c: any) => (
+            <option key={c} value={c}>{c}</option>
+          ))}
+        </select>
+      </div>
       <div className="product-grid">
         {data.products
+          .filter((p: any) => categoryFilter === "all" || p.category === categoryFilter)
           .filter((p: any) => 
             `${p.name} ${p.category}`.toLowerCase().includes(search.toLowerCase()) || 
             p.variants.some((v:any) => `${v.name} ${v.sku}`.toLowerCase().includes(search.toLowerCase()))
@@ -2054,11 +2129,75 @@ function LocationsPage({ data, open, edit }: any) {
 }
 function ReceiptsPage({ data, variants, locations, open, edit, cancel }: any) {
   const [search, setSearch] = useState("");
-  const rows = (data.receipts || []).filter((x: any) =>
-    `${x.supplierName || ""} ${locations[x.locationId]?.name || ""} ${variants[x.variantId]?.name || ""}`
+  const [filterStartDate, setFilterStartDate] = useState("");
+  const [filterEndDate, setFilterEndDate] = useState("");
+  const [filterSource, setFilterSource] = useState("");
+  
+  const [sortCol, setSortCol] = useState<string>("date");
+  const [sortDesc, setSortDesc] = useState<boolean>(true);
+  const [page, setPage] = useState<number>(1);
+  const ITEMS_PER_PAGE = 10;
+
+  useEffect(() => {
+    setPage(1);
+  }, [search, filterStartDate, filterEndDate, filterSource]);
+
+  const rows = (data.receipts || []).filter((x: any) => {
+    const matchSearch = `${x.supplierName || ""} ${locations[x.locationId]?.name || ""} ${variants[x.variantId]?.name || ""}`
       .toLowerCase()
-      .includes(search.toLowerCase()),
+      .includes(search.toLowerCase());
+    
+    let matchDate = true;
+    const itemDate = new Date(x.createdAt);
+    if (filterStartDate) {
+      const start = new Date(`${filterStartDate}T00:00:00`);
+      matchDate = matchDate && itemDate >= start;
+    }
+    if (filterEndDate) {
+      const end = new Date(`${filterEndDate}T23:59:59`);
+      matchDate = matchDate && itemDate <= end;
+    }
+
+    const matchSource = filterSource ? x.sourceType === filterSource : true;
+    return matchSearch && matchDate && matchSource;
+  });
+
+  const totalTransaksi = rows.length;
+  const totalItemMasuk = rows.reduce((acc: number, r: any) => acc + (r.status !== 'cancelled' ? r.quantity : 0), 0);
+  const totalNilai = rows.reduce((acc: number, r: any) => acc + (r.status !== 'cancelled' ? r.quantity * r.unitCost : 0), 0);
+
+  const sortedRows = [...rows].sort((a, b) => {
+    let valA: any, valB: any;
+    if (sortCol === "date") { valA = new Date(a.createdAt).getTime(); valB = new Date(b.createdAt).getTime(); }
+    else if (sortCol === "source") { valA = a.sourceType === "production" ? "Hasil produksi" : a.supplierName || ""; valB = b.sourceType === "production" ? "Hasil produksi" : b.supplierName || ""; }
+    else if (sortCol === "location") { valA = locations[a.locationId]?.name || ""; valB = locations[b.locationId]?.name || ""; }
+    else if (sortCol === "product") { valA = variants[a.variantId]?.productName || ""; valB = variants[b.variantId]?.productName || ""; }
+    else if (sortCol === "qty") { valA = a.quantity; valB = b.quantity; }
+    else if (sortCol === "value") { valA = a.quantity * a.unitCost; valB = b.quantity * b.unitCost; }
+    else if (sortCol === "status") { valA = a.status; valB = b.status; }
+    else if (sortCol === "user") { valA = a.createdBy || ""; valB = b.createdBy || ""; }
+    else { valA = 0; valB = 0; }
+
+    if (valA < valB) return sortDesc ? 1 : -1;
+    if (valA > valB) return sortDesc ? -1 : 1;
+    return 0;
+  });
+
+  const totalPages = Math.ceil(sortedRows.length / ITEMS_PER_PAGE) || 1;
+  const paginatedRows = sortedRows.slice((page - 1) * ITEMS_PER_PAGE, page * ITEMS_PER_PAGE);
+
+  const Th = ({ col, label }: { col: string; label: string }) => (
+    <th
+      style={{ cursor: "pointer", userSelect: "none" }}
+      onClick={() => {
+        if (sortCol === col) setSortDesc(!sortDesc);
+        else { setSortCol(col); setSortDesc(true); }
+      }}
+    >
+      {label} {sortCol === col ? (sortDesc ? "↓" : "↑") : ""}
+    </th>
   );
+
   return (
     <PageBlock
       title="Stok masuk"
@@ -2066,28 +2205,69 @@ function ReceiptsPage({ data, variants, locations, open, edit, cancel }: any) {
       action="Catat Stok Masuk"
       onAction={open}
     >
-      <ListSearch
-        value={search}
-        setValue={setSearch}
-        placeholder="Cari supplier, lokasi, atau produk"
-      />
+      <div className="stats-grid compact">
+        <Stat
+          label="Total Transaksi"
+          value={totalTransaksi.toString()}
+          sub="Sesuai filter"
+        />
+        <Stat
+          label="Total Item Masuk"
+          value={totalItemMasuk.toString()}
+          sub="Tidak termasuk batal"
+        />
+        <Stat
+          label="Total Nilai"
+          value={money(totalNilai)}
+          sub="Estimasi modal stok"
+        />
+      </div>
+      <div className="filters">
+        <ListSearch
+          value={search}
+          setValue={setSearch}
+          placeholder="Cari supplier, lokasi, atau produk"
+        />
+        <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--muted)' }}>DARI</span>
+          <input
+            type="date"
+            value={filterStartDate}
+            onChange={(e) => setFilterStartDate(e.target.value)}
+          />
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--muted)' }}>HINGGA</span>
+          <input
+            type="date"
+            value={filterEndDate}
+            onChange={(e) => setFilterEndDate(e.target.value)}
+          />
+        </label>
+        <select value={filterSource} onChange={e => setFilterSource(e.target.value)}>
+           <option value="">Semua Sumber</option>
+           <option value="supplier">Pembelian Supplier</option>
+           <option value="production">Hasil Produksi</option>
+        </select>
+      </div>
       <div className="table-wrap">
         <table>
           <thead>
             <tr>
-              <th>Tanggal</th>
-              <th>Sumber</th>
-              <th>Lokasi</th>
-              <th>Produk</th>
-              <th>Jumlah</th>
-              <th>Nilai</th>
-              <th>Status</th>
+              <Th col="date" label="Tanggal" />
+              <Th col="source" label="Sumber" />
+              <Th col="location" label="Lokasi" />
+              <Th col="product" label="Produk" />
+              <Th col="qty" label="Jumlah" />
+              <Th col="value" label="Nilai" />
+              <Th col="status" label="Status" />
+              <Th col="user" label="Penginput" />
               <th>Aksi</th>
             </tr>
           </thead>
           <tbody>
-            {rows.length ? (
-              rows.map((item: any) => (
+            {paginatedRows.length ? (
+              paginatedRows.map((item: any) => (
                 <tr key={item.id}>
                   <td>{new Date(item.createdAt).toLocaleString("id-ID")}</td>
                   <td>
@@ -2111,6 +2291,7 @@ function ReceiptsPage({ data, variants, locations, open, edit, cancel }: any) {
                       {item.status === "cancelled" ? "Dibatalkan" : "Selesai"}
                     </span>
                   </td>
+                  <td>{item.createdBy || '-'}</td>
                   <td>
                     {item.status !== "cancelled" && (
                       <div style={{ display: 'flex', gap: '12px' }}>
@@ -2137,17 +2318,99 @@ function ReceiptsPage({ data, variants, locations, open, edit, cancel }: any) {
           </tbody>
         </table>
       </div>
+      {totalPages > 1 && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 0' }}>
+          <span style={{ fontSize: 13, color: 'var(--muted)' }}>
+            Menampilkan {(page - 1) * ITEMS_PER_PAGE + 1} - {Math.min(page * ITEMS_PER_PAGE, sortedRows.length)} dari {sortedRows.length} data
+          </span>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              className="secondary"
+              disabled={page === 1}
+              onClick={() => setPage(page - 1)}
+            >
+              Sebelumnya
+            </button>
+            <button
+              className="secondary"
+              disabled={page === totalPages}
+              onClick={() => setPage(page + 1)}
+            >
+              Selanjutnya
+            </button>
+          </div>
+        </div>
+      )}
     </PageBlock>
   );
 }
 function ReturnsPage({ data, variants, locations, open, cancel, role, outletId }: any) {
   const [search, setSearch] = useState("");
+  const [filterStartDate, setFilterStartDate] = useState("");
+  const [filterEndDate, setFilterEndDate] = useState("");
+  
+  const [sortCol, setSortCol] = useState<string>("date");
+  const [sortDesc, setSortDesc] = useState<boolean>(true);
+  const [page, setPage] = useState<number>(1);
+  const ITEMS_PER_PAGE = 10;
+
+  useEffect(() => {
+    setPage(1);
+  }, [search, filterStartDate, filterEndDate]);
+
   const isPic = ["pic", "warehouse", "cashier", "admin"].includes(role) && outletId;
   const filteredReturns = isPic ? (data.returns || []).filter((x: any) => x.locationId === outletId) : (data.returns || []);
-  const rows = filteredReturns.filter((x: any) =>
-    `${x.reason} ${locations[x.locationId]?.name || ""} ${variants[x.variantId]?.name || ""}`
+  const rows = filteredReturns.filter((x: any) => {
+    const matchSearch = `${x.reason} ${locations[x.locationId]?.name || ""} ${variants[x.variantId]?.name || ""}`
       .toLowerCase()
-      .includes(search.toLowerCase()),
+      .includes(search.toLowerCase());
+      
+    let matchDate = true;
+    const itemDate = new Date(x.createdAt);
+    if (filterStartDate) {
+      const start = new Date(`${filterStartDate}T00:00:00`);
+      matchDate = matchDate && itemDate >= start;
+    }
+    if (filterEndDate) {
+      const end = new Date(`${filterEndDate}T23:59:59`);
+      matchDate = matchDate && itemDate <= end;
+    }
+
+    return matchSearch && matchDate;
+  });
+
+  const totalRetur = rows.length;
+  const totalItem = rows.reduce((acc: number, r: any) => acc + (r.status !== 'cancelled' ? r.quantity : 0), 0);
+
+  const sortedRows = [...rows].sort((a, b) => {
+    let valA: any, valB: any;
+    if (sortCol === "date") { valA = new Date(a.createdAt).getTime(); valB = new Date(b.createdAt).getTime(); }
+    else if (sortCol === "type") { valA = a.type; valB = b.type; }
+    else if (sortCol === "location") { valA = locations[a.locationId]?.name || ""; valB = locations[b.locationId]?.name || ""; }
+    else if (sortCol === "product") { valA = variants[a.variantId]?.productName || ""; valB = variants[b.variantId]?.productName || ""; }
+    else if (sortCol === "qty") { valA = a.quantity; valB = b.quantity; }
+    else if (sortCol === "reason") { valA = a.reason; valB = b.reason; }
+    else if (sortCol === "status") { valA = a.status; valB = b.status; }
+    else { valA = 0; valB = 0; }
+
+    if (valA < valB) return sortDesc ? 1 : -1;
+    if (valA > valB) return sortDesc ? -1 : 1;
+    return 0;
+  });
+
+  const totalPages = Math.ceil(sortedRows.length / ITEMS_PER_PAGE) || 1;
+  const paginatedRows = sortedRows.slice((page - 1) * ITEMS_PER_PAGE, page * ITEMS_PER_PAGE);
+
+  const Th = ({ col, label }: { col: string; label: string }) => (
+    <th
+      style={{ cursor: "pointer", userSelect: "none" }}
+      onClick={() => {
+        if (sortCol === col) setSortDesc(!sortDesc);
+        else { setSortCol(col); setSortDesc(true); }
+      }}
+    >
+      {label} {sortCol === col ? (sortDesc ? "↓" : "↑") : ""}
+    </th>
   );
   return (
     <PageBlock
@@ -2156,28 +2419,63 @@ function ReturnsPage({ data, variants, locations, open, cancel, role, outletId }
       action="Catat Retur"
       onAction={open}
     >
-      <ListSearch
-        value={search}
-        setValue={setSearch}
-        placeholder="Cari produk, lokasi, atau alasan"
-      />
+      <div className="stats-grid compact">
+        <Stat
+          label="Total Retur"
+          value={totalRetur.toString()}
+          sub="Sesuai filter"
+        />
+        <Stat
+          label="Total Item Retur"
+          value={totalItem.toString()}
+          sub="Tidak termasuk batal"
+        />
+        <Stat
+          label="Selisih Retur"
+          value={totalItem.toString()}
+          sub="Barang berputar"
+        />
+      </div>
+      <div className="filters">
+        <ListSearch
+          value={search}
+          setValue={setSearch}
+          placeholder="Cari produk, lokasi, atau alasan"
+        />
+        <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--muted)' }}>DARI</span>
+          <input
+            type="date"
+            value={filterStartDate}
+            onChange={(e) => setFilterStartDate(e.target.value)}
+          />
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--muted)' }}>HINGGA</span>
+          <input
+            type="date"
+            value={filterEndDate}
+            onChange={(e) => setFilterEndDate(e.target.value)}
+          />
+        </label>
+      </div>
       <div className="table-wrap">
         <table>
           <thead>
             <tr>
-              <th>Tanggal</th>
-              <th>Jenis</th>
-              <th>Lokasi</th>
-              <th>Produk</th>
-              <th>Jumlah</th>
-              <th>Alasan</th>
-              <th>Status</th>
+              <Th col="date" label="Tanggal" />
+              <Th col="type" label="Jenis" />
+              <Th col="location" label="Lokasi" />
+              <Th col="product" label="Produk" />
+              <Th col="qty" label="Jumlah" />
+              <Th col="reason" label="Alasan" />
+              <Th col="status" label="Status" />
               <th>Aksi</th>
             </tr>
           </thead>
           <tbody>
-            {rows.length ? (
-              rows.map((item: any) => (
+            {paginatedRows.length ? (
+              paginatedRows.map((item: any) => (
                 <tr key={item.id}>
                   <td>{new Date(item.createdAt).toLocaleString("id-ID")}</td>
                   <td>
@@ -2219,6 +2517,29 @@ function ReturnsPage({ data, variants, locations, open, cancel, role, outletId }
           </tbody>
         </table>
       </div>
+      {totalPages > 1 && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 0' }}>
+          <span style={{ fontSize: 13, color: 'var(--muted)' }}>
+            Menampilkan {(page - 1) * ITEMS_PER_PAGE + 1} - {Math.min(page * ITEMS_PER_PAGE, sortedRows.length)} dari {sortedRows.length} data
+          </span>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              className="secondary"
+              disabled={page === 1}
+              onClick={() => setPage(page - 1)}
+            >
+              Sebelumnya
+            </button>
+            <button
+              className="secondary"
+              disabled={page === totalPages}
+              onClick={() => setPage(page + 1)}
+            >
+              Selanjutnya
+            </button>
+          </div>
+        </div>
+      )}
     </PageBlock>
   );
 }
@@ -2257,8 +2578,17 @@ function BusinessPage({ data, open }: any) {
 function Stock({ data, setData, variants, role, outletId }: any) {
   const isPic = ["pic", "warehouse", "cashier", "admin"].includes(role) && outletId;
   const myLocations = isPic ? data.locations.filter((l: any) => l.id === outletId) : data.locations;
-  const [loc, setLoc] = useState(myLocations[0]?.id || data.locations[0]?.id),
-    [search, setSearch] = useState("");
+  const [loc, setLoc] = useState(myLocations[0]?.id || data.locations[0]?.id);
+  const [search, setSearch] = useState("");
+  const [sortCol, setSortCol] = useState<string>("variant");
+  const [sortDesc, setSortDesc] = useState<boolean>(false);
+  const [page, setPage] = useState<number>(1);
+  const ITEMS_PER_PAGE = 10;
+
+  useEffect(() => {
+    setPage(1);
+  }, [search, loc]);
+
   const rows = data.balances.filter(
     (b: any) =>
       b.locationId === loc &&
@@ -2266,11 +2596,60 @@ function Stock({ data, setData, variants, role, outletId }: any) {
         .toLowerCase()
         .includes(search.toLowerCase()),
   );
+
+  const totalVariants = rows.length;
+  const lowStockVariants = rows.filter((b: any) => b.quantity < minimumFor(variants[b.variantId], b.locationId)).length;
+
+  const sortedRows = [...rows].sort((a, b) => {
+    const vA = variants[a.variantId];
+    const vB = variants[b.variantId];
+    const minA = minimumFor(vA, a.locationId);
+    const minB = minimumFor(vB, b.locationId);
+
+    let valA: any, valB: any;
+    if (sortCol === "variant") { valA = vA?.name || ""; valB = vB?.name || ""; }
+    else if (sortCol === "sku") { valA = vA?.sku || ""; valB = vB?.sku || ""; }
+    else if (sortCol === "balance") { valA = a.quantity; valB = b.quantity; }
+    else if (sortCol === "min") { valA = minA; valB = minB; }
+    else if (sortCol === "status") { valA = a.quantity < minA ? 0 : 1; valB = b.quantity < minB ? 0 : 1; }
+    else { valA = 0; valB = 0; }
+
+    if (valA < valB) return sortDesc ? 1 : -1;
+    if (valA > valB) return sortDesc ? -1 : 1;
+    return 0;
+  });
+
+  const totalPages = Math.ceil(sortedRows.length / ITEMS_PER_PAGE) || 1;
+  const paginatedRows = sortedRows.slice((page - 1) * ITEMS_PER_PAGE, page * ITEMS_PER_PAGE);
+
+  const Th = ({ col, label }: { col: string; label: string }) => (
+    <th
+      style={{ cursor: "pointer", userSelect: "none" }}
+      onClick={() => {
+        if (sortCol === col) setSortDesc(!sortDesc);
+        else { setSortCol(col); setSortDesc(true); }
+      }}
+    >
+      {label} {sortCol === col ? (sortDesc ? "↓" : "↑") : ""}
+    </th>
+  );
   return (
     <PageBlock
       title="Saldo stok aktual"
       desc="Saldo dihitung otomatis dari seluruh pergerakan."
     >
+      <div className="stats-grid compact">
+        <Stat
+          label="Total Varian"
+          value={totalVariants.toString()}
+          sub="Di lokasi ini"
+        />
+        <Stat
+          label="Stok Menipis"
+          value={lowStockVariants.toString()}
+          sub="Perlu re-stock"
+        />
+      </div>
       <div className="filters">
         <select value={loc} onChange={(e) => setLoc(e.target.value)}>
           {myLocations.map((l: any) => (
@@ -2289,23 +2668,23 @@ function Stock({ data, setData, variants, role, outletId }: any) {
         <table>
           <thead>
             <tr>
-              <th>Varian</th>
-              <th>SKU</th>
-              <th>Saldo aktual</th>
-              <th>Minimum</th>
-              <th>Status</th>
+              <Th col="variant" label="Varian" />
+              <Th col="sku" label="SKU" />
+              <Th col="balance" label="Saldo aktual" />
+              <Th col="min" label="Minimum" />
+              <Th col="status" label="Status" />
             </tr>
           </thead>
           <tbody>
-            {rows.length ? (
-              rows.map((b: any) => {
+            {paginatedRows.length ? (
+              paginatedRows.map((b: any) => {
                 const v = variants[b.variantId],
                   minimum = minimumFor(v, b.locationId),
                   low = b.quantity < minimum;
                 return (
                   <tr key={`${b.locationId}-${b.variantId}`}>
                     <td>
-                      <b>{v.name}</b>
+                      <b>{v.productName} - {v.name}</b>
                     </td>
                     <td>
                       <code>{v.sku}</code>
@@ -2319,8 +2698,9 @@ function Stock({ data, setData, variants, role, outletId }: any) {
                           aria-label={`Minimum stok ${v.name}`}
                           type="number"
                           min="0"
-                          value={minimum}
+                          value={String(minimum)}
                           onChange={(e) => {
+                            e.target.value = e.target.value.replace(/^0+(?=\d)/, '');
                             const next = Number(e.target.value);
                             if (!Number.isFinite(next) || next < 0) return;
                             setData((current: AppData) => ({
@@ -2352,6 +2732,29 @@ function Stock({ data, setData, variants, role, outletId }: any) {
           </tbody>
         </table>
       </div>
+      {totalPages > 1 && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 0' }}>
+          <span style={{ fontSize: 13, color: 'var(--muted)' }}>
+            Menampilkan {(page - 1) * ITEMS_PER_PAGE + 1} - {Math.min(page * ITEMS_PER_PAGE, sortedRows.length)} dari {sortedRows.length} data
+          </span>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              className="secondary"
+              disabled={page === 1}
+              onClick={() => setPage(page - 1)}
+            >
+              Sebelumnya
+            </button>
+            <button
+              className="secondary"
+              disabled={page === totalPages}
+              onClick={() => setPage(page + 1)}
+            >
+              Selanjutnya
+            </button>
+          </div>
+        </div>
+      )}
     </PageBlock>
   );
 }
@@ -2367,16 +2770,75 @@ function Transfers({
   outletId,
   cancel,
   detail,
+  helpAction,
 }: any) {
   const [search, setSearch] = useState("");
+  const [filterStartDate, setFilterStartDate] = useState("");
+  const [filterEndDate, setFilterEndDate] = useState("");
+  
+  const [sortCol, setSortCol] = useState<string>("date");
+  const [sortDesc, setSortDesc] = useState<boolean>(true);
+  const [page, setPage] = useState<number>(1);
+  const ITEMS_PER_PAGE = 10;
+
+  useEffect(() => {
+    setPage(1);
+  }, [search, filterStartDate, filterEndDate]);
+
   const isPic = ["pic", "warehouse", "cashier", "admin"].includes(role) && outletId;
   const filteredTransfers = isPic
     ? data.transfers.filter((t: any) => t.fromId === outletId || t.toId === outletId)
     : data.transfers;
-  const rows = filteredTransfers.filter((t: any) =>
-    `${locations[t.fromId]?.name} ${locations[t.toId]?.name} ${variants[t.variantId]?.name}`
+  const rows = filteredTransfers.filter((t: any) => {
+    const matchSearch = `${locations[t.fromId]?.name} ${locations[t.toId]?.name} ${variants[t.variantId]?.name}`
       .toLowerCase()
-      .includes(search.toLowerCase()),
+      .includes(search.toLowerCase());
+      
+    let matchDate = true;
+    const itemDate = new Date(t.createdAt);
+    if (filterStartDate) {
+      const start = new Date(`${filterStartDate}T00:00:00`);
+      matchDate = matchDate && itemDate >= start;
+    }
+    if (filterEndDate) {
+      const end = new Date(`${filterEndDate}T23:59:59`);
+      matchDate = matchDate && itemDate <= end;
+    }
+
+    return matchSearch && matchDate;
+  });
+
+  const totalTransfer = rows.length;
+  const totalReceived = rows.filter((r: any) => r.status === 'received').length;
+  const totalSent = rows.filter((r: any) => r.status === 'sent').length;
+
+  const sortedRows = [...rows].sort((a, b) => {
+    let valA: any, valB: any;
+    if (sortCol === "date") { valA = new Date(a.createdAt).getTime(); valB = new Date(b.createdAt).getTime(); }
+    else if (sortCol === "route") { valA = locations[a.fromId]?.name || ""; valB = locations[b.fromId]?.name || ""; }
+    else if (sortCol === "product") { valA = variants[a.variantId]?.name || ""; valB = variants[b.variantId]?.name || ""; }
+    else if (sortCol === "qty") { valA = a.quantity; valB = b.quantity; }
+    else if (sortCol === "status") { valA = a.status; valB = b.status; }
+    else { valA = 0; valB = 0; }
+
+    if (valA < valB) return sortDesc ? 1 : -1;
+    if (valA > valB) return sortDesc ? -1 : 1;
+    return 0;
+  });
+
+  const totalPages = Math.ceil(sortedRows.length / ITEMS_PER_PAGE) || 1;
+  const paginatedRows = sortedRows.slice((page - 1) * ITEMS_PER_PAGE, page * ITEMS_PER_PAGE);
+
+  const Th = ({ col, label }: { col: string; label: string }) => (
+    <th
+      style={{ cursor: "pointer", userSelect: "none" }}
+      onClick={() => {
+        if (sortCol === col) setSortDesc(!sortDesc);
+        else { setSortCol(col); setSortDesc(true); }
+      }}
+    >
+      {label} {sortCol === col ? (sortDesc ? "↓" : "↑") : ""}
+    </th>
   );
   const receive = (t: any) => {
     setData((d: any) => ({
@@ -2405,29 +2867,73 @@ function Transfers({
     <PageBlock
       title="Transfer antar lokasi"
       desc="Stok tujuan bertambah setelah penerima mengonfirmasi barang."
-      action={role === "owner" ? "Buat Transfer" : undefined}
+      action="Buat Transfer"
       onAction={open}
     >
-      <ListSearch
-        value={search}
-        setValue={setSearch}
-        placeholder="Cari rute atau produk"
-      />
+      <div className="stats-grid compact">
+        <Stat
+          label="Total Transfer"
+          value={totalTransfer.toString()}
+          sub="Sesuai filter"
+        />
+        <Stat
+          label="Selesai (Diterima)"
+          value={totalReceived.toString()}
+          sub="Stok sudah masuk"
+        />
+        <Stat
+          label="Dalam Perjalanan"
+          value={totalSent.toString()}
+          sub="Menunggu konfirmasi"
+        />
+      </div>
+
+      <div style={{ background: '#f0f7f4', border: '1px solid #18a66a33', padding: '12px 16px', borderRadius: '12px', marginBottom: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <LifeBuoy color="var(--green)" size={20} />
+          <span style={{ fontSize: '13px', color: 'var(--navy)', fontWeight: 600 }}>Butuh bantuan mengirim atau menerima stok?</span>
+        </div>
+        <button className="small-primary" onClick={helpAction} style={{ background: 'white', border: '1px solid var(--line)', color: 'var(--navy)' }}>Baca Panduan Transfer</button>
+      </div>
+
+      <div className="filters">
+        <ListSearch
+          value={search}
+          setValue={setSearch}
+          placeholder="Cari rute atau produk"
+        />
+        <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--muted)' }}>DARI</span>
+          <input
+            type="date"
+            value={filterStartDate}
+            onChange={(e) => setFilterStartDate(e.target.value)}
+          />
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--muted)' }}>HINGGA</span>
+          <input
+            type="date"
+            value={filterEndDate}
+            onChange={(e) => setFilterEndDate(e.target.value)}
+          />
+        </label>
+      </div>
       <div className="table-wrap">
         <table>
           <thead>
             <tr>
-              <th>Tanggal</th>
-              <th>Rute</th>
-              <th>Varian</th>
-              <th>Jumlah</th>
-              <th>Status</th>
+              <Th col="date" label="Tanggal" />
+              <Th col="route" label="Rute" />
+              <Th col="product" label="Varian" />
+              <Th col="qty" label="Jumlah" />
+              <Th col="status" label="Status" />
               <th>Aksi</th>
             </tr>
           </thead>
           <tbody>
-            {rows.length ? (
-              rows.map((t: any) => (
+            {paginatedRows.length ? (
+              paginatedRows.map((t: any) => (
                 <tr key={t.id}>
                   <td>{new Date(t.createdAt).toLocaleDateString("id-ID")}</td>
                   <td>
@@ -2435,7 +2941,7 @@ function Transfers({
                     <br />
                     <small>ke {locations[t.toId]?.name}</small>
                   </td>
-                  <td>{variants[t.variantId]?.name}</td>
+                  <td>{variants[t.variantId]?.productName} - {variants[t.variantId]?.name}</td>
                   <td>
                     <strong>
                       {qty(t.quantity, variants[t.variantId]?.unit)}
@@ -2485,20 +2991,101 @@ function Transfers({
           </tbody>
         </table>
       </div>
+      {totalPages > 1 && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 0' }}>
+          <span style={{ fontSize: 13, color: 'var(--muted)' }}>
+            Menampilkan {(page - 1) * ITEMS_PER_PAGE + 1} - {Math.min(page * ITEMS_PER_PAGE, sortedRows.length)} dari {sortedRows.length} data
+          </span>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              className="secondary"
+              disabled={page === 1}
+              onClick={() => setPage(page - 1)}
+            >
+              Sebelumnya
+            </button>
+            <button
+              className="secondary"
+              disabled={page === totalPages}
+              onClick={() => setPage(page + 1)}
+            >
+              Selanjutnya
+            </button>
+          </div>
+        </div>
+      )}
     </PageBlock>
   );
 }
 function Sales({ data, variants, locations, open, cancel, detail, role, outletId, canCancel }: any) {
-  const [search, setSearch] = useState(""),
-    [channel, setChannel] = useState("all");
+  const [search, setSearch] = useState("");
+  const [channel, setChannel] = useState("all");
+  const [filterStartDate, setFilterStartDate] = useState("");
+  const [filterEndDate, setFilterEndDate] = useState("");
+  
+  const [sortCol, setSortCol] = useState<string>("date");
+  const [sortDesc, setSortDesc] = useState<boolean>(true);
+  const [page, setPage] = useState<number>(1);
+  const ITEMS_PER_PAGE = 10;
+
+  useEffect(() => {
+    setPage(1);
+  }, [search, channel, filterStartDate, filterEndDate]);
+
   const isPic = ["pic", "warehouse", "cashier", "admin"].includes(role) && outletId;
   const filteredSales = isPic ? data.sales.filter((s: any) => s.locationId === outletId) : data.sales;
-  const rows = filteredSales.filter(
-    (s: any) =>
-      (channel === "all" || s.channel === channel) &&
-      `${locations[s.locationId]?.name} ${s.channel} ${variants[s.items[0]?.variantId]?.name}`
-        .toLowerCase()
-        .includes(search.toLowerCase()),
+  const rows = filteredSales.filter((s: any) => {
+    const matchChannel = channel === "all" || s.channel === channel;
+    const matchSearch = `${locations[s.locationId]?.name} ${s.channel} ${variants[s.items[0]?.variantId]?.name}`
+      .toLowerCase()
+      .includes(search.toLowerCase());
+      
+    let matchDate = true;
+    const itemDate = new Date(s.createdAt);
+    if (filterStartDate) {
+      const start = new Date(`${filterStartDate}T00:00:00`);
+      matchDate = matchDate && itemDate >= start;
+    }
+    if (filterEndDate) {
+      const end = new Date(`${filterEndDate}T23:59:59`);
+      matchDate = matchDate && itemDate <= end;
+    }
+
+    return matchChannel && matchSearch && matchDate;
+  });
+
+  const totalSales = rows.length;
+  const totalRevenue = rows.reduce((acc: number, s: any) => acc + (s.status !== 'voided' ? s.total : 0), 0);
+
+  const sortedRows = [...rows].sort((a, b) => {
+    let valA: any, valB: any;
+    if (sortCol === "date") { valA = new Date(a.createdAt).getTime(); valB = new Date(b.createdAt).getTime(); }
+    else if (sortCol === "location") { valA = locations[a.locationId]?.name || ""; valB = locations[b.locationId]?.name || ""; }
+    else if (sortCol === "channel") { valA = a.channel; valB = b.channel; }
+    else if (sortCol === "item") { valA = variants[a.items[0]?.variantId]?.name || ""; valB = variants[b.items[0]?.variantId]?.name || ""; }
+    else if (sortCol === "payment") { valA = a.payment; valB = b.payment; }
+    else if (sortCol === "total") { valA = a.total; valB = b.total; }
+    else if (sortCol === "status") { valA = a.status; valB = b.status; }
+    else { valA = 0; valB = 0; }
+
+    if (valA < valB) return sortDesc ? 1 : -1;
+    if (valA > valB) return sortDesc ? -1 : 1;
+    return 0;
+  });
+
+  const totalPages = Math.ceil(sortedRows.length / ITEMS_PER_PAGE) || 1;
+  const paginatedRows = sortedRows.slice((page - 1) * ITEMS_PER_PAGE, page * ITEMS_PER_PAGE);
+
+  const Th = ({ col, label }: { col: string; label: string }) => (
+    <th
+      style={{ cursor: "pointer", userSelect: "none" }}
+      onClick={() => {
+        if (sortCol === col) setSortDesc(!sortDesc);
+        else { setSortCol(col); setSortDesc(true); }
+      }}
+    >
+      {label} {sortCol === col ? (sortDesc ? "↓" : "↑") : ""}
+    </th>
   );
   return (
     <PageBlock
@@ -2507,6 +3094,18 @@ function Sales({ data, variants, locations, open, cancel, detail, role, outletId
       action="Catat Penjualan"
       onAction={open}
     >
+      <div className="stats-grid compact">
+        <Stat
+          label="Total Transaksi"
+          value={totalSales.toString()}
+          sub="Sesuai filter"
+        />
+        <Stat
+          label="Total Pendapatan"
+          value={money(totalRevenue)}
+          sub="Hanya transaksi selesai"
+        />
+      </div>
       <div className="filters">
         <select value={channel} onChange={(e) => setChannel(e.target.value)}>
           <option value="all">Semua kanal</option>
@@ -2519,24 +3118,40 @@ function Sales({ data, variants, locations, open, cancel, detail, role, outletId
           setValue={setSearch}
           placeholder="Cari lokasi atau produk"
         />
+        <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--muted)' }}>DARI</span>
+          <input
+            type="date"
+            value={filterStartDate}
+            onChange={(e) => setFilterStartDate(e.target.value)}
+          />
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--muted)' }}>HINGGA</span>
+          <input
+            type="date"
+            value={filterEndDate}
+            onChange={(e) => setFilterEndDate(e.target.value)}
+          />
+        </label>
       </div>
       <div className="table-wrap">
         <table>
           <thead>
             <tr>
-              <th>Waktu</th>
-              <th>Lokasi</th>
-              <th>Kanal</th>
-              <th>Item</th>
-              <th>Pembayaran</th>
-              <th>Total</th>
-              <th>Status</th>
+              <Th col="date" label="Waktu" />
+              <Th col="location" label="Lokasi" />
+              <Th col="channel" label="Kanal" />
+              <Th col="item" label="Item" />
+              <Th col="payment" label="Pembayaran" />
+              <Th col="total" label="Total" />
+              <Th col="status" label="Status" />
               <th>Aksi</th>
             </tr>
           </thead>
           <tbody>
-            {rows.length ? (
-              rows.map((s: any) => (
+            {paginatedRows.length ? (
+              paginatedRows.map((s: any) => (
                 <tr key={s.id}>
                   <td>{new Date(s.createdAt).toLocaleString("id-ID")}</td>
                   <td>{locations[s.locationId]?.name}</td>
@@ -2544,7 +3159,7 @@ function Sales({ data, variants, locations, open, cancel, detail, role, outletId
                     <span className="status info">{s.channel}</span>
                   </td>
                   <td>
-                    {variants[s.items[0].variantId]?.name}
+                    {variants[s.items[0].variantId]?.productName} - {variants[s.items[0].variantId]?.name}
                     <small className="block">
                       {qty(
                         s.items[0].quantity,
@@ -2558,9 +3173,9 @@ function Sales({ data, variants, locations, open, cancel, detail, role, outletId
                   </td>
                   <td>
                     <span
-                      className={`status ${s.status === "cancelled" ? "danger" : "ok"}`}
+                      className={`status ${s.status === "voided" ? "danger" : "ok"}`}
                     >
-                      {s.status === "cancelled" ? "Dibatalkan" : "Selesai"}
+                      {s.status === "voided" ? "Dibatalkan" : "Selesai"}
                     </span>
                   </td>
                   <td className="actions-cell">
@@ -2570,7 +3185,7 @@ function Sales({ data, variants, locations, open, cancel, detail, role, outletId
                     >
                       Detail
                     </button>
-                    {canCancel && s.status !== "cancelled" && (
+                    {canCancel && s.status !== "voided" && (
                       <button
                         className="table-action danger-text"
                         onClick={() => cancel(s.id)}
@@ -2587,12 +3202,102 @@ function Sales({ data, variants, locations, open, cancel, detail, role, outletId
           </tbody>
         </table>
       </div>
+      {totalPages > 1 && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 0' }}>
+          <span style={{ fontSize: 13, color: 'var(--muted)' }}>
+            Menampilkan {(page - 1) * ITEMS_PER_PAGE + 1} - {Math.min(page * ITEMS_PER_PAGE, sortedRows.length)} dari {sortedRows.length} data
+          </span>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              className="secondary"
+              disabled={page === 1}
+              onClick={() => setPage(page - 1)}
+            >
+              Sebelumnya
+            </button>
+            <button
+              className="secondary"
+              disabled={page === totalPages}
+              onClick={() => setPage(page + 1)}
+            >
+              Selanjutnya
+            </button>
+          </div>
+        </div>
+      )}
     </PageBlock>
   );
 }
 function Opname({ data, variants, locations, open, edit, cancel, role, outletId, canCorrect }: any) {
+  const [search, setSearch] = useState("");
+  const [filterStartDate, setFilterStartDate] = useState("");
+  const [filterEndDate, setFilterEndDate] = useState("");
+  
+  const [sortCol, setSortCol] = useState<string>("date");
+  const [sortDesc, setSortDesc] = useState<boolean>(true);
+  const [page, setPage] = useState<number>(1);
+  const ITEMS_PER_PAGE = 10;
+
+  useEffect(() => {
+    setPage(1);
+  }, [search, filterStartDate, filterEndDate]);
+
   const isPic = ["pic", "warehouse", "cashier", "admin"].includes(role) && outletId;
-  const stockCounts = isPic ? data.stockCounts.filter((o: any) => o.locationId === outletId) : data.stockCounts;
+  const filteredOpname = isPic ? data.stockCounts.filter((o: any) => o.locationId === outletId) : data.stockCounts;
+  
+  const rows = filteredOpname.filter((o: any) => {
+    const matchSearch = `${o.reason} ${locations[o.locationId]?.name || ""} ${variants[o.variantId]?.name || ""}`
+      .toLowerCase()
+      .includes(search.toLowerCase());
+      
+    let matchDate = true;
+    const itemDate = new Date(o.createdAt);
+    if (filterStartDate) {
+      const start = new Date(`${filterStartDate}T00:00:00`);
+      matchDate = matchDate && itemDate >= start;
+    }
+    if (filterEndDate) {
+      const end = new Date(`${filterEndDate}T23:59:59`);
+      matchDate = matchDate && itemDate <= end;
+    }
+
+    return matchSearch && matchDate;
+  });
+
+  const totalOpname = rows.length;
+  const totalDiff = rows.reduce((acc: number, o: any) => acc + (o.status !== 'cancelled' ? o.difference : 0), 0);
+
+  const sortedRows = [...rows].sort((a, b) => {
+    let valA: any, valB: any;
+    if (sortCol === "date") { valA = new Date(a.createdAt).getTime(); valB = new Date(b.createdAt).getTime(); }
+    else if (sortCol === "location") { valA = locations[a.locationId]?.name || ""; valB = locations[b.locationId]?.name || ""; }
+    else if (sortCol === "product") { valA = variants[a.variantId]?.name || ""; valB = variants[b.variantId]?.name || ""; }
+    else if (sortCol === "system") { valA = a.systemQty; valB = b.systemQty; }
+    else if (sortCol === "actual") { valA = a.actualQty; valB = b.actualQty; }
+    else if (sortCol === "diff") { valA = a.difference; valB = b.difference; }
+    else if (sortCol === "reason") { valA = a.reason; valB = b.reason; }
+    else if (sortCol === "user") { valA = a.createdBy || ""; valB = b.createdBy || ""; }
+    else { valA = 0; valB = 0; }
+
+    if (valA < valB) return sortDesc ? 1 : -1;
+    if (valA > valB) return sortDesc ? -1 : 1;
+    return 0;
+  });
+
+  const totalPages = Math.ceil(sortedRows.length / ITEMS_PER_PAGE) || 1;
+  const paginatedRows = sortedRows.slice((page - 1) * ITEMS_PER_PAGE, page * ITEMS_PER_PAGE);
+
+  const Th = ({ col, label }: { col: string; label: string }) => (
+    <th
+      style={{ cursor: "pointer", userSelect: "none" }}
+      onClick={() => {
+        if (sortCol === col) setSortDesc(!sortDesc);
+        else { setSortCol(col); setSortDesc(true); }
+      }}
+    >
+      {label} {sortCol === col ? (sortDesc ? "↓" : "↑") : ""}
+    </th>
+  );
   return (
     <PageBlock
       title="Stock opname"
@@ -2600,27 +3305,63 @@ function Opname({ data, variants, locations, open, edit, cancel, role, outletId,
       action="Mulai Opname"
       onAction={open}
     >
+      <div className="stats-grid compact">
+        <Stat
+          label="Total Riwayat Opname"
+          value={totalOpname.toString()}
+          sub="Sesuai filter"
+        />
+        <Stat
+          label="Total Selisih"
+          value={totalDiff.toString()}
+          sub="Unit barang"
+        />
+      </div>
+      <div className="filters">
+        <ListSearch
+          value={search}
+          setValue={setSearch}
+          placeholder="Cari lokasi, produk, alasan"
+        />
+        <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--muted)' }}>DARI</span>
+          <input
+            type="date"
+            value={filterStartDate}
+            onChange={(e) => setFilterStartDate(e.target.value)}
+          />
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--muted)' }}>HINGGA</span>
+          <input
+            type="date"
+            value={filterEndDate}
+            onChange={(e) => setFilterEndDate(e.target.value)}
+          />
+        </label>
+      </div>
       <div className="table-wrap">
         <table>
           <thead>
             <tr>
-              <th>Tanggal</th>
-              <th>Lokasi</th>
-              <th>Varian</th>
-              <th>Sistem</th>
-              <th>Fisik</th>
-              <th>Selisih</th>
-              <th>Alasan</th>
+              <Th col="date" label="Tanggal" />
+              <Th col="location" label="Lokasi" />
+              <Th col="product" label="Varian" />
+              <Th col="system" label="Sistem" />
+              <Th col="actual" label="Fisik" />
+              <Th col="diff" label="Selisih" />
+              <Th col="reason" label="Alasan" />
+              <Th col="user" label="Penginput" />
               <th>Aksi</th>
             </tr>
           </thead>
           <tbody>
-            {stockCounts.length ? (
-              stockCounts.map((o: any) => (
+            {paginatedRows.length ? (
+              paginatedRows.map((o: any) => (
                 <tr key={o.id} className={o.status === "cancelled" ? "cancelled" : ""}>
                   <td>{new Date(o.createdAt).toLocaleString("id-ID")}</td>
                   <td>{locations[o.locationId]?.name}</td>
-                  <td>{variants[o.variantId]?.name}</td>
+                  <td>{variants[o.variantId]?.productName} - {variants[o.variantId]?.name}</td>
                   <td>{qty(o.systemQty, variants[o.variantId]?.unit)}</td>
                   <td>{qty(o.actualQty, variants[o.variantId]?.unit)}</td>
                   <td>
@@ -2632,6 +3373,7 @@ function Opname({ data, variants, locations, open, edit, cancel, role, outletId,
                     </strong>
                   </td>
                   <td>{o.status === "cancelled" ? `Dibatalkan: ${o.cancelReason}` : o.reason}</td>
+                  <td>{o.createdBy || '-'}</td>
                   <td>
                     <div className="table-actions">
                       {canCorrect && o.status !== "cancelled" && (
@@ -2652,38 +3394,208 @@ function Opname({ data, variants, locations, open, edit, cancel, role, outletId,
           </tbody>
         </table>
       </div>
+      {totalPages > 1 && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 0' }}>
+          <span style={{ fontSize: 13, color: 'var(--muted)' }}>
+            Menampilkan {(page - 1) * ITEMS_PER_PAGE + 1} - {Math.min(page * ITEMS_PER_PAGE, sortedRows.length)} dari {sortedRows.length} data
+          </span>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              className="secondary"
+              disabled={page === 1}
+              onClick={() => setPage(page - 1)}
+            >
+              Sebelumnya
+            </button>
+            <button
+              className="secondary"
+              disabled={page === totalPages}
+              onClick={() => setPage(page + 1)}
+            >
+              Selanjutnya
+            </button>
+          </div>
+        </div>
+      )}
     </PageBlock>
   );
 }
 function HistoryPage({ data, variants, locations, role, outletId }: any) {
+  const [search, setSearch] = useState("");
+  const [filterStartDate, setFilterStartDate] = useState("");
+  const [filterEndDate, setFilterEndDate] = useState("");
+  
+  const [sortCol, setSortCol] = useState<string>("date");
+  const [sortDesc, setSortDesc] = useState<boolean>(true);
+  const [page, setPage] = useState<number>(1);
+  const ITEMS_PER_PAGE = 10;
+
+  useEffect(() => {
+    setPage(1);
+  }, [search, filterStartDate, filterEndDate]);
+
   const isPic = ["pic", "warehouse", "cashier", "admin"].includes(role) && outletId;
-  const movements = isPic ? data.movements.filter((m: any) => m.locationId === outletId) : data.movements;
+  const filteredMovements = isPic ? data.movements.filter((m: any) => m.locationId === outletId) : data.movements;
+  
+  const rows = filteredMovements.filter((m: any) => {
+    const matchSearch = `${locations[m.locationId]?.name} ${variants[m.variantId]?.name} ${m.type} ${m.note} ${m.user}`
+      .toLowerCase()
+      .includes(search.toLowerCase());
+      
+    let matchDate = true;
+    const itemDate = new Date(m.createdAt);
+    if (filterStartDate) {
+      const start = new Date(`${filterStartDate}T00:00:00`);
+      matchDate = matchDate && itemDate >= start;
+    }
+    if (filterEndDate) {
+      const end = new Date(`${filterEndDate}T23:59:59`);
+      matchDate = matchDate && itemDate <= end;
+    }
+
+    return matchSearch && matchDate;
+  });
+
+  const totalMovements = rows.length;
+  const totalIn = rows.reduce((acc: number, m: any) => acc + (m.quantity > 0 ? m.quantity : 0), 0);
+  const totalOut = rows.reduce((acc: number, m: any) => acc + (m.quantity < 0 ? Math.abs(m.quantity) : 0), 0);
+
+  const sortedRows = [...rows].sort((a, b) => {
+    let valA: any, valB: any;
+    if (sortCol === "date") { valA = new Date(a.createdAt).getTime(); valB = new Date(b.createdAt).getTime(); }
+    else if (sortCol === "location") { valA = locations[a.locationId]?.name || ""; valB = locations[b.locationId]?.name || ""; }
+    else if (sortCol === "product") { valA = variants[a.variantId]?.name || ""; valB = variants[b.variantId]?.name || ""; }
+    else if (sortCol === "type") { valA = a.type; valB = b.type; }
+    else if (sortCol === "qty") { valA = a.quantity; valB = b.quantity; }
+    else if (sortCol === "user") { valA = a.user; valB = b.user; }
+    else { valA = 0; valB = 0; }
+
+    if (valA < valB) return sortDesc ? 1 : -1;
+    if (valA > valB) return sortDesc ? -1 : 1;
+    return 0;
+  });
+
+  const totalPages = Math.ceil(sortedRows.length / ITEMS_PER_PAGE) || 1;
+  const paginatedRows = sortedRows.slice((page - 1) * ITEMS_PER_PAGE, page * ITEMS_PER_PAGE);
+
+  const Th = ({ col, label }: { col: string; label: string }) => (
+    <th
+      style={{ cursor: "pointer", userSelect: "none" }}
+      onClick={() => {
+        if (sortCol === col) setSortDesc(!sortDesc);
+        else { setSortCol(col); setSortDesc(true); }
+      }}
+    >
+      {label} {sortCol === col ? (sortDesc ? "↓" : "↑") : ""}
+    </th>
+  );
   return (
     <PageBlock
       title="Jejak stok"
       desc="Setiap perubahan tersimpan permanen untuk audit operasional."
     >
-      <div className="timeline">
-        {movements.map((m: any) => (
-          <div key={m.id || Math.random()}>
-            <i className={m.quantity >= 0 ? "in" : "out"} />
-            <time>{new Date(m.createdAt).toLocaleString("id-ID")}</time>
-            <section>
-              <b>{m.type === 'INITIAL_BALANCE' ? 'Saldo Awal Produk' : m.type}</b>
-              <span>
-                {variants[m.variantId]?.name} · {locations[m.locationId]?.name}
-              </span>
-              <small>
-                {m.type === 'INITIAL_BALANCE' ? 'Stok awal saat produk dibuat' : m.note} · oleh {m.user}
-              </small>
-            </section>
-            <strong className={m.quantity >= 0 ? "positive" : "negative"}>
-              {m.quantity > 0 ? "+" : ""}
-              {qty(m.quantity, variants[m.variantId]?.unit)}
-            </strong>
-          </div>
-        ))}
+      <div className="stats-grid compact">
+        <Stat
+          label="Total Jejak"
+          value={totalMovements.toString()}
+          sub="Sesuai filter"
+        />
+        <Stat
+          label="Total Stok Masuk"
+          value={totalIn.toString()}
+          sub="Unit barang"
+        />
+        <Stat
+          label="Total Stok Keluar"
+          value={totalOut.toString()}
+          sub="Unit barang"
+        />
       </div>
+      <div className="filters">
+        <ListSearch
+          value={search}
+          setValue={setSearch}
+          placeholder="Cari lokasi, produk, tipe, pengguna"
+        />
+        <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--muted)' }}>DARI</span>
+          <input
+            type="date"
+            value={filterStartDate}
+            onChange={(e) => setFilterStartDate(e.target.value)}
+          />
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--muted)' }}>HINGGA</span>
+          <input
+            type="date"
+            value={filterEndDate}
+            onChange={(e) => setFilterEndDate(e.target.value)}
+          />
+        </label>
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <Th col="date" label="Waktu" />
+              <Th col="location" label="Lokasi" />
+              <Th col="product" label="Varian" />
+              <Th col="type" label="Tipe" />
+              <Th col="qty" label="Kuantitas" />
+              <Th col="user" label="Pengguna" />
+            </tr>
+          </thead>
+          <tbody>
+            {paginatedRows.length ? (
+              paginatedRows.map((m: any) => (
+                <tr key={m.id || Math.random()}>
+                  <td>{new Date(m.createdAt).toLocaleString("id-ID")}</td>
+                  <td>{locations[m.locationId]?.name}</td>
+                  <td>{variants[m.variantId]?.productName} - {variants[m.variantId]?.name}</td>
+                  <td>
+                    <b>{m.type === 'INITIAL_BALANCE' ? 'Saldo Awal' : m.type}</b>
+                    <br />
+                    <small>{m.type === 'INITIAL_BALANCE' ? 'Stok awal' : m.note}</small>
+                  </td>
+                  <td>
+                    <strong className={m.quantity >= 0 ? "positive" : "negative"}>
+                      {m.quantity > 0 ? "+" : ""}
+                      {qty(m.quantity, variants[m.variantId]?.unit)}
+                    </strong>
+                  </td>
+                  <td>{m.user}</td>
+                </tr>
+              ))
+            ) : (
+              <Empty text="Belum ada jejak stok." />
+            )}
+          </tbody>
+        </table>
+      </div>
+      {totalPages > 1 && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 0' }}>
+          <span style={{ fontSize: 13, color: 'var(--muted)' }}>
+            Menampilkan {(page - 1) * ITEMS_PER_PAGE + 1} - {Math.min(page * ITEMS_PER_PAGE, sortedRows.length)} dari {sortedRows.length} data
+          </span>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              className="secondary"
+              disabled={page === 1}
+              onClick={() => setPage(page - 1)}
+            >
+              Sebelumnya
+            </button>
+            <button
+              className="secondary"
+              disabled={page === totalPages}
+              onClick={() => setPage(page + 1)}
+            >
+              Selanjutnya
+            </button>
+          </div>
+        </div>
+      )}
     </PageBlock>
   );
 }
@@ -2719,6 +3631,15 @@ function Reports({ data, variants, locations, notify, role, outletId }: any) {
           s.items.some((i: any) => i.variantId === product)),
     ),
     total = sales.reduce((a: number, s: any) => a + s.total, 0),
+    receipts = (data.receipts || []).filter(
+      (r: any) =>
+        r.status !== "cancelled" &&
+        (!isPic || r.locationId === outletId) &&
+        new Date(r.createdAt).getTime() >= start &&
+        (location === "all" || r.locationId === location) &&
+        (product === "all" || r.variantId === product),
+    ),
+    totalReceipts = receipts.reduce((a: number, r: any) => a + (r.quantity * (r.unitCost || 0)), 0),
     sold: Record<string, number> = {};
   sales.forEach((s: any) =>
     s.items.forEach(
@@ -2753,51 +3674,133 @@ function Reports({ data, variants, locations, notify, role, outletId }: any) {
       .filter((x: any) => x.balance > 0)
       .sort((a: any, b: any) => (a.days ?? 99999) - (b.days ?? 99999))
       .slice(0, 5);
-  const download = () => {
-    const clean = (v: unknown) => `"${String(v ?? "").replaceAll('"', '""')}"`,
-      rows = [
-        [
-          "Tanggal",
-          "Outlet",
-          "Kanal",
-          "Produk",
-          "Jumlah",
-          "Pembayaran",
-          "Total",
-          "Status",
-        ],
-        ...sales.map((s: any) => [
+  const download = async () => {
+    // Prepare Sales Data - Detailed per item
+    const salesData: any[] = [];
+    sales.forEach((s: any) => {
+      s.items.forEach((item: any) => {
+        salesData.push([
           new Date(s.createdAt).toLocaleString("id-ID"),
-          locations[s.locationId]?.name,
-          s.channel,
-          variants[s.items[0]?.variantId]?.name,
-          s.items.reduce((a: number, i: any) => a + i.quantity, 0),
-          s.payment,
-          s.total,
-          "Selesai",
-        ]),
-      ],
-      blob = new Blob(
-        ["\ufeff" + rows.map((r) => r.map(clean).join(",")).join("\n")],
-        { type: "text/csv;charset=utf-8" },
-      ),
-      url = URL.createObjectURL(blob),
-      link = document.createElement("a");
-    link.href = url;
-    link.download = `laporan-veinstock-${period}-${new Date().toISOString().slice(0, 10)}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
-    notify(
-      "Laporan berhasil diunduh. Cek folder Unduhan/Downloads pada perangkat Anda.",
-    );
+          s.id.substring(0, 8).toUpperCase(), // Receipt No (short ID)
+          locations[s.locationId]?.name || '-',
+          s.channel || 'offline',
+          s.cashierName || '-',
+          variants[item.variantId]?.productName || '-',
+          variants[item.variantId]?.name || '-',
+          item.quantity,
+          item.price || (s.total / s.items.reduce((a:number, i:any)=>a+i.quantity,0)), // fallback
+          item.quantity * (item.price || (s.total / s.items.reduce((a:number, i:any)=>a+i.quantity,0))), // subtotal
+          s.payment || '-',
+          "Selesai"
+        ]);
+      });
+    });
+
+    // Prepare Receipts Data (Stok Masuk)
+    const receiptsData: any[] = [];
+    receipts.forEach((r: any) => {
+      receiptsData.push([
+        new Date(r.createdAt).toLocaleString("id-ID"),
+        locations[r.locationId]?.name || '-',
+        r.sourceType === "production" ? "Produksi Internal" : r.supplierName || "Supplier",
+        variants[r.variantId]?.productName || '-',
+        variants[r.variantId]?.name || '-',
+        r.quantity,
+        r.unitCost || 0,
+        r.quantity * (r.unitCost || 0),
+        r.note || '-',
+        "Selesai"
+      ]);
+    });
+
+    await downloadExcel(`Laporan_Veinstock_${period}_${new Date().toISOString().slice(0, 10)}`, [
+      {
+        name: "Penjualan Detail",
+        columns: [
+          { header: "Tanggal", key: "tanggal", width: 20 },
+          { header: "No. Struk", key: "receipt", width: 15 },
+          { header: "Outlet", key: "outlet", width: 20 },
+          { header: "Kanal", key: "kanal", width: 12 },
+          { header: "Kasir", key: "kasir", width: 15 },
+          { header: "Produk", key: "produk", width: 25 },
+          { header: "Varian", key: "varian", width: 15 },
+          { header: "Jumlah", key: "jumlah", width: 10 },
+          { header: "Harga Satuan", key: "hargasatuan", width: 15 },
+          { header: "Subtotal", key: "subtotal", width: 15 },
+          { header: "Pembayaran", key: "pembayaran", width: 15 },
+          { header: "Status", key: "status", width: 12 }
+        ],
+        data: salesData
+      },
+      {
+        name: "Stok Masuk",
+        columns: [
+          { header: "Tanggal", key: "tanggal", width: 20 },
+          { header: "Lokasi", key: "lokasi", width: 20 },
+          { header: "Sumber", key: "sumber", width: 20 },
+          { header: "Produk", key: "produk", width: 25 },
+          { header: "Varian", key: "varian", width: 15 },
+          { header: "Jumlah Masuk", key: "jumlah", width: 15 },
+          { header: "Harga Beli / Modal", key: "harga", width: 20 },
+          { header: "Total Nilai", key: "totalnilai", width: 20 },
+          { header: "Catatan", key: "catatan", width: 25 },
+          { header: "Status", key: "status", width: 12 }
+        ],
+        data: receiptsData
+      }
+    ]);
+    
+    notify("Laporan Excel berhasil diunduh.");
   };
+
+  const downloadPDF = async () => {
+    try {
+      notify("Mempersiapkan PDF, mohon tunggu...");
+      const element = document.getElementById("report-content");
+      if (!element) return notify("Konten laporan tidak ditemukan");
+      
+      const { default: html2canvas } = await import("html2canvas");
+      const { default: jsPDF } = await import("jspdf");
+      
+      const canvas = await html2canvas(element, { scale: 2, useCORS: true, backgroundColor: "#ffffff" });
+      const imgData = canvas.toDataURL("image/png");
+      const pdf = new jsPDF("p", "mm", "a4");
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
+      
+      // Calculate how many pages we need
+      let heightLeft = pdfHeight;
+      let position = 0;
+      
+      pdf.addImage(imgData, "PNG", 0, position, pdfWidth, pdfHeight);
+      heightLeft -= pdf.internal.pageSize.getHeight();
+      
+      while (heightLeft >= 0) {
+        position = heightLeft - pdfHeight;
+        pdf.addPage();
+        pdf.addImage(imgData, "PNG", 0, position, pdfWidth, pdfHeight);
+        heightLeft -= pdf.internal.pageSize.getHeight();
+      }
+      
+      pdf.save(`Laporan_Veinstock_${period}_${new Date().toISOString().slice(0, 10)}.pdf`);
+      notify("Laporan PDF berhasil diunduh.");
+    } catch (err) {
+      console.error(err);
+      notify("Gagal mengunduh PDF");
+    }
+  };
+
   return (
     <PageBlock
       title="Laporan & analisis stok"
       desc="Saring per periode, outlet, produk, dan kanal."
-      action="Unduh CSV"
+      action="Unduh Excel"
       onAction={download}
+      secondaryAction="Unduh PDF"
+      onSecondaryAction={downloadPDF}
     >
+      <div id="report-content" style={{ padding: '16px', backgroundColor: '#fff', borderRadius: '8px' }}>
+
       <div className="filters report-filters">
         <select value={period} onChange={(e) => setPeriod(e.target.value)}>
           <option value="day">Hari ini</option>
@@ -2828,11 +3831,16 @@ function Reports({ data, variants, locations, notify, role, outletId }: any) {
           <option>reseller</option>
         </select>
       </div>
-      <div className="report-hero">
-        <div>
+      <div className="report-hero" style={{display: 'flex', gap: 16}}>
+        <div style={{flex: 1}}>
           <small>TOTAL PENJUALAN</small>
           <h2>{money(total)}</h2>
           <p>{sales.length} transaksi sesuai filter.</p>
+        </div>
+        <div style={{flex: 1}}>
+          <small>TOTAL STOK MASUK</small>
+          <h2>{money(totalReceipts)}</h2>
+          <p>{receipts.length} catatan penerimaan barang.</p>
         </div>
         <Download />
       </div>
@@ -2847,15 +3855,15 @@ function Reports({ data, variants, locations, notify, role, outletId }: any) {
           }
         />
         <Stat
-          label="Nilai penjualan"
-          value={money(total)}
-          sub="Tidak termasuk transaksi batal"
+          label="Nilai stok masuk"
+          value={money(totalReceipts)}
+          sub="Estimasi nilai modal masuk"
         />
         <Stat
           label="Stok tertua"
           value={
             data.movements.length
-              ? variants[data.movements[data.movements.length - 1]?.variantId]
+              ? variants[data.movements[0]?.variantId]
                   ?.name || "-"
               : "Belum ada"
           }
@@ -2879,6 +3887,7 @@ function Reports({ data, variants, locations, notify, role, outletId }: any) {
           ))}
         </div>
       </Card>
+      </div>
     </PageBlock>
   );
 }
@@ -2921,19 +3930,26 @@ function UsersPage({ data, currentUser, businessLogo, open, edit }: any) {
     </PageBlock>
   );
 }
-const PageBlock = ({ title, desc, action, onAction, children }: any) => (
+const PageBlock = ({ title, desc, action, onAction, secondaryAction, onSecondaryAction, children }: any) => (
   <>
     <section className="page-head">
       <div>
         <h2>{title}</h2>
         <p>{desc}</p>
       </div>
-      {action && onAction && (
-        <button className="primary" onClick={onAction}>
-          <Plus />
-          {action}
-        </button>
-      )}
+      <div style={{ display: 'flex', gap: '8px' }}>
+        {secondaryAction && onSecondaryAction && (
+          <button className="secondary" onClick={onSecondaryAction}>
+            {secondaryAction}
+          </button>
+        )}
+        {action && onAction && (
+          <button className="primary" onClick={onAction}>
+            <Plus />
+            {action}
+          </button>
+        )}
+      </div>
     </section>
     {children}
   </>
@@ -2950,9 +3966,9 @@ const Empty = ({ text }: any) => (
   </tr>
 );
 
-const Modal = ({ title, desc, close, children }: any) => (
+const Modal = ({ title, desc, close, children, className = "" }: any) => (
   <div className="modal-backdrop">
-    <div className="modal">
+    <div className={`modal ${className}`}>
       <header>
         <div>
           <h2>{title}</h2>
@@ -2972,8 +3988,7 @@ function ProductModal({
   uploadImage,
   product,
   onDelete,
-  locations,
-  user
+  locations
 }: any) {
   const editing = Boolean(product),
     [name, setName] = useState(product?.name || ""),
@@ -3088,10 +4103,18 @@ function ProductModal({
           <div className="form-grid">
             <Field label="Satuan stok">
               <select value={unit} onChange={(e) => setUnit(e.target.value as StockUnit)}>
-                <option value="pcs">Pcs</option>
-                <option value="gram">Gram</option>
-                <option value="ml">Mililiter</option>
+                <option value="Pcs">Pcs</option>
+                <option value="Botol">Botol</option>
+                <option value="Cup">Cup</option>
+                <option value="Pack">Pack</option>
+                <option value="Box">Box</option>
+                <option value="Dus">Dus</option>
+                <option value="Kg">Kg</option>
+                <option value="Gram">Gram</option>
+                <option value="Liter">Liter</option>
+                <option value="Ml">Ml</option>
               </select>
+              <span className="upload-hint" style={{ marginTop: '4px', display: 'block' }}>Sistem belum mendukung konversi otomatis.</span>
             </Field>
             {editing && (
               <label className="toggle-field" style={{ alignSelf: 'end', marginBottom: '8px' }}>
@@ -3108,10 +4131,10 @@ function ProductModal({
             <button type="button" onClick={applyBulk} style={{ background: 'var(--green)', color: 'white', border: 'none', padding: '6px 12px', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer' }}>Terapkan</button>
           </div>
           <div className="form-grid">
-            <Field label="Harga Modal"><input type="number" min="0" value={bulkCost} onChange={(e) => setBulkCost(e.target.value.replace(/^0+(?=\d)/, ''))} placeholder="Opsional" style={{ background: 'white' }} /></Field>
-            <Field label="Harga Jual"><input type="number" min="0" value={bulkPrice} onChange={(e) => setBulkPrice(e.target.value.replace(/^0+(?=\d)/, ''))} placeholder="Opsional" style={{ background: 'white' }} /></Field>
-            <Field label="Harga Reseller"><input type="number" min="0" value={bulkReseller} onChange={(e) => setBulkReseller(e.target.value.replace(/^0+(?=\d)/, ''))} placeholder="Opsional" style={{ background: 'white' }} /></Field>
-            <Field label="Min Stok"><input type="number" min="0" value={bulkMinStock} onChange={(e) => setBulkMinStock(e.target.value.replace(/^0+(?=\d)/, ''))} placeholder="Opsional" style={{ background: 'white' }} /></Field>
+            <Field label="Harga Modal"><input type="number" min="0" value={String(bulkCost)} onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); setBulkCost(e.target.value) }} placeholder="Opsional" style={{ background: 'white' }} /></Field>
+            <Field label="Harga Jual"><input type="number" min="0" value={String(bulkPrice)} onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); setBulkPrice(e.target.value) }} placeholder="Opsional" style={{ background: 'white' }} /></Field>
+            <Field label="Harga Reseller"><input type="number" min="0" value={String(bulkReseller)} onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); setBulkReseller(e.target.value) }} placeholder="Opsional" style={{ background: 'white' }} /></Field>
+            <Field label="Min Stok"><input type="number" min="0" value={String(bulkMinStock)} onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); setBulkMinStock(e.target.value) }} placeholder="Opsional" style={{ background: 'white' }} /></Field>
           </div>
         </div>
 
@@ -3160,22 +4183,22 @@ function ProductModal({
               <Field label="SKU (Otomatis jika kosong)">
                 <input value={v.sku} onChange={(e) => updateVariant(index, 'sku', e.target.value)} />
               </Field>
-              <Field label="Harga Modal">
-                <input required type="number" min="0" value={v.cost === 0 ? '' : v.cost} onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); updateVariant(index, 'cost', +e.target.value) }} />
+              <Field label={`Harga Modal${bulkCost !== '' ? ' (Dilewati)' : ''}`}>
+                <input required type="number" min="0" value={v.cost === 0 ? '' : String(v.cost)} onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); updateVariant(index, 'cost', +e.target.value) }} />
               </Field>
-              <Field label="Harga Jual">
-                <input required type="number" min="0" value={v.price === 0 ? '' : v.price} onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); updateVariant(index, 'price', +e.target.value) }} />
+              <Field label={`Harga Jual${bulkPrice !== '' ? ' (Dilewati)' : ''}`}>
+                <input required type="number" min="0" value={v.price === 0 ? '' : String(v.price)} onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); updateVariant(index, 'price', +e.target.value) }} />
               </Field>
-              <Field label="Harga Reseller">
-                <input type="number" min="0" value={v.resellerPrice === 0 ? '' : v.resellerPrice} onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); updateVariant(index, 'resellerPrice', +e.target.value) }} />
+              <Field label={`Harga Reseller${bulkReseller !== '' ? ' (Dilewati)' : ''}`}>
+                <input type="number" min="0" value={v.resellerPrice === 0 ? '' : String(v.resellerPrice)} onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); updateVariant(index, 'resellerPrice', +e.target.value) }} />
               </Field>
-              <Field label="Minimum Stok">
-                <input type="number" min="0" value={v.minStock === 0 ? '' : v.minStock} onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); updateVariant(index, 'minStock', +e.target.value) }} />
+              <Field label={`Min Stok${bulkMinStock !== '' ? ' (Dilewati)' : ''}`}>
+                <input type="number" min="0" value={v.minStock === 0 ? '' : String(v.minStock)} onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); updateVariant(index, 'minStock', +e.target.value) }} />
               </Field>
               {!editing && includeInitialStock && (
                 <Field label="Stok Awal">
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <input type="number" min="0" value={v.initialStock === 0 ? '' : v.initialStock} onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); updateVariant(index, 'initialStock', +e.target.value) }} placeholder="0" style={{ flex: 1 }} />
+                    <input type="number" min="0" value={v.initialStock === 0 ? '' : String(v.initialStock)} onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); updateVariant(index, 'initialStock', +e.target.value) }} placeholder="0" style={{ flex: 1 }} />
                     <span style={{ fontSize: '14px', color: '#64748b' }}>{unit}</span>
                   </div>
                   <span className="upload-hint" style={{ marginTop: '4px' }}>Isi jumlah barang yang sudah tersedia.</span>
@@ -3447,6 +4470,7 @@ function UserModal({ data, close, save, user, uploadImage, onDelete }: any) {
   );
 }
 function ReceiptModal({ data, receipt, close, save }: any) {
+  const [isSaving, setIsSaving] = useState(false);
   const variants = data.products
       .filter((p: any) => p.active)
       .flatMap((p: any) =>
@@ -3461,11 +4485,12 @@ function ReceiptModal({ data, receipt, close, save }: any) {
     [locationId, setLocationId] = useState(
       receipt?.locationId || data.locations.find((l: any) => l.active)?.id || "",
     ),
-    [variantId, setVariantId] = useState(receipt?.variantId || variants[0]?.id || ""),
-    [quantity, setQuantity] = useState(receipt?.quantity || 1),
-    [unitCost, setUnitCost] = useState(receipt?.unitCost ?? (variants[0]?.cost || 0)),
+    [searchVariant, setSearchVariant] = useState(""),
+    [selectedItems, setSelectedItems] = useState<Record<string, { quantity: number, unitCost: number }>>(
+      receipt ? { [receipt.variantId]: { quantity: receipt.quantity, unitCost: receipt.unitCost } } : {}
+    ),
     [note, setNote] = useState(receipt?.note || ""),
-    selected = variants.find((v: any) => v.id === variantId);
+    filteredVariants = variants.filter((v: any) => `${v.sku} ${v.productName} ${v.name}`.toLowerCase().includes(searchVariant.toLowerCase()));
   return (
     <Modal
       title={receipt ? "Edit stok masuk" : "Catat stok masuk"}
@@ -3475,13 +4500,13 @@ function ReceiptModal({ data, receipt, close, save }: any) {
       <form
         onSubmit={(e) => {
           e.preventDefault();
+          if (isSaving) return;
+          setIsSaving(true);
           save({
             sourceType,
             supplierName: sourceType === "supplier" ? supplierName : undefined,
             locationId,
-            variantId,
-            quantity,
-            unitCost,
+            items: Object.entries(selectedItems).map(([vid, val]) => ({ variantId: vid, quantity: val.quantity, unitCost: val.unitCost })),
             note,
           });
         }}
@@ -3521,40 +4546,68 @@ function ReceiptModal({ data, receipt, close, save }: any) {
               ))}
           </select>
         </Field>
-        <Field label="Produk / varian">
-          <select
-            value={variantId}
-            onChange={(e) => {
-              const id = e.target.value;
-              setVariantId(id);
-              setUnitCost(variants.find((v: any) => v.id === id)?.cost || 0);
-            }}
-          >
-            {variants.map((v: any) => (
-              <option key={v.id} value={v.id}>
-                {v.productName} · {v.name}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <div className="form-grid">
-          <Field label={`Jumlah (${selected?.unit || "unit"})`}>
-            <input
-              type="number"
-              min="1"
-              value={quantity}
-              onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); setQuantity(+e.target.value); }}
-            />
-          </Field>
-          <Field label={`Harga modal per ${selected?.unit || "unit"}`}>
-            <input
-              type="number"
-              min="0"
-              value={unitCost}
-              onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); setUnitCost(+e.target.value); }}
-            />
-          </Field>
-        </div>
+        {receipt ? (
+          <div className="form-grid">
+            <Field label={`Jumlah (${variants.find((v:any) => v.id === receipt.variantId)?.unit || "unit"})`}>
+              <input
+                type="number"
+                min="1"
+                value={String(selectedItems[receipt.variantId]?.quantity || 1)}
+                onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); setSelectedItems({...selectedItems, [receipt.variantId]: { ...selectedItems[receipt.variantId], quantity: +e.target.value }}); }}
+              />
+            </Field>
+            <Field label={`Harga modal per ${variants.find((v:any) => v.id === receipt.variantId)?.unit || "unit"}`}>
+              <input
+                type="number"
+                min="0"
+                value={String(selectedItems[receipt.variantId]?.unitCost || 0)}
+                onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); setSelectedItems({...selectedItems, [receipt.variantId]: { ...selectedItems[receipt.variantId], unitCost: +e.target.value }}); }}
+              />
+            </Field>
+          </div>
+        ) : (
+          <>
+            <Field label="Pilih Produk / Varian">
+              <input value={searchVariant} onChange={e => setSearchVariant(e.target.value)} placeholder="Cari varian..." />
+              <div style={{ maxHeight: 200, overflowY: 'auto', border: '1px solid var(--line)', borderRadius: 6, padding: 8, marginTop: 8 }}>
+                {filteredVariants.map((v: any) => (
+                  <label key={v.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={!!selectedItems[v.id]} style={{ width: 'auto', padding: 0, margin: 0 }} onChange={e => {
+                      if (e.target.checked) {
+                        setSelectedItems({ ...selectedItems, [v.id]: { quantity: 1, unitCost: v.cost || 0 } });
+                      } else {
+                        const next = { ...selectedItems };
+                        delete next[v.id];
+                        setSelectedItems(next);
+                      }
+                    }} />
+                    <span>{v.productName} · {v.name}</span>
+                  </label>
+                ))}
+              </div>
+            </Field>
+            {Object.keys(selectedItems).length > 0 && (
+              <div style={{ marginTop: 16, marginBottom: 16 }}>
+                <h4 style={{ margin: '0 0 12px', fontSize: 14 }}>Varian Terpilih:</h4>
+                {Object.entries(selectedItems).map(([vid, item]) => {
+                  const v = variants.find((x: any) => x.id === vid);
+                  if (!v) return null;
+                  return (
+                    <div key={vid} className="form-grid" style={{ background: '#f8fafc', padding: 12, borderRadius: 6, marginBottom: 8, border: '1px solid #e2e8f0' }}>
+                      <div style={{ gridColumn: '1 / -1', fontSize: 13 }}><b>{v.productName} · {v.name}</b></div>
+                      <Field label={`Jumlah (${v.unit})`}>
+                         <input type="number" min="1" value={String(item.quantity)} onChange={e => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); setSelectedItems({...selectedItems, [vid]: { ...item, quantity: +(e.target.value || 0) }}) }} style={{ background: 'white' }} />
+                      </Field>
+                      <Field label="Harga Modal">
+                         <input type="number" min="0" value={String(item.unitCost)} onChange={e => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); setSelectedItems({...selectedItems, [vid]: { ...item, unitCost: +(e.target.value || 0) }}) }} style={{ background: 'white' }} />
+                      </Field>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </>
+        )}
         <Field label="Catatan">
           <textarea
             value={note}
@@ -3562,12 +4615,13 @@ function ReceiptModal({ data, receipt, close, save }: any) {
             placeholder="Nomor faktur, batch, atau catatan produksi"
           />
         </Field>
-        <ModalActions close={close} />
+        <ModalActions close={close} disabled={isSaving} />
       </form>
     </Modal>
   );
 }
 function ReturnModal({ data, close, save }: any) {
+  const [isSaving, setIsSaving] = useState(false);
   const variants = data.products
       .filter((p: any) => p.active)
       .flatMap((p: any) =>
@@ -3579,10 +4633,11 @@ function ReturnModal({ data, close, save }: any) {
     [locationId, setLocationId] = useState(
       data.locations.find((l: any) => l.active)?.id || "",
     ),
-    [variantId, setVariantId] = useState(variants[0]?.id || ""),
-    [quantity, setQuantity] = useState(1),
+    [searchVariant, setSearchVariant] = useState(""),
+    [selectedItems, setSelectedItems] = useState<Record<string, { quantity: number }>>({}),
     [reason, setReason] = useState(""),
-    selected = variants.find((v: any) => v.id === variantId);
+    filteredVariants = variants.filter((v: any) => `${v.sku} ${v.productName} ${v.name}`.toLowerCase().includes(searchVariant.toLowerCase()));
+
   return (
     <Modal
       title="Catat retur"
@@ -3592,7 +4647,10 @@ function ReturnModal({ data, close, save }: any) {
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          save({ type, locationId, variantId, quantity, reason });
+          if (isSaving) return;
+          setIsSaving(true);
+          if (Object.keys(selectedItems).length === 0) { setIsSaving(false); return alert("Pilih minimal satu produk"); }
+          save({ type, locationId, items: Object.entries(selectedItems).map(([vid, val]) => ({ variantId: vid, quantity: val.quantity })), reason });
         }}
       >
         <Field label="Jenis retur">
@@ -3618,26 +4676,42 @@ function ReturnModal({ data, close, save }: any) {
               ))}
           </select>
         </Field>
-        <Field label="Produk / varian">
-          <select
-            value={variantId}
-            onChange={(e) => setVariantId(e.target.value)}
-          >
-            {variants.map((v: any) => (
-              <option key={v.id} value={v.id}>
-                {v.productName} · {v.name}
-              </option>
+        <Field label="Pilih Produk / Varian">
+          <input value={searchVariant} onChange={e => setSearchVariant(e.target.value)} placeholder="Cari varian..." />
+          <div style={{ maxHeight: 200, overflowY: 'auto', border: '1px solid var(--line)', borderRadius: 6, padding: 8, marginTop: 8 }}>
+            {filteredVariants.map((v: any) => (
+              <label key={v.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', cursor: 'pointer' }}>
+                <input type="checkbox" checked={!!selectedItems[v.id]} style={{ width: 'auto', padding: 0, margin: 0 }} onChange={e => {
+                  if (e.target.checked) {
+                    setSelectedItems({ ...selectedItems, [v.id]: { quantity: 1 } });
+                  } else {
+                    const next = { ...selectedItems };
+                    delete next[v.id];
+                    setSelectedItems(next);
+                  }
+                }} />
+                <span>{v.productName} · {v.name}</span>
+              </label>
             ))}
-          </select>
+          </div>
         </Field>
-        <Field label={`Jumlah (${selected?.unit || "unit"})`}>
-          <input
-            type="number"
-            min="1"
-            value={quantity}
-            onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); setQuantity(+e.target.value); }}
-          />
-        </Field>
+        {Object.keys(selectedItems).length > 0 && (
+          <div style={{ marginTop: 16, marginBottom: 16 }}>
+            <h4 style={{ margin: '0 0 12px', fontSize: 14 }}>Varian Terpilih:</h4>
+            {Object.entries(selectedItems).map(([vid, item]) => {
+              const v = variants.find((x: any) => x.id === vid);
+              if (!v) return null;
+              return (
+                <div key={vid} style={{ background: '#f8fafc', padding: 12, borderRadius: 6, marginBottom: 8, border: '1px solid #e2e8f0' }}>
+                  <div style={{ fontSize: 13, marginBottom: 8 }}><b>{v.productName} · {v.name}</b></div>
+                  <Field label={`Jumlah (${v.unit})`}>
+                     <input type="number" min="1" value={String(item.quantity)} onChange={e => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); setSelectedItems({...selectedItems, [vid]: { quantity: +(e.target.value || 0) }}) }} style={{ background: 'white' }} />
+                  </Field>
+                </div>
+              );
+            })}
+          </div>
+        )}
         <Field label="Alasan retur">
           <textarea
             required
@@ -3646,7 +4720,7 @@ function ReturnModal({ data, close, save }: any) {
             placeholder="Contoh: Barang rusak atau salah kirim"
           />
         </Field>
-        <ModalActions close={close} />
+        <ModalActions close={close} disabled={isSaving} />
       </form>
     </Modal>
   );
@@ -3658,6 +4732,7 @@ function BusinessModal({ data, close, save, uploadImage }: any) {
     [phone, setPhone] = useState(current.phone || ""),
     [email, setEmail] = useState(current.email || ""),
     [address, setAddress] = useState(current.address || ""),
+    [negativeStockPolicy, setNegativeStockPolicy] = useState(current.negativeStockPolicy || "BLOCK"),
     [file, setFile] = useState<File | null>(null),
     [loading, setLoading] = useState(false),
     [error, setError] = useState("");
@@ -3674,7 +4749,7 @@ function BusinessModal({ data, close, save, uploadImage }: any) {
           setError("");
           try {
             const logoUrl = file ? await uploadImage(file) : current.logoUrl;
-            save({ name, ownerName, phone, email, address, logoUrl });
+            save({ name, ownerName, phone, email, address, logoUrl, negativeStockPolicy });
           } catch (err) {
             setError(
               err instanceof Error ? err.message : "Gagal menyimpan profil",
@@ -3721,12 +4796,20 @@ function BusinessModal({ data, close, save, uploadImage }: any) {
             />
           </Field>
         </div>
-        <Field label="Alamat usaha">
-          <textarea
-            value={address}
-            onChange={(e) => setAddress(e.target.value)}
-          />
-        </Field>
+        <div className="form-grid">
+          <Field label="Alamat usaha">
+            <textarea
+              value={address}
+              onChange={(e) => setAddress(e.target.value)}
+            />
+          </Field>
+          <Field label="Kebijakan Stok Negatif">
+            <select value={negativeStockPolicy} onChange={(e) => setNegativeStockPolicy(e.target.value)}>
+              <option value="BLOCK">BLOCK (Tolak transaksi jika stok habis)</option>
+              <option value="WARN">WARN (Munculkan peringatan)</option>
+            </select>
+          </Field>
+        </div>
         {error && <div className="login-error">{error}</div>}
         <footer className="modal-actions">
           <button type="button" className="secondary" onClick={close}>
@@ -3742,6 +4825,7 @@ function BusinessModal({ data, close, save, uploadImage }: any) {
   );
 }
 function TransferModal({ data, close, save, fixedFrom }: any) {
+  const [isSaving, setIsSaving] = useState(false);
   const activeLocations=data.locations.filter((l:any)=>l.active),variants = data.products.filter((p:any)=>p.active).flatMap((p: any) =>
       p.variants.filter((item:any)=>item.active!==false).map((item: any) => ({
         ...item,
@@ -3751,9 +4835,13 @@ function TransferModal({ data, close, save, fixedFrom }: any) {
     ),
     [from, setFrom] = useState(fixedFrom || activeLocations[0]?.id || ""),
     [to, setTo] = useState(activeLocations.find((l: any) => l.id !== (fixedFrom || activeLocations[0]?.id))?.id || ""),
-    [v, setV] = useState(variants[0]?.id || ""),
-    [q, setQ] = useState(1),
-    selected = variants.find((item: any) => item.id === v) || variants[0] || {};
+    [searchVariant, setSearchVariant] = useState(""),
+    [selectedItems, setSelectedItems] = useState<Record<string, { quantity: number }>>({}),
+    filteredVariants = variants.filter((v: any) => {
+      if (!`${v.sku} ${v.productName} ${v.name}`.toLowerCase().includes(searchVariant.toLowerCase())) return false;
+      return getBalance(data.balances, from, v.id) > 0 || selectedItems[v.id];
+    });
+
   return (
     <Modal
       title="Buat transfer stok"
@@ -3763,7 +4851,10 @@ function TransferModal({ data, close, save, fixedFrom }: any) {
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          save(from, to, v, q);
+          if (isSaving) return;
+          setIsSaving(true);
+          if (Object.keys(selectedItems).length === 0) { setIsSaving(false); return alert("Pilih minimal satu produk"); }
+          save(from, to, Object.entries(selectedItems).map(([vid, val]) => ({ variantId: vid, quantity: val.quantity })));
         }}
       >
         <Field label="Lokasi asal">
@@ -3802,24 +4893,43 @@ function TransferModal({ data, close, save, fixedFrom }: any) {
               ))}
           </select>
         </Field>
-        <Field label="Produk / varian">
-          <select value={v} onChange={(e) => setV(e.target.value)}>
-            {variants.map((item: any) => (
-              <option key={item.id} value={item.id}>
-                {item.productName} · {item.name}
-              </option>
+        <Field label="Pilih Produk / Varian">
+          <input value={searchVariant} onChange={e => setSearchVariant(e.target.value)} placeholder="Cari varian..." />
+          <div style={{ maxHeight: 200, overflowY: 'auto', border: '1px solid var(--line)', borderRadius: 6, padding: 8, marginTop: 8 }}>
+            {filteredVariants.map((v: any) => (
+              <label key={v.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', cursor: 'pointer' }}>
+                <input type="checkbox" checked={!!selectedItems[v.id]} style={{ width: 'auto', padding: 0, margin: 0 }} onChange={e => {
+                  if (e.target.checked) {
+                    setSelectedItems({ ...selectedItems, [v.id]: { quantity: 1 } });
+                  } else {
+                    const next = { ...selectedItems };
+                    delete next[v.id];
+                    setSelectedItems(next);
+                  }
+                }} />
+                <span>{v.productName} · {v.name} (Stok: {getBalance(data.balances, from, v.id)} {v.unit})</span>
+              </label>
             ))}
-          </select>
+          </div>
         </Field>
-        <Field label={`Jumlah (${selected.unit})`}>
-          <input
-            type="number"
-            min="1"
-            value={q}
-            onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); setQ(+e.target.value); }}
-          />
-        </Field>
-        <ModalActions close={close} />
+        {Object.keys(selectedItems).length > 0 && (
+          <div style={{ marginTop: 16, marginBottom: 16 }}>
+            <h4 style={{ margin: '0 0 12px', fontSize: 14 }}>Varian Terpilih:</h4>
+            {Object.entries(selectedItems).map(([vid, item]) => {
+              const v = variants.find((x: any) => x.id === vid);
+              if (!v) return null;
+              return (
+                <div key={vid} style={{ background: '#f8fafc', padding: 12, borderRadius: 6, marginBottom: 8, border: '1px solid #e2e8f0' }}>
+                  <div style={{ fontSize: 13, marginBottom: 8 }}><b>{v.productName} · {v.name}</b></div>
+                  <Field label={`Jumlah (${v.unit})`}>
+                     <input type="number" min="1" value={String(item.quantity)} onChange={e => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); setSelectedItems({...selectedItems, [vid]: { quantity: +(e.target.value || 0) }}) }} style={{ background: 'white' }} />
+                  </Field>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        <ModalActions close={close} disabled={isSaving} />
       </form>
     </Modal>
   );
@@ -3837,34 +4947,32 @@ function SaleModal({ data, close, save, fixedLocation }: any) {
     ),
     [channel, setChannel] = useState<Channel>("offline"),
     [skuSearch, setSkuSearch] = useState(""),
-    [v, setV] = useState(variants[0]?.id || ""),
-    [amount, setAmount] = useState(1),
-    [useCups, setUseCups] = useState(false),
     [payment, setPayment] = useState("QRIS"),
-    matchingVariants = variants.filter((item: any) => `${item.sku} ${item.productName} ${item.name}`.toLowerCase().includes(skuSearch.toLowerCase())),
-    selected = variants.find((item: any) => item.id === v) || variants[0] || {},
-    canUseCups = selected?.unit === "gram" && Boolean(selected?.gramsPerCup);
+    [cart, setCart] = useState<Array<{ variantId: string; quantity: number }>>([]),
+    matchingVariants = variants.filter((item: any) => {
+      if (!`${item.sku} ${item.productName} ${item.name}`.toLowerCase().includes(skuSearch.toLowerCase())) return false;
+      return getBalance(data.balances, loc, item.id) > 0 || cart.some(c => c.variantId === item.id);
+    });
+  
+  const totalQty = cart.reduce((acc, c) => acc + c.quantity, 0);
+  const totalAmount = cart.reduce((acc, c) => {
+    const varDetail = variants.find((item: any) => item.id === c.variantId);
+    const price = channel === "reseller" ? (varDetail?.resellerPrice || 0) : (varDetail?.price || 0);
+    return acc + (c.quantity * price);
+  }, 0);
+
   return (
     <Modal
       title="Catat penjualan"
-      desc="Gunakan jumlah satuan stok atau konversi gelas untuk produk mix."
+      desc="Catat penjualan untuk mengurangi stok dan mencatat riwayat transaksi."
       close={close}
+      className="large"
     >
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          const baseAmount =
-            useCups && canUseCups
-              ? Math.round(amount * selected.gramsPerCup)
-              : amount;
-          save(
-            loc,
-            channel,
-            v,
-            baseAmount,
-            payment,
-            useCups ? amount : undefined,
-          );
+          if (cart.length === 0) return alert("Keranjang masih kosong");
+          save(loc, channel, cart, payment);
         }}
       >
         <div className="form-grid">
@@ -3892,56 +5000,95 @@ function SaleModal({ data, close, save, fixedLocation }: any) {
             </select>
           </Field>
         </div>
-        <Field label="Produk / varian">
-          <input
-            value={skuSearch}
-            onChange={(e) => {
-              const next = e.target.value;
-              setSkuSearch(next);
-              const exact = variants.find((item: any) => item.sku.toLowerCase() === next.trim().toLowerCase());
-              if (exact) setV(exact.id);
-            }}
-            placeholder="Cari atau scan barcode / SKU"
-            autoComplete="off"
-          />
-          <select
-            value={v}
-            onChange={(e) => {
-              setV(e.target.value);
-              setUseCups(false);
-            }}
-          >
-            {matchingVariants.map((item: any) => (
-              <option key={item.id} value={item.id}>
-                {item.sku} · {item.productName} · {item.name}
-              </option>
-            ))}
-          </select>
-        </Field>
-        {canUseCups && (
-          <Field label="Cara input">
-            <select
-              value={useCups ? "cups" : "base"}
-              onChange={(e) => setUseCups(e.target.value === "cups")}
-            >
-              <option value="base">Gram langsung</option>
-              <option value="cups">
-                Jumlah gelas ({selected.gramsPerCup} gr/gelas)
-              </option>
-            </select>
-          </Field>
-        )}
-        <div className="form-grid">
-          <Field label={useCups ? "Jumlah gelas" : `Jumlah (${selected.unit})`}>
+        <div style={{ background: 'var(--bg)', padding: '16px', borderRadius: '8px', marginBottom: '16px', border: '1px solid var(--border)' }}>
+          <h4 style={{ margin: '0 0 12px', fontSize: 13, color: 'var(--muted)' }}>PILIH PRODUK / VARIAN</h4>
+          <Field label="">
             <input
-              type="number"
-              step={useCups ? "0.25" : "1"}
-              min={useCups ? "0.25" : "1"}
-              value={amount}
-              onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); setAmount(+e.target.value); }}
+              value={skuSearch}
+              onChange={(e) => setSkuSearch(e.target.value)}
+              placeholder="Cari atau scan barcode / SKU"
+              autoComplete="off"
             />
+            <div style={{ maxHeight: 200, overflowY: 'auto', border: '1px solid var(--line)', borderRadius: 6, padding: 8, marginTop: 8, background: 'white' }}>
+              {matchingVariants.map((v: any) => {
+                const checked = cart.some(c => c.variantId === v.id);
+                return (
+                  <label key={v.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={checked} style={{ width: 'auto', padding: 0, margin: 0 }} onChange={e => {
+                      if (e.target.checked) {
+                        setCart([...cart, { variantId: v.id, quantity: 1 }]);
+                      } else {
+                        setCart(cart.filter(c => c.variantId !== v.id));
+                      }
+                    }} />
+                    <span>{v.productName} · {v.name} (Stok: {getBalance(data.balances, loc, v.id)} {v.unit})</span>
+                  </label>
+                )
+              })}
+            </div>
           </Field>
-          <Field label="Pembayaran">
+        </div>
+        
+        {cart.length > 0 && (
+          <div style={{ marginBottom: 16 }}>
+            <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse', textAlign: 'left' }}>
+              <thead>
+                <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                  <th style={{ padding: '8px 0' }}>Produk</th>
+                  <th style={{ padding: '8px 0' }}>Harga</th>
+                  <th style={{ padding: '8px 0' }}>Qty</th>
+                  <th style={{ padding: '8px 0', textAlign: 'right' }}>Subtotal</th>
+                  <th style={{ padding: '8px 0', width: 30 }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {cart.map((c, idx) => {
+                  const varDetail = variants.find((item: any) => item.id === c.variantId);
+                  if (!varDetail) return null;
+                  const price = channel === "reseller" ? varDetail.resellerPrice : varDetail.price;
+                  return (
+                    <tr key={idx} style={{ borderBottom: '1px solid var(--border)' }}>
+                      <td style={{ padding: '8px 0' }}>{varDetail.productName} - {varDetail.name}</td>
+                      <td style={{ padding: '8px 0' }}>{money(price)}</td>
+                      <td style={{ padding: '8px 0' }}>
+                        <input 
+                          type="number" 
+                          min="1" 
+                          value={String(c.quantity)} 
+                          onChange={e => {
+                             e.target.value = e.target.value.replace(/^0+(?=\d)/, '');
+                             const qty = Math.max(1, Number(e.target.value));
+                             const newCart = [...cart];
+                             newCart[idx].quantity = qty;
+                             setCart(newCart);
+                          }}
+                          style={{ width: 60, padding: 4, background: 'white', border: '1px solid var(--line)', borderRadius: 4 }}
+                        /> <span style={{ marginLeft: 4 }}>{varDetail.unit}</span>
+                      </td>
+                      <td style={{ padding: '8px 0', textAlign: 'right' }}>{money(price * c.quantity)}</td>
+                      <td style={{ padding: '8px 0', textAlign: 'center' }}>
+                        <button type="button" onClick={() => setCart(cart.filter((_, i) => i !== idx))} style={{ background: 'transparent', border: 'none', color: 'red', cursor: 'pointer', padding: 0 }}>×</button>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+            <div style={{ background: 'var(--navy)', color: 'white', padding: '12px 16px', borderRadius: '8px', marginTop: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <div style={{ fontSize: 11, opacity: 0.8 }}>TOTAL TAGIHAN</div>
+                <div style={{ fontSize: 16, fontWeight: 700 }}>{money(totalAmount)}</div>
+              </div>
+              <div style={{ textAlign: 'right' }}>
+                <div style={{ fontSize: 11, opacity: 0.8 }}>TOTAL QTY</div>
+                <div style={{ fontSize: 14, fontWeight: 600 }}>{totalQty} item</div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="form-grid">
+          <Field label="Metode Pembayaran">
             <select
               value={payment}
               onChange={(e) => setPayment(e.target.value)}
@@ -3951,13 +5098,15 @@ function SaleModal({ data, close, save, fixedLocation }: any) {
               <option>Transfer</option>
             </select>
           </Field>
+          <div></div>
         </div>
-        <ModalActions close={close} />
+        <ModalActions close={close} disabled={cart.length === 0} />
       </form>
     </Modal>
   );
 }
 function OpnameModal({ data, item, close, save, fixedLocation }: any) {
+  const [isSaving, setIsSaving] = useState(false);
   const variants = data.products.flatMap((p: any) =>
       p.variants.map((variantItem: any) => ({
         ...variantItem,
@@ -3968,10 +5117,12 @@ function OpnameModal({ data, item, close, save, fixedLocation }: any) {
     [loc, setLoc] = useState(
       item?.locationId || fixedLocation || data.locations[1]?.id || data.locations[0]?.id || "",
     ),
-    [v, setV] = useState(item?.variantId || variants[0]?.id || ""),
-    [actual, setActual] = useState(item?.actualQty || 0),
-    [reason, setReason] = useState(item?.reason || "Hasil hitung fisik akhir hari"),
-    selected = variants.find((variantItem: any) => variantItem.id === v) || variants[0] || {};
+    [searchVariant, setSearchVariant] = useState(""),
+    [selectedItems, setSelectedItems] = useState<Record<string, { actualQty: number, reason: string }>>(
+      item ? { [item.variantId]: { actualQty: item.actualQty || 0, reason: item.reason || "Koreksi saldo dari halaman stok" } } : {}
+    ),
+    filteredVariants = variants.filter((v: any) => `${v.sku} ${v.productName} ${v.name}`.toLowerCase().includes(searchVariant.toLowerCase()));
+
   return (
     <Modal
       title="Catat stock opname"
@@ -3981,7 +5132,10 @@ function OpnameModal({ data, item, close, save, fixedLocation }: any) {
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          save(loc, v, actual, reason);
+          if (isSaving) return;
+          setIsSaving(true);
+          if (Object.keys(selectedItems).length === 0) { setIsSaving(false); return alert("Pilih minimal satu produk"); }
+          save(loc, Object.entries(selectedItems).map(([vid, val]) => ({ variantId: vid, actualQty: val.actualQty, reason: val.reason })));
         }}
       >
         <Field label="Lokasi">
@@ -3997,36 +5151,51 @@ function OpnameModal({ data, item, close, save, fixedLocation }: any) {
             ))}
           </select>
         </Field>
-        <Field label="Produk / varian">
-          <select value={v} onChange={(e) => setV(e.target.value)}>
-            {variants.map((item: any) => (
-              <option key={item.id} value={item.id}>
-                {item.productName} · {item.name}
-              </option>
+        <Field label="Pilih Produk / Varian">
+          <input value={searchVariant} onChange={e => setSearchVariant(e.target.value)} placeholder="Cari varian..." />
+          <div style={{ maxHeight: 200, overflowY: 'auto', border: '1px solid var(--line)', borderRadius: 6, padding: 8, marginTop: 8 }}>
+            {filteredVariants.map((v: any) => (
+              <label key={v.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', cursor: 'pointer' }}>
+                <input type="checkbox" checked={!!selectedItems[v.id]} style={{ width: 'auto', padding: 0, margin: 0 }} onChange={e => {
+                  if (e.target.checked) {
+                    setSelectedItems({ ...selectedItems, [v.id]: { actualQty: 0, reason: "Hasil hitung fisik akhir hari" } });
+                  } else {
+                    const next = { ...selectedItems };
+                    delete next[v.id];
+                    setSelectedItems(next);
+                  }
+                }} />
+                <span>{v.productName} · {v.name}</span>
+              </label>
             ))}
-          </select>
+          </div>
         </Field>
-        <Field label={`Stok fisik (${selected.unit})`}>
-          <input
-            type="number"
-            min="0"
-            value={actual}
-            onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); setActual(+e.target.value); }}
-          />
-        </Field>
-        <Field label="Alasan / catatan">
-          <textarea
-            required
-            value={reason}
-            onChange={(e) => setReason(e.target.value)}
-          />
-        </Field>
-        <ModalActions close={close} />
+        {Object.keys(selectedItems).length > 0 && (
+          <div style={{ marginTop: 16, marginBottom: 16 }}>
+            <h4 style={{ margin: '0 0 12px', fontSize: 14 }}>Varian Terpilih:</h4>
+            {Object.entries(selectedItems).map(([vid, selectedItem]) => {
+              const v = variants.find((x: any) => x.id === vid);
+              if (!v) return null;
+              return (
+                <div key={vid} className="form-grid" style={{ background: '#f8fafc', padding: 12, borderRadius: 6, marginBottom: 8, border: '1px solid #e2e8f0' }}>
+                  <div style={{ gridColumn: '1 / -1', fontSize: 13, marginBottom: 4 }}><b>{v.productName} · {v.name}</b></div>
+                  <Field label={`Stok fisik (${v.unit})`}>
+                     <input type="number" min="0" value={String(selectedItem.actualQty)} onChange={e => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); setSelectedItems({...selectedItems, [vid]: { ...selectedItem, actualQty: +(e.target.value || 0) }}) }} style={{ background: 'white' }} />
+                  </Field>
+                  <Field label="Alasan / catatan">
+                     <textarea required value={selectedItem.reason} onChange={e => setSelectedItems({...selectedItems, [vid]: { ...selectedItem, reason: e.target.value }})} style={{ background: 'white' }} />
+                  </Field>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        <ModalActions close={close} disabled={isSaving} />
       </form>
     </Modal>
   );
 }
-function CancelModal({close,save}:any){const[reason,setReason]=useState("");return <Modal title="Batalkan transaksi" desc="Stok akan dikoreksi otomatis. Transaksi asli dan alasan tetap ada dalam histori." close={close}><form onSubmit={(e)=>{e.preventDefault();save(reason)}}><Field label="Alasan pembatalan / koreksi"><textarea required minLength={5} value={reason} onChange={(e)=>setReason(e.target.value)} placeholder="Contoh: Salah memilih produk atau jumlah"/></Field><footer className="modal-actions"><button type="button" className="secondary" onClick={close}>Kembali</button><button className="danger-button" type="submit"><RotateCcw/>Batalkan transaksi</button></footer></form></Modal>}
+function CancelModal({close,save}:any){const [isSaving, setIsSaving] = useState(false);const[reason,setReason]=useState("");return <Modal title="Batalkan transaksi" desc="Stok akan dikoreksi otomatis. Transaksi asli dan alasan tetap ada dalam histori." close={close}><form onSubmit={(e)=>{e.preventDefault();if(isSaving)return;setIsSaving(true);save(reason)}}><Field label="Alasan pembatalan / koreksi"><textarea required minLength={5} value={reason} onChange={(e)=>setReason(e.target.value)} placeholder="Contoh: Salah memilih produk atau jumlah"/></Field><footer className="modal-actions"><button type="button" className="secondary" onClick={close}>Kembali</button><button className="danger-button" type="submit" disabled={isSaving}><RotateCcw/>Batalkan transaksi</button></footer></form></Modal>}
 function SaleDetail({ item, variants, locations, close }: any) {
   if (!item) return null;
   return (
@@ -4186,6 +5355,7 @@ function ChangePasswordModal({ token, close, notify }: { token: string | null; c
     [loading, setLoading] = useState(false);
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if(loading) return;
     setError("");
     if (newPwd !== confirm) return setError("Konfirmasi password tidak cocok");
     if (newPwd.length < 8) return setError("Password baru minimal 8 karakter");
@@ -4249,77 +5419,86 @@ function PasswordInput({ value, onChange, autoComplete, minLength, required, pla
     </div>
   );
 }
-const ModalActions = ({ close, onDelete }: any) => (
+const ModalActions = ({ close, onDelete, disabled }: any) => (
     <footer className="modal-actions">
       <button type="button" className="secondary" onClick={close}>Batal</button>
-      {onDelete && <button type="button" className="danger-button" onClick={onDelete}><Trash2 size={16} /> Hapus</button>}
-      <button className="primary" type="submit">
+      {onDelete && <button type="button" className="danger-button" onClick={onDelete} disabled={disabled}><Trash2 size={16} /> Hapus</button>}
+      <button className="primary" type="submit" disabled={disabled}>
         <Check />
         Simpan
       </button>
     </footer>
-);function HelpPage() {
-  const [openSection, setOpenSection] = useState<string | null>(null);
+);function HelpPage({ initialSection, clearInitialSection }: { initialSection: string | null, clearInitialSection: () => void }) {
+  const [openSection, setOpenSection] = useState<string | null>(initialSection);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [readingArticle, setReadingArticle] = useState<any>(null);
+
+  useEffect(() => {
+    if (initialSection) {
+      let foundArticle = null;
+      let foundSection = null;
+      for (const s of sections) {
+        if (s.id === initialSection) foundSection = s.id;
+        const art = s.articles.find((a: any) => a.id === initialSection);
+        if (art) {
+          foundArticle = art;
+          foundSection = s.id;
+          break;
+        }
+      }
+
+      if (foundArticle) {
+        setReadingArticle(foundArticle);
+        setOpenSection(foundSection);
+      } else if (foundSection) {
+        setOpenSection(foundSection);
+      } else {
+        setOpenSection(initialSection);
+      }
+      clearInitialSection();
+    }
+  }, [initialSection]);
 
   const toggle = (id: string) => setOpenSection(openSection === id ? null : id);
 
-  const sections = [
-    {
-      id: "setup",
-      icon: <Archive />,
-      title: "Setup Awal & Produk",
-      desc: "Menambah produk, varian, dan lokasi usaha untuk pertama kali.",
-      steps: [
-        "Buka menu Produk & Varian untuk menambahkan daftar barang.",
-        "Jika barang memiliki variasi (warna, ukuran, dsb.), tambahkan di bagian Varian saat membuat produk.",
-        "Buka menu Lokasi Usaha untuk mendaftarkan titik-titik outlet fisik Anda beserta gudang penyimpanannya."
-      ]
-    },
-    {
-      id: "stock",
-      icon: <Boxes />,
-      title: "Manajemen Stok",
-      desc: "Mencatat pergerakan barang, transfer antar-lokasi, dan stok opname.",
-      steps: [
-        "Stok Masuk: Gunakan fitur ini untuk mencatat suplai barang baru (kulakan) atau hasil produksi.",
-        "Transfer Stok: Kirim barang dari gudang utama ke outlet cabang. Outlet cabang perlu melakukan 'Konfirmasi Terima'.",
-        "Stock Opname: Lakukan penghitungan fisik secara berkala dan catat penyesuaian (bertambah/berkurang) agar sinkron dengan sistem.",
-        "Histori Stok: Lacak jejak keluar-masuk setiap satuan barang per lokasi untuk audit."
-      ]
-    },
-    {
-      id: "sales",
-      icon: <ShoppingCart />,
-      title: "Penjualan & Retur",
-      desc: "Mencatat arus keluar barang, pendapatan, serta retur.",
-      steps: [
-        "Penjualan: Pilih barang terjual, tentukan lokasi, harga, metode pembayaran, dan kanal (Offline/Online). Stok akan langsung dipotong otomatis.",
-        "Retur: Gunakan menu ini untuk mengembalikan stok ke sistem jika ada pelanggan yang mengembalikan barang atau Anda meretur barang rusak ke supplier."
-      ]
-    },
-    {
-      id: "analytics",
-      icon: <BarChart3 />,
-      title: "Analitik & Laporan",
-      desc: "Memantau performa usaha, nilai aset, peringatan stok, dan mencetak laporan.",
-      steps: [
-        "Dashboard (Analitik Bisnis): Layar pantauan real-time untuk melihat omset hari ini, grafik tren bulanan, serta daftar stok menipis.",
-        "Laporan: Unduh data mutasi keseluruhan, ringkasan nilai stok, dan transaksi dalam format Excel atau PDF.",
-        "Gunakan filter pada rentang waktu atau spesifik lokasi untuk membedah data per cabang."
-      ]
-    },
-    {
-      id: "team",
-      icon: <Users />,
-      title: "Manajemen Tim & Akses",
-      desc: "Mendelegasikan pekerjaan ke staf sesuai dengan wewenang (role).",
-      steps: [
-        "Buka menu Pengguna & Akses, lalu klik Tambah Pengguna.",
-        "Pilih peran yang sesuai: Admin Cabang (Bisa ubah stok & penjualan cabang), PIC Outlet (Kepala toko), Staf Gudang, Kasir, atau Keuangan.",
-        "Sistem secara otomatis akan memblokir fitur-fitur sensitif (seperti menu Laporan atau Profil Usaha) bagi pegawai yang tidak berwenang."
-      ]
+  const filteredSections = sections.map((s: any) => {
+    if (!searchQuery) return s;
+    const q = searchQuery.toLowerCase();
+    const matchedArticles = s.articles.filter((a: any) => a.title.toLowerCase().includes(q));
+    if (s.title.toLowerCase().includes(q) || s.desc.toLowerCase().includes(q) || matchedArticles.length > 0) {
+      return { ...s, articles: matchedArticles.length > 0 ? matchedArticles : s.articles };
     }
-  ];
+    return null;
+  }).filter(Boolean);
+
+  const handlePopularClick = (id: string) => {
+    for (const s of sections) {
+      const art = s.articles.find((a: any) => a.id === id);
+      if (art) {
+        setReadingArticle(art);
+        setOpenSection(s.id);
+        return;
+      }
+    }
+  };
+
+  if (readingArticle) {
+    return (
+      <div className="help-page reading-mode">
+        <div className="help-reading-header">
+          <button className="back-btn" onClick={() => setReadingArticle(null)}>
+            <ChevronLeft size={18} /> Kembali ke Pusat Bantuan
+          </button>
+        </div>
+        <div className="help-reading-content">
+          <h2 className="article-title">{readingArticle.title}</h2>
+          <div className="article-body-wrapper">
+            {readingArticle.content}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="help-page">
@@ -4327,40 +5506,79 @@ const ModalActions = ({ close, onDelete }: any) => (
         <LifeBuoy />
         <div>
           <h2>Pusat Bantuan VEINSTOCK</h2>
-          <p>Panduan ringkas penggunaan fitur aplikasi. Pilih topik di bawah ini untuk melihat langkah-langkah selengkapnya.</p>
+          <p>Panduan ringkas penggunaan fitur aplikasi. Temukan solusi masalah Anda di bawah ini.</p>
         </div>
       </div>
+
+      <div className="help-search">
+        <Search />
+        <input 
+          type="text" 
+          placeholder="Cari bantuan, misalnya 'stok tidak sesuai'..." 
+          value={searchQuery}
+          onChange={e => { setSearchQuery(e.target.value); if (e.target.value) setOpenSection(null); }}
+        />
+      </div>
+
+      {!searchQuery && (
+        <div className="help-popular">
+          <h4>Artikel Populer</h4>
+          <div className="popular-list">
+            {popularArticles.map((artId: string, idx: number) => {
+               let title = "";
+               for (const s of sections) {
+                 const a = s.articles.find((x: any) => x.id === artId);
+                 if (a) title = a.title;
+               }
+               return (
+                 <button key={idx} className="popular-btn" onClick={() => handlePopularClick(artId)}>
+                   {title}
+                 </button>
+               );
+            })}
+          </div>
+        </div>
+      )}
+
       <div className="help-grid">
-        {sections.map(s => (
-          <article key={s.id} className={`help-card ${openSection === s.id ? "open" : ""}`}>
-            <header onClick={() => toggle(s.id)}>
+        {filteredSections.map((s: any) => (
+          <article key={s.id} className={`help-card ${(openSection === s.id || searchQuery) ? "open" : ""}`}>
+            <header onClick={() => !searchQuery && toggle(s.id)}>
               <div className="icon-wrap">{s.icon}</div>
               <div className="help-card-text">
                 <h3>{s.title}</h3>
                 <p>{s.desc}</p>
+                <small className="article-count">{s.articles.length} panduan</small>
               </div>
               <button className="icon-btn">
-                {openSection === s.id ? <ChevronUp /> : <ChevronDown />}
+                {(openSection === s.id || searchQuery) ? <ChevronUp /> : <ChevronDown />}
               </button>
             </header>
-            {openSection === s.id && (
+            {(openSection === s.id || searchQuery) && (
               <div className="help-content">
-                {s.steps.map((step, idx) => (
-                  <div key={idx} className="help-step">
+                {s.articles.map((art: any, idx: number) => (
+                  <div key={idx} className="help-step" onClick={() => setReadingArticle(art)}>
                     <Check />
-                    <span>{step}</span>
+                    <span>{art.title}</span>
                   </div>
                 ))}
               </div>
             )}
           </article>
         ))}
+        {filteredSections.length === 0 && (
+          <div className="empty">
+            <Search size={40} opacity={0.2} />
+            <b>Tidak ada hasil</b>
+            <span>Coba gunakan kata kunci lain.</span>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-function AnalyticsPage({ data }: { data: AppData }) {
+function AnalyticsPage({ data, setData }: { data: AppData, setData?: any }) {
   const [refreshing, setRefreshing] = useState<Record<string, boolean>>({});
   const handleRefresh = (key: string) => {
     setRefreshing(p => ({ ...p, [key]: true }));
@@ -4383,10 +5601,10 @@ function AnalyticsPage({ data }: { data: AppData }) {
     });
 
     data.sales.forEach(sale => {
-      if (sale.status !== "cancelled") {
+      if (sale.status !== "voided") {
         revenue += sale.total;
-        sale.items.forEach(item => {
-          cogs += (item.quantity * (costMap[item.variantId] || 0));
+        sale.items.forEach((item: any) => {
+          cogs += (item.quantity * (item.unitCost || costMap[item.variantId] || 0));
         });
       }
     });
@@ -4412,7 +5630,7 @@ function AnalyticsPage({ data }: { data: AppData }) {
 
     // Recent Activities
     const activities = [
-      ...data.sales.filter(s => s.status !== 'cancelled').map(s => ({ date: new Date(s.createdAt), type: 'Penjualan', desc: `Transaksi Penjualan via ${s.channel}`, amount: s.total, color: '#10b981' })),
+      ...data.sales.filter(s => s.status !== 'voided').map(s => ({ date: new Date(s.createdAt), type: 'Penjualan', desc: `Transaksi Penjualan via ${s.channel}`, amount: s.total, color: '#10b981' })),
       ...(data.receipts || []).filter(r => r.status !== 'cancelled').map(r => ({ date: new Date(r.createdAt), type: 'Stok Masuk', desc: `Penerimaan stok dari ${r.sourceType}`, amount: r.quantity * r.unitCost, color: '#3b82f6' })),
       ...data.transfers.filter(t => t.status !== 'cancelled').map(t => ({ date: new Date(t.createdAt), type: 'Transfer', desc: `Transfer stok antar lokasi`, amount: 0, color: '#f59e0b' }))
     ].sort((a, b) => b.date.getTime() - a.date.getTime()).slice(0, 10);
@@ -4427,14 +5645,14 @@ function AnalyticsPage({ data }: { data: AppData }) {
     }
     
     data.sales.forEach(sale => {
-      if (sale.status !== 'cancelled') {
+      if (sale.status !== 'voided') {
         const sDate = new Date(sale.createdAt);
         const dayDiff = Math.floor((new Date().getTime() - sDate.getTime()) / (1000 * 3600 * 24));
         if (dayDiff >= 0 && dayDiff < 7) {
           const index = 6 - dayDiff;
           salesTrend[index].Omset += sale.total;
           let saleCogs = 0;
-          sale.items.forEach(item => { saleCogs += item.quantity * (costMap[item.variantId] || 0); });
+          sale.items.forEach((item: any) => { saleCogs += item.quantity * (item.unitCost || costMap[item.variantId] || 0); });
           salesTrend[index].Modal += saleCogs;
         }
       }
@@ -4442,7 +5660,7 @@ function AnalyticsPage({ data }: { data: AppData }) {
 
     const salesByVariant: Record<string, number> = {};
     data.sales.forEach(s => {
-      if (s.status !== "cancelled") {
+      if (s.status !== "voided") {
         s.items.forEach(item => {
           salesByVariant[item.variantId] = (salesByVariant[item.variantId] || 0) + item.quantity;
         });
@@ -4462,7 +5680,7 @@ function AnalyticsPage({ data }: { data: AppData }) {
     // Profit / Loss Chart Data
     const profitData = [
       { name: 'Modal (HPP)', value: cogs, color: '#f87171' },
-      { name: 'Laba Kotor', value: grossProfit, color: '#10b981' }
+      { name: 'Estimasi Laba Kotor', value: grossProfit, color: '#10b981' }
     ];
 
     return {
@@ -4474,16 +5692,72 @@ function AnalyticsPage({ data }: { data: AppData }) {
       activities,
       salesTrend,
       profitData,
-      totalSalesCount: data.sales.filter(s => s.status !== 'cancelled').length,
+      totalSalesCount: data.sales.filter(s => s.status !== 'voided').length,
       totalProductsCount: data.products.length,
       cogs
     };
   }, [data]);
 
   return (
-    <PageBlock title="Dashboard Utama" desc="Ringkasan performa dan kesehatan bisnis Anda.">
-      <div className="dash-grid-top">
-        {/* Aktivitas Terakhir */}
+    <PageBlock
+      title="Dashboard Utama"
+      desc="Ringkasan performa dan kesehatan bisnis Anda."
+      action="Unduh Analitik Excel"
+      onAction={async () => {
+        const summaryData = [
+          ["Total Omset", stats.revenue],
+          ["Estimasi Laba Kotor", stats.grossProfit],
+          ["Total Modal (HPP)", stats.cogs],
+          ["Nilai Stok Saat Ini", stats.stockValue],
+          ["Jumlah Transaksi Penjualan", stats.totalSalesCount],
+          ["Total Varian Produk", stats.totalProductsCount]
+        ];
+        
+        const trendData = stats.salesTrend.map((t: any) => [t.date, t.Omset, t.Modal]);
+        const topProductsData = stats.topProducts.map((t: any, idx: number) => [idx + 1, t.product?.name || '-', t.variant?.name || '-', t.qty]);
+        
+        await downloadExcel(`Analitik_Bisnis_Veinstock_${new Date().toISOString().slice(0, 10)}`, [
+          {
+            name: "Ringkasan",
+            columns: [
+              { header: "Indikator", key: "indikator", width: 35 },
+              { header: "Nilai", key: "totalnilai", width: 25 }
+            ],
+            data: summaryData
+          },
+          {
+            name: "Tren 7 Hari Terakhir",
+            columns: [
+              { header: "Tanggal", key: "tanggal", width: 20 },
+              { header: "Omset Penjualan", key: "omset", width: 25 },
+              { header: "Modal (HPP)", key: "modal", width: 25 }
+            ],
+            data: trendData
+          },
+          {
+            name: "Top 5 Produk Terlaris",
+            columns: [
+              { header: "Peringkat", key: "peringkat", width: 15 },
+              { header: "Produk", key: "produk", width: 30 },
+              { header: "Varian", key: "varian", width: 25 },
+              { header: "Terjual (Qty)", key: "qty", width: 20 }
+            ],
+            data: topProductsData
+          }
+        ]);
+        if(setData) {
+           // Provide mock notify since notify is not passed to AnalyticsPage
+           alert("Laporan Analitik Excel berhasil diunduh.");
+        }
+      }}
+      secondaryAction="Cetak PDF"
+      onSecondaryAction={() => {
+        downloadPDF('analytics-dashboard-content', `Analitik_Bisnis_${new Date().toISOString().slice(0, 10)}`);
+      }}
+    >
+      <div id="analytics-dashboard-content" style={{ padding: '4px', backgroundColor: 'var(--bg)' }}>
+        <div className="dash-grid-top">
+          {/* Aktivitas Terakhir */}
         <article className="dash-widget">
           <header>
             <h3>Aktivitas Terakhir</h3>
@@ -4567,8 +5841,8 @@ function AnalyticsPage({ data }: { data: AppData }) {
              </div>
              <button className="icon-btn" style={{padding: 4, margin: -4}} onClick={() => handleRefresh("barchart")}><RotateCcw size={14} className={`text-muted ${refreshing.barchart ? "spin-anim" : ""}`} /></button>
           </header>
-          <div className="widget-content" style={{height: 250, paddingTop: 16}}>
-             <ResponsiveContainer width="100%" height="100%">
+          <div className="widget-content" style={{paddingTop: 16, minWidth: 0, minHeight: 250}}>
+             <ResponsiveContainer width="100%" height={250}>
                <BarChart data={stats.salesTrend} margin={{top:0, right:10, left:-20, bottom:0}}>
                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0"/>
                  <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fontSize: 12, fill: '#64748b'}} />
@@ -4591,8 +5865,8 @@ function AnalyticsPage({ data }: { data: AppData }) {
              </div>
              <button className="icon-btn" style={{padding: 4, margin: -4}} onClick={() => handleRefresh("linechart")}><RotateCcw size={14} className={`text-muted ${refreshing.linechart ? "spin-anim" : ""}`} /></button>
           </header>
-          <div className="widget-content" style={{height: 250, paddingTop: 16}}>
-             <ResponsiveContainer width="100%" height="100%">
+          <div className="widget-content" style={{paddingTop: 16, minWidth: 0, minHeight: 250}}>
+             <ResponsiveContainer width="100%" height={250}>
                <LineChart data={stats.salesTrend} margin={{top:0, right:10, left:-20, bottom:0}}>
                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0"/>
                  <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fontSize: 12, fill: '#64748b'}} />
@@ -4609,7 +5883,7 @@ function AnalyticsPage({ data }: { data: AppData }) {
         {/* Laba Rugi */}
         <article className="dash-widget">
           <header>
-             <h3>Laba Kotor (Semua Waktu)</h3>
+             <h3>Estimasi Laba Kotor (Semua Waktu)</h3>
              <button className="icon-btn" style={{padding: 4, margin: -4}} onClick={() => handleRefresh("donut")}><RotateCcw size={14} className={`text-muted ${refreshing.donut ? "spin-anim" : ""}`} /></button>
           </header>
           <div className="widget-content" style={{display:'flex', alignItems:'center', height: 200}}>
@@ -4637,7 +5911,7 @@ function AnalyticsPage({ data }: { data: AppData }) {
                   <b>{money(stats.cogs)}</b>
                 </div>
                 <div style={{borderTop:'1px solid var(--line)', paddingTop: 8}}>
-                  <div style={{fontSize: 13, color: 'var(--muted)'}}>Laba Kotor</div>
+                  <div style={{fontSize: 13, color: 'var(--muted)'}}>Estimasi Laba Kotor</div>
                   <b style={{color: '#10b981', fontSize: 16}}>{money(stats.grossProfit)}</b>
                 </div>
              </div>
@@ -4668,6 +5942,7 @@ function AnalyticsPage({ data }: { data: AppData }) {
              )}
           </div>
         </article>
+      </div>
       </div>
     </PageBlock>
   );
