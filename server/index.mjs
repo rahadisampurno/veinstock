@@ -223,6 +223,13 @@ async function db() {
       // Ignore if constraint already exists
     }
 
+    // Check if unique constraint exists on email (Migration VS-R004)
+    try {
+      await pool.execute("ALTER TABLE users ADD CONSTRAINT uq_global_email UNIQUE (email)");
+    } catch (err) {
+      // Ignore if constraint already exists
+    }
+
     // --- V2 REST API TABLES ---
     await pool.execute(`CREATE TABLE IF NOT EXISTS locations (
       id VARCHAR(40) PRIMARY KEY,
@@ -740,8 +747,29 @@ app.get('/api/state', requireAuth, async (req, res) => {
     const sqlState = await getStateFromSQL(conn, req.auth.org);
     if (!sqlState.data) return res.json({ version: 0, data: null });
     const [userRows] = await conn.execute('SELECT id, organization_id, name, email, role, outlet_id, active FROM users WHERE organization_id = ? ORDER BY created_at', [req.auth.org]);
-    const users = userRows.map(safeUser);
-    res.json({ version: sqlState.version, data: sanitize({ ...sqlState.data, users }) });
+    const allUsers = userRows.map(safeUser);
+    
+    // Filter data based on actor scope
+    const actor = await currentUser(conn, req.auth);
+    if (!actor || !actor.active) return res.status(401).json({ message: 'Akun tidak aktif' });
+    
+    let { locations, products, balances, sales, transfers, movements, stockCounts } = sqlState.data;
+    let users = allUsers;
+
+    if (actor.role === 'warehouse' || actor.role === 'pic' || actor.role === 'cashier') {
+      locations = locations.filter(l => l.id === actor.outlet_id);
+      users = allUsers.filter(u => u.id === actor.id);
+      
+      const locId = actor.outlet_id;
+      balances = balances.filter(b => b.locationId === locId);
+      sales = sales.filter(s => s.locationId === locId);
+      movements = movements.filter(m => m.locationId === locId);
+      stockCounts = stockCounts.filter(c => c.locationId === locId);
+      transfers = transfers.filter(t => t.fromId === locId || t.toId === locId);
+    }
+    
+    sqlState.data = { ...sqlState.data, locations, users, products, balances, sales, transfers, movements, stockCounts };
+    res.json({ version: sqlState.version, data: sanitize(sqlState.data) });
   } catch (err) {
     console.error('Failed to get SQL state:', err);
     res.status(500).json({ message: 'Internal Server Error' });
@@ -787,8 +815,7 @@ app.put('/api/state', requireAuth, async (req, res) => {
       return res.status(403).json({ message: denied });
     }
     
-    // Mencegah user dengan scope terbatas (seperti staf gudang) 
-    // menimpa data yang tidak mereka lihat dengan array yang sudah dipangkas.
+    // Mencegah user dengan scope terbatas menimpa data yang tidak mereka lihat.
     if (previous) {
       const mergeArrays = (oldArr, newArr) => {
          const map = new Map();
@@ -796,9 +823,32 @@ app.put('/api/state', requireAuth, async (req, res) => {
          newArr.forEach(i => map.set(i.id, i));
          return Array.from(map.values());
       };
+      
       data.receipts = mergeArrays(previous.receipts || [], data.receipts || []);
       data.returns = mergeArrays(previous.returns || [], data.returns || []);
       data.suppliers = mergeArrays(previous.suppliers || [], data.suppliers || []);
+      
+      if (actor.role !== 'owner' && actor.role !== 'admin' && actor.role !== 'finance') {
+        data.locations = mergeArrays(previous.locations || [], data.locations || []);
+        
+        // Merge users via array combination (since safeUser objects don't strictly have ID as primary key in previous payload, wait, they do have id)
+        const oldUsers = new Map();
+        (previous.users || []).forEach(u => oldUsers.set(u.id, u));
+        (data.users || []).forEach(u => oldUsers.set(u.id, u));
+        data.users = Array.from(oldUsers.values());
+
+        data.products = mergeArrays(previous.products || [], data.products || []);
+        
+        const oldBals = new Map();
+        (previous.balances || []).forEach(b => oldBals.set(`${b.locationId}-${b.variantId}`, b));
+        (data.balances || []).forEach(b => oldBals.set(`${b.locationId}-${b.variantId}`, b));
+        data.balances = Array.from(oldBals.values());
+        
+        data.sales = mergeArrays(previous.sales || [], data.sales || []);
+        data.transfers = mergeArrays(previous.transfers || [], data.transfers || []);
+        data.movements = mergeArrays(previous.movements || [], data.movements || []);
+        data.stockCounts = mergeArrays(previous.stockCounts || [], data.stockCounts || []);
+      }
     }
     
     const next = Number(version) + 1;

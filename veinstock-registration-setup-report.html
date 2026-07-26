@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>VEINSTOCK Registration & Setup Test Report</title>
+  <style>
+    :root{--ink:#142536;--muted:#607386;--bg:#edf3f2;--card:#fff;--green:#12a870;--navy:#083b5c;--red:#c72c41;--amber:#bd6b00;--line:#d7e2e2}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 Inter,ui-sans-serif,system-ui,sans-serif}
+    header{background:linear-gradient(120deg,#062f4b,#0b655f);color:white;padding:38px max(5vw,28px)}
+    header h1{margin:0 0 8px;font:700 clamp(24px,4vw,44px)/1.08 Georgia,serif}header p{margin:0;color:#cce7df}
+    main{max-width:1220px;margin:-18px auto 48px;padding:0 24px}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+    .card,section{background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:0 8px 24px #143b4820}
+    .card{padding:17px}.card strong{display:block;font-size:18px}.card span{color:var(--muted)}section{margin-top:14px;padding:24px}
+    h2{margin:0 0 14px;font-size:19px}h3{margin:20px 0 8px;font-size:15px}.decision{color:var(--red)}
+    .pill{display:inline-block;padding:4px 9px;border-radius:999px;font-size:12px;font-weight:700}.fail{background:#fde4e7;color:#a20e27}.pass{background:#ddf7eb;color:#08734d}.warn{background:#fff0d3;color:#8a5000}.na{background:#e9eef1;color:#536575}
+    table{width:100%;border-collapse:collapse;display:block;overflow:auto}th,td{padding:10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;white-space:nowrap}th{color:var(--muted);font-size:12px;text-transform:uppercase}
+    .finding{border-left:4px solid var(--red);padding:12px 16px;margin:10px 0;background:#fff8f8}.finding.medium{border-color:var(--amber);background:#fffaf1}.finding b{margin-right:8px}
+    .score{display:grid;grid-template-columns:190px 1fr 40px;gap:10px;align-items:center;margin:8px 0}.bar{height:8px;background:#e4eceb;border-radius:9px;overflow:hidden}.bar i{display:block;height:100%;background:var(--green)}
+    code{background:#edf2f4;padding:2px 5px;border-radius:4px}a{color:#08775c}.callout{padding:16px;border-radius:10px;background:#fde8eb;color:#871126;font-weight:700}
+    ul{padding-left:20px}li{margin:5px 0}.small{color:var(--muted);font-size:12px}@media(max-width:800px){.grid{grid-template-columns:1fr 1fr}main{padding:0 12px}.score{grid-template-columns:135px 1fr 34px}}
+  </style>
+</head>
+<body>
+<header><h1>VEINSTOCK Registration &amp; Setup Test Report</h1><p>End-to-end onboarding, tenant setup, role login, and initial isolation assessment</p></header>
+<main>
+  <div class="grid">
+    <div class="card"><span>RUN_ID</span><strong>E2E-20260726-073102</strong></div>
+    <div class="card"><span>Keputusan</span><strong class="decision">FAIL / NO-GO</strong></div>
+    <div class="card"><span>Onboarding UMKM</span><strong>58 / 100</strong></div>
+    <div class="card"><span>Fase 2</span><strong class="decision">NOT READY</strong></div>
+  </div>
+
+  <section><h2>1. Informasi Run</h2>
+    <table><tr><th>Base URL</th><td>https://aquamarine-weasel-163192.hostingersite.com/</td><th>Waktu</th><td>26 Jul 2026 07:31:02–07:45:12 UTC</td></tr><tr><th>Browser</th><td>Chromium, Browser Use Cloud</td><th>Viewport</th><td>1920 × 824</td></tr><tr><th>URL registrasi</th><td colspan="3">URL root yang sama; form “Daftar UMKM” dirender sebagai state SPA.</td></tr></table>
+  </section>
+
+  <section><h2>2. Keputusan</h2><div class="callout">FAIL / NO-GO: role penting tidak tersimpan benar, Warehouse dan Cashier melihat lokasi yang bukan penempatannya, profil usaha hilang setelah logout/login, dan klik ganda membuat gudang duplikat.</div>
+    <p>Registrasi, login, lokasi, Tenant B, dan isolasi dasar berhasil, tetapi kriteria wajib RBAC dan persistensi gagal. Transaksi stok tidak dilakukan.</p>
+  </section>
+
+  <section><h2>3. Registrasi Tenant A</h2>
+    <table><thead><tr><th>Langkah</th><th>Expected</th><th>Actual</th><th>Status</th><th>Evidence</th></tr></thead><tbody>
+      <tr><td>Form publik</td><td>Field jelas</td><td>Nama UMKM, pemilik, email, password. Tidak ada konfirmasi, telepon, negara, zona waktu, mata uang, syarat/privasi.</td><td><span class="warn pill">PARTIAL</span></td><td>Observasi UI</td></tr>
+      <tr><td>Validasi</td><td>Pesan mudah dipahami</td><td>Required memakai pesan browser Inggris; email invalid ditolak; password min. 8; nama spasi lolos HTML.</td><td><span class="fail pill">FAIL</span></td><td>Form registrasi</td></tr>
+      <tr><td>Submit</td><td>Satu tenant, loading</td><td>“Memproses...” tampil; satu tenant dibuat; login otomatis tanpa OTP.</td><td><span class="pass pill">PASS</span></td><td><a href="evidence-01-tenant-a-dashboard.png">Dashboard</a></td></tr>
+      <tr><td>Refresh/logout/login</td><td>Sesi aman dan reusable</td><td>Refresh bertahan; logout menutup halaman privat; Back menuju about:blank; login ulang berhasil.</td><td><span class="pass pill">PASS</span></td><td>Observasi sesi</td></tr>
+      <tr><td>Email duplikat</td><td>Ditolak aman</td><td>Ditolak “Email sudah terdaftar”; organization tetap satu.</td><td><span class="pass pill">PASS</span></td><td>Screenshot run</td></tr>
+    </tbody></table>
+  </section>
+
+  <section><h2>4. Setup Organization</h2>
+    <table><thead><tr><th>Item</th><th>Actual</th><th>Refresh</th><th>Logout/Login</th><th>Status</th></tr></thead><tbody>
+      <tr><td>Profil usaha</td><td>Simpan sukses untuk pemilik, telepon, email, alamat. Tidak ada bidang usaha/zona waktu/mata uang.</td><td>Tampil sebelum logout</td><td>Semua detail tambahan hilang</td><td><span class="fail pill">FAIL</span></td></tr>
+      <tr><td>Gudang Pusat</td><td>Dibuat, aktif; field kode tidak tersedia.</td><td>Persist</td><td>Persist</td><td><span class="fail pill">DUPLICATE</span></td></tr>
+      <tr><td>Outlet Dago</td><td>Dibuat dan aktif</td><td>Persist</td><td>Persist</td><td><span class="pass pill">PASS</span></td></tr>
+      <tr><td>Outlet Cimahi</td><td>Dibuat dan aktif</td><td>Persist</td><td>Persist</td><td><span class="pass pill">PASS</span></td></tr>
+    </tbody></table><p class="small">Klik ganda saat penyimpanan gudang menghasilkan dua record aktif dengan nama identik. <a href="evidence-02-tenant-a-locations.png">Bukti lokasi</a></p>
+  </section>
+
+  <section><h2>5. Pembuatan Pengguna</h2>
+    <table><thead><tr><th>Role diminta</th><th>Email</th><th>Lokasi</th><th>Aktivasi</th><th>Login</th><th>Status</th></tr></thead><tbody>
+      <tr><td>Owner</td><td>owner+e2e-20260726-073102@mail.bu.app</td><td>Organization</td><td>Langsung</td><td>Berhasil</td><td><span class="pass pill">PASS</span></td></tr>
+      <tr><td>Admin</td><td>admin+e2e-20260726-073102@mail.bu.app</td><td>Outlet Dago</td><td>Langsung</td><td>Berhasil</td><td><span class="fail pill">ROLE KOSONG</span></td></tr>
+      <tr><td>Finance</td><td>finance+e2e-20260726-073102@mail.bu.app</td><td>Organization</td><td>Langsung</td><td>Berhasil</td><td><span class="warn pill">MENU BERLEBIH</span></td></tr>
+      <tr><td>Warehouse</td><td>warehouse+e2e-20260726-073102@mail.bu.app</td><td>Gudang Pusat</td><td>Langsung</td><td>Berhasil</td><td><span class="fail pill">ROLE KOSONG</span></td></tr>
+      <tr><td>PIC</td><td>pic+e2e-20260726-073102@mail.bu.app</td><td>Outlet Dago</td><td>Langsung</td><td>Berhasil</td><td><span class="pass pill">PASS</span></td></tr>
+      <tr><td>Cashier</td><td>cashier+e2e-20260726-073102@mail.bu.app</td><td>Outlet Dago</td><td>Langsung</td><td>Berhasil</td><td><span class="fail pill">ROLE KOSONG</span></td></tr>
+    </tbody></table><p>Password: <code>********</code> untuk seluruh akun. Owner menetapkan password awal; tidak ada invitation email atau pending status. <a href="evidence-03-tenant-a-users.png">Bukti kartu pengguna</a></p>
+  </section>
+
+  <section><h2>6. Registrasi Tenant B</h2>
+    <ul><li><b>Registrasi:</b> berhasil dalam browser context terisolasi; tidak ada OTP.</li><li><b>Lokasi:</b> E2E-20260726-073102-Tenant-B-Outlet aktif.</li><li><b>User operasional:</b> user-b+e2e-20260726-073102@mail.bu.app, PIC, login berhasil.</li><li><b>Isolasi:</b> Tenant B tidak menampilkan organisasi, lokasi, atau user Tenant A; Tenant A juga tidak menampilkan Tenant B.</li><li><b>URL:</b> SPA root yang sama; identifier tersimpan di <a href="phase2-identifiers.json">phase2-identifiers.json</a>.</li></ul>
+    <p><a href="evidence-05-tenant-b-users.png">Bukti Tenant B</a></p>
+  </section>
+
+  <section><h2>7. Matriks Menu Awal</h2>
+    <table><thead><tr><th>Role</th><th>Menu terlihat</th><th>Tidak terlihat</th><th>Lokasi pada dashboard</th><th>Masalah</th></tr></thead><tbody>
+      <tr><td>Owner</td><td>Semua menu utama</td><td>–</td><td>Semua 4 record</td><td>Gudang duplikat</td></tr>
+      <tr><td>Admin</td><td>Dashboard, Pusat Bantuan</td><td>Seluruh menu operasional</td><td>Semua lokasi</td><td>Role persisted kosong</td></tr>
+      <tr><td>Finance</td><td>Dashboard, Analitik, Produk, Lokasi, Stok per Lokasi, Riwayat, Penjualan, Laporan, Pengguna</td><td>Stok Masuk, Transfer, Opname</td><td>Semua lokasi</td><td>Menu master/user/penjualan tetap terlihat; dashboard tanpa CTA write</td></tr>
+      <tr><td>Warehouse</td><td>Dashboard, Pusat Bantuan</td><td>Menu gudang relevan</td><td>Gudang dan kedua outlet</td><td>Role kosong; kebocoran cakupan lokasi</td></tr>
+      <tr><td>PIC</td><td>Dashboard, Analitik, Produk, Lokasi, stok, transfer, opname, riwayat, Penjualan, Laporan</td><td>Pengguna</td><td>Hanya Outlet Dago</td><td>Cakupan menu luas</td></tr>
+      <tr><td>Cashier</td><td>Dashboard, Pusat Bantuan</td><td>Penjualan sebagai menu</td><td>Gudang dan kedua outlet</td><td>Role kosong; cakupan lokasi bocor</td></tr>
+    </tbody></table><p>Perpindahan PIC Dago → Cimahi berlaku setelah login ulang dan hanya Cimahi terlihat; PIC dikembalikan ke Dago. Cashier tidak dipindah karena role persisted sudah rusak.</p>
+  </section>
+
+  <section><h2>8. Temuan</h2>
+    <div class="finding"><b>VS-001 · CRITICAL · RBAC/User</b> Admin, Warehouse, dan Cashier tersimpan dengan <code>role=""</code> walau UI menampilkan pilihan yang benar. Login tetap diizinkan; Warehouse/Cashier melihat semua lokasi. Repro: buat akun → pilih role → simpan → login/inspeksi ulang. Expected role dan scope tersimpan; actual role kosong. Dampak: akses tidak dapat dipercaya dan fase stok tidak aman. Rekomendasi: validasi enum role di backend, transaksi atomik, tolak role kosong, dan tambah tes otorisasi server-side. Evidence: <a href="evidence-04-cashier-location-leak.png">Cashier leak</a>.</div>
+    <div class="finding"><b>VS-002 · HIGH · Profil Usaha</b> Telepon, email, alamat, dan nama pemilik hilang setelah logout/login. Expected persist; actual kembali “belum diisi”. Dampak: data setup tidak durable. Rekomendasi: persist seluruh profil pada organization store/API dan uji reload serta sesi baru.</div>
+    <div class="finding"><b>VS-003 · HIGH · Lokasi</b> Double-click Simpan menghasilkan dua gudang aktif identik. Expected idempotent; actual dua ID berbeda. Dampak: stok dan penempatan ambigu. Rekomendasi: disable submit saat request, idempotency key, unique constraint organisasi+kode/nama.</div>
+    <div class="finding medium"><b>VS-004 · MEDIUM · Admin</b> Admin Cabang hanya mendapat Dashboard dan Pusat Bantuan, tidak ada menu operasional yang dijanjikan. Dampak: role tidak dapat menjalankan tugas.</div>
+    <div class="finding medium"><b>VS-005 · MEDIUM · Form</b> Nama spasi lolos, panjang nama tidak dibatasi, pesan required Inggris, field kode lokasi tidak ada, serta konfirmasi password/syarat/privasi tidak tersedia. Rekomendasi: trim server-side, batas panjang, pesan Indonesia, field kode unik, dan consent yang dapat ditinjau.</div>
+  </section>
+
+  <section><h2>9. Nilai Onboarding UMKM</h2>
+    <div class="score"><span>Kemudahan registrasi</span><div class="bar"><i style="width:82%"></i></div><b>82</b></div>
+    <div class="score"><span>Kejelasan instruksi</span><div class="bar"><i style="width:78%"></i></div><b>78</b></div>
+    <div class="score"><span>Validasi form</span><div class="bar"><i style="width:42%"></i></div><b>42</b></div>
+    <div class="score"><span>Setup lokasi</span><div class="bar"><i style="width:55%"></i></div><b>55</b></div>
+    <div class="score"><span>Setup pengguna</span><div class="bar"><i style="width:35%"></i></div><b>35</b></div>
+    <div class="score"><span>Pemahaman role</span><div class="bar"><i style="width:45%"></i></div><b>45</b></div>
+    <div class="score"><span>Kecepatan setup</span><div class="bar"><i style="width:72%"></i></div><b>72</b></div>
+  </section>
+
+  <section><h2>10. Kesiapan Fase 2</h2><div class="callout">NOT READY FOR STOCK FLOW TEST</div>
+    <p>Blokir fase 2 sampai VS-001, VS-002, dan VS-003 diperbaiki dan data run ini dibersihkan/dirapikan oleh mekanisme resmi. Mapping tersedia di <a href="phase2-mapping.json">phase2-mapping.json</a>; tidak memuat password.</p>
+    <p class="small">Cakupan belum dilakukan: direct URL authorization, penggunaan ulang/kedaluwarsa OTP (tidak ada OTP), nama usaha sama dengan email berbeda, dan transaksi stok. Tidak ada kesimpulan PASS untuk area tersebut.</p>
+  </section>
+</main></body></html>

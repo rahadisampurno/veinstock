@@ -297,7 +297,7 @@ function App() {
       },
       body: JSON.stringify(payload),
     });
-    const result = await response.json();
+    const result = await response.json().catch(() => ({}));
     if (!response.ok)
       throw new Error(result.message || "Gagal menambah pengguna");
     setData((current) => ({
@@ -316,7 +316,7 @@ function App() {
       },
       body: JSON.stringify(payload),
     });
-    const result = await response.json();
+    const result = await response.json().catch(() => ({}));
     if (!response.ok)
       throw new Error(result.message || "Gagal memperbarui pengguna");
     setData((current) => ({
@@ -1033,16 +1033,29 @@ function App() {
       {modal === "location" && (
         <LocationModal
           close={() => setModal(null)}
-          save={(name: string, type: "warehouse" | "outlet") => {
-            setData((d) => ({
-              ...d,
-              locations: [
-                ...d.locations,
-                { id: newId("loc"), name, type, active: true },
-              ],
-            }));
-            setModal(null);
-            notify("Lokasi usaha berhasil ditambahkan");
+          save={(name: string, type: "warehouse" | "outlet", address: string, active: boolean) => {
+            return new Promise<void>((resolve, reject) => {
+              setData((d) => {
+                const key = name.toLowerCase().trim() + '|' + type;
+                if (d.locations.some(l => (l.name.toLowerCase().trim() + '|' + l.type) === key)) {
+                  setTimeout(() => notify("Terdapat lokasi dengan nama dan jenis yang sama (duplikat)"), 0);
+                  reject(new Error("Duplicate"));
+                  return d;
+                }
+                setTimeout(() => {
+                  setModal(null);
+                  notify("Lokasi usaha berhasil ditambahkan");
+                  resolve();
+                }, 0);
+                return {
+                  ...d,
+                  locations: [
+                    ...d.locations,
+                    { id: newId("loc"), name, type, address, active: true },
+                  ],
+                };
+              });
+            });
           }}
         />
       )}
@@ -1079,21 +1092,41 @@ function App() {
                 address: string,
                 active: boolean,
               ) => {
-                if (
-                  !active &&
-                  data.locations.filter((x) => x.active).length === 1
-                )
-                  return notify("Minimal satu lokasi harus tetap aktif");
-                setData((d) => ({
-                  ...d,
-                  locations: d.locations.map((x) =>
-                    x.id === selected.id
-                      ? { ...x, name, type, address, active }
-                      : x,
-                  ),
-                }));
-                setModal(null);
-                notify("Lokasi berhasil diperbarui");
+                return new Promise<void>((resolve, reject) => {
+                  setData((d) => {
+                    if (
+                      !active &&
+                      d.locations.filter((x) => x.active).length === 1 &&
+                      selected.active
+                    ) {
+                      setTimeout(() => notify("Minimal satu lokasi harus tetap aktif"), 0);
+                      reject(new Error("Cannot disable last location"));
+                      return d;
+                    }
+                    
+                    const key = name.toLowerCase().trim() + '|' + type;
+                    if (d.locations.some(l => l.id !== selected.id && (l.name.toLowerCase().trim() + '|' + l.type) === key)) {
+                      setTimeout(() => notify("Terdapat lokasi dengan nama dan jenis yang sama (duplikat)"), 0);
+                      reject(new Error("Duplicate"));
+                      return d;
+                    }
+
+                    setTimeout(() => {
+                      setModal(null);
+                      notify("Lokasi usaha berhasil diperbarui");
+                      resolve();
+                    }, 0);
+                    
+                    return {
+                      ...d,
+                      locations: d.locations.map((x) =>
+                        x.id === selected.id
+                          ? { ...x, name, type, address, active }
+                          : x,
+                      ),
+                    };
+                  });
+                });
               }}
             />
           ) : null;
@@ -1235,7 +1268,7 @@ function App() {
           save={async (profile: any) => {
             const res = await fetch('/api/organization', {
               method: 'PUT',
-              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.token}` },
+              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
               body: JSON.stringify(profile)
             });
             if (!res.ok) {
@@ -1624,6 +1657,7 @@ function Login({
           className="login-box"
           onSubmit={async (e) => {
             e.preventDefault();
+            if (loading) return;
             setError("");
             setLoading(true);
             try {
@@ -1672,6 +1706,8 @@ function Login({
                   required
                   value={organization}
                   onChange={(e) => setOrganization(e.target.value)}
+                  onInvalid={(e) => (e.target as HTMLInputElement).setCustomValidity('Nama UMKM wajib diisi')}
+                  onInput={(e) => (e.target as HTMLInputElement).setCustomValidity('')}
                   placeholder="Contoh: Toko Berkah"
                 />
               </Field>
@@ -1680,6 +1716,8 @@ function Login({
                   required
                   value={name}
                   onChange={(e) => setName(e.target.value)}
+                  onInvalid={(e) => (e.target as HTMLInputElement).setCustomValidity('Nama pemilik wajib diisi')}
+                  onInput={(e) => (e.target as HTMLInputElement).setCustomValidity('')}
                   placeholder="Nama lengkap Anda"
                 />
               </Field>
@@ -1691,6 +1729,8 @@ function Login({
               required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
+              onInvalid={(e) => (e.target as HTMLInputElement).setCustomValidity('Format email belum valid')}
+              onInput={(e) => (e.target as HTMLInputElement).setCustomValidity('')}
               autoComplete="username"
             />
           </Field>
@@ -4341,7 +4381,7 @@ function UserModal({ data, close, save, user, uploadImage, onDelete }: any) {
               email,
               password: password || undefined,
               role,
-              outletId: ["pic", "warehouse", "cashier", "admin"].includes(role) ? outletId : undefined,
+              outletId: ["pic", "warehouse", "cashier"].includes(role) ? outletId : undefined,
               active,
               avatarUrl,
             });
@@ -4442,7 +4482,7 @@ function UserModal({ data, close, save, user, uploadImage, onDelete }: any) {
             </div>
           )}
         </Field>
-        {["pic", "warehouse", "cashier", "admin"].includes(role) && (
+        {["pic", "warehouse", "cashier"].includes(role) && (
           <Field label="Lokasi Penempatan">
             <select
               required
