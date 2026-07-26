@@ -1051,7 +1051,7 @@ function App() {
                   ...d,
                   locations: [
                     ...d.locations,
-                    { id: newId("loc"), name, type, address, active: true },
+                    { id: newId("loc"), name, type, address, active },
                   ],
                 };
               });
