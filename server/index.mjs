@@ -179,6 +179,13 @@ async function db() {
       id VARCHAR(40) PRIMARY KEY,
       name VARCHAR(150) NOT NULL,
       slug VARCHAR(100) NOT NULL UNIQUE,
+      slug VARCHAR(100) NOT NULL UNIQUE,
+      owner_name VARCHAR(150),
+      phone VARCHAR(50),
+      email VARCHAR(150),
+      address TEXT,
+      logo_url TEXT,
+      negative_stock_policy ENUM('BLOCK', 'WARN', 'ALLOW') DEFAULT 'BLOCK',
       active BOOLEAN NOT NULL DEFAULT TRUE,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`);
@@ -203,6 +210,19 @@ async function db() {
       await pool.execute("ALTER TABLE users MODIFY organization_id VARCHAR(40) NOT NULL");
     }
     
+    // Check if new organization columns exist (Migration)
+    const [orgOwnerColumn]=await pool.query("SHOW COLUMNS FROM organizations LIKE 'owner_name'");
+    if(!orgOwnerColumn.length){
+      await pool.execute("ALTER TABLE organizations ADD COLUMN owner_name VARCHAR(150) NULL AFTER slug, ADD COLUMN phone VARCHAR(50) NULL, ADD COLUMN email VARCHAR(150) NULL, ADD COLUMN address TEXT NULL, ADD COLUMN logo_url TEXT NULL, ADD COLUMN negative_stock_policy ENUM('BLOCK', 'WARN', 'ALLOW') DEFAULT 'BLOCK'");
+    }
+
+    // Check if unique constraint exists on locations (Migration)
+    try {
+      await pool.execute("ALTER TABLE locations ADD CONSTRAINT uq_org_loc_name UNIQUE (organization_id, name, type)");
+    } catch (err) {
+      // Ignore if constraint already exists
+    }
+
     // --- V2 REST API TABLES ---
     await pool.execute(`CREATE TABLE IF NOT EXISTS locations (
       id VARCHAR(40) PRIMARY KEY,
@@ -211,7 +231,8 @@ async function db() {
       type ENUM('warehouse', 'outlet') NOT NULL,
       address TEXT,
       active BOOLEAN NOT NULL DEFAULT TRUE,
-      INDEX idx_org (organization_id)
+      INDEX idx_org (organization_id),
+      UNIQUE KEY uq_org_loc_name (organization_id, name, type)
     )`);
     await pool.execute(`CREATE TABLE IF NOT EXISTS products (
       id VARCHAR(40) PRIMARY KEY,
@@ -475,6 +496,12 @@ function validateState(data){
   const isNumber=value=>typeof value==='number'&&Number.isFinite(value);
   const variants=new Set(data.products.flatMap(product=>Array.isArray(product.variants)?product.variants.map(variant=>variant.id):[]));
   const locations=new Set(data.locations.map(location=>location.id));
+  const locationNames=new Set();
+  for(const loc of data.locations) {
+    const key = (loc.name||'').toLowerCase().trim() + '|' + (loc.type||'');
+    if(locationNames.has(key)) return 'Terdapat lokasi dengan nama dan jenis yang sama (duplikat)';
+    locationNames.add(key);
+  }
   if(data.balances.some(item=>!locations.has(item.locationId)||!variants.has(item.variantId)||!isNumber(item.quantity)||item.quantity<0))return 'Saldo stok tidak valid atau menjadi minus';
   if(data.sales.some(sale=>!locations.has(sale.locationId)||!isNumber(sale.total)||sale.total<0||!Array.isArray(sale.items)||sale.items.some(item=>!variants.has(item.variantId)||!isNumber(item.quantity)||item.quantity<=0)))return 'Transaksi penjualan tidak valid';
   if(data.transfers.some(item=>!locations.has(item.fromId)||!locations.has(item.toId)||item.fromId===item.toId||!variants.has(item.variantId)||!isNumber(item.quantity)||item.quantity<=0))return 'Transfer stok tidak valid';
@@ -488,27 +515,61 @@ async function currentUser(conn,auth){
   const [rows]=await conn.execute('SELECT id,organization_id,name,email,role,outlet_id,active FROM users WHERE id=? AND organization_id=? AND active=TRUE LIMIT 1',[auth.sub,auth.org]);
   return rows[0];
 }
+app.put('/api/organization', requireAuth, async (req, res) => {
+  const conn = await db();
+  const actor = await currentUser(conn, req.auth);
+  if (!actor || actor.role !== 'owner') return res.status(403).json({ message: 'Hanya Owner yang dapat mengubah profil usaha' });
+  
+  const { name, ownerName, phone, email, address, logoUrl, negativeStockPolicy } = req.body || {};
+  if (!name || name.length < 2) return res.status(400).json({ message: 'Nama usaha tidak valid' });
+
+  if (!conn) {
+    // Demo mode: just update app_state
+    const state = demoStates.get(req.auth.org);
+    if(state && state.data) {
+      state.data.business = { name, ownerName, phone, email, address, logoUrl, negativeStockPolicy };
+    }
+    return res.json({ message: 'Profil usaha diperbarui' });
+  }
+
+  await conn.execute(
+    'UPDATE organizations SET name=?, owner_name=?, phone=?, email=?, address=?, logo_url=?, negative_stock_policy=? WHERE id=?',
+    [name, ownerName||null, phone||null, email||null, address||null, logoUrl||null, negativeStockPolicy||'BLOCK', req.auth.org]
+  );
+  res.json({ message: 'Profil usaha diperbarui' });
+});
 app.post('/api/users',requireAuth,async(req,res)=>{
   const conn=await db(),actor=await currentUser(conn,req.auth);
   if(!actor||actor.role!=='owner')return res.status(403).json({message:'Hanya Owner yang dapat menambah pengguna'});
-  const name=String(req.body?.name||'').trim(),email=String(req.body?.email||'').trim().toLowerCase(),password=String(req.body?.password||''),role=String(req.body?.role||''),outletId=req.body?.outletId||null;
-  if(name.length<2||!email.includes('@')||password.length<8||!['pic','finance','admin','warehouse','cashier'].includes(role))return res.status(400).json({message:'Data pengguna belum lengkap'});
-  if(role==='pic'&&!outletId)return res.status(400).json({message:'PIC wajib dihubungkan ke outlet'});
-  if(role==='pic'){
-    const state=!conn?demoStates.get(req.auth.org)?.data:(await conn.execute('SELECT payload FROM app_state WHERE id=?',[req.auth.org]))[0][0]?.payload;
-    if(!state?.locations?.some(item=>item.id===outletId&&item.type==='outlet'&&item.active))return res.status(400).json({message:'Outlet PIC tidak valid atau belum aktif'});
+  const name=String(req.body?.name||'').trim(),email=String(req.body?.email||'').trim().toLowerCase(),password=String(req.body?.password||''),role=String(req.body?.role||''),rawOutletId=req.body?.outletId||null;
+  if(name.length<2||!email.includes('@')||password.length<8||!['pic','finance','admin','warehouse','cashier'].includes(role))return res.status(400).json({message:'Data pengguna belum lengkap atau role tidak valid'});
+  let outletId = null;
+  if(['pic','warehouse','cashier'].includes(role)){
+    if(!rawOutletId)return res.status(400).json({message:'Role ini wajib dihubungkan ke lokasi'});
+    let locType = null;
+    if(!conn){
+      const loc = demoStates.get(req.auth.org)?.data?.locations?.find(item=>item.id===rawOutletId&&item.active);
+      locType = loc ? loc.type : null;
+    } else {
+      const [locs] = await conn.execute('SELECT type FROM locations WHERE id=? AND organization_id=? AND active=TRUE',[rawOutletId, req.auth.org]);
+      if(locs.length) locType = locs[0].type;
+    }
+    if(!locType) return res.status(400).json({message:'Lokasi tidak valid atau belum aktif'});
+    if(role==='warehouse' && locType!=='warehouse') return res.status(400).json({message:'Staf Gudang harus ditempatkan di Gudang'});
+    if((role==='pic'||role==='cashier') && locType!=='outlet') return res.status(400).json({message:'PIC/Kasir harus ditempatkan di Outlet'});
+    outletId = rawOutletId;
   }
   const id=`u-${Date.now()}-${Math.random().toString(36).slice(2,7)}`,organizationId=req.auth.org;
   if(!conn){if(demoUsers.some(item=>item.email===email))return res.status(409).json({message:'Email sudah terdaftar'});const user={id,organization_id:organizationId,organization_name:actor.organization_name,name,email,role,outletId,active:true,demo_password:password};demoUsers.push(user);return res.status(201).json({user:safeUser(user)});}
   const [existing]=await conn.execute('SELECT id FROM users WHERE email=? LIMIT 1',[email]);
   if(existing.length)return res.status(409).json({message:'Email sudah terdaftar'});
-  await conn.execute('INSERT INTO users (id,organization_id,name,email,password_hash,role,outlet_id,active) VALUES (?,?,?,?,?,?,?,TRUE)',[id,organizationId,name,email,await bcrypt.hash(password,12),role,role==='pic'?outletId:null]);
-  res.status(201).json({user:{id,name,email,role,outletId:role==='pic'?outletId:undefined,active:true,organizationId}});
+  await conn.execute('INSERT INTO users (id,organization_id,name,email,password_hash,role,outlet_id,active) VALUES (?,?,?,?,?,?,?,TRUE)',[id,organizationId,name,email,await bcrypt.hash(password,12),role,outletId]);
+  res.status(201).json({user:{id,name,email,role,outletId,active:true,organizationId}});
 });
 app.patch('/api/users/:id',requireAuth,async(req,res)=>{
   const conn=await db(),actor=await currentUser(conn,req.auth),targetId=String(req.params.id||'');
   if(!actor||actor.role!=='owner')return res.status(403).json({message:'Hanya Owner yang dapat mengubah profil pengguna'});
-  const name=String(req.body?.name||'').trim(),email=String(req.body?.email||'').trim().toLowerCase(),password=String(req.body?.password||''),requestedRole=String(req.body?.role||''),outletId=req.body?.outletId||null,active=req.body?.active!==false;
+  const requestedRole=String(req.body?.role||''),rawOutletId=req.body?.outletId||null,active=req.body?.active!==false;
   if(name.length<2||!email.includes('@')||(password&&password.length<8))return res.status(400).json({message:'Nama, email, atau password belum valid'});
   let target;
   if(!conn)target=demoUsers.find(item=>item.id===targetId&&item.organization_id===req.auth.org);
@@ -517,23 +578,36 @@ app.patch('/api/users/:id',requireAuth,async(req,res)=>{
   const role=target.role==='owner'?'owner':requestedRole;
   const finalActive=target.role==='owner'?true:active;
   if(!['owner','pic','finance','admin','warehouse','cashier'].includes(role))return res.status(400).json({message:'Role pengguna tidak valid'});
-  if(role==='pic'){
-    const state=!conn?demoStates.get(req.auth.org)?.data:(await conn.execute('SELECT payload FROM app_state WHERE id=?',[req.auth.org]))[0][0]?.payload;
-    if(!state?.locations?.some(item=>item.id===outletId&&item.type==='outlet'&&item.active))return res.status(400).json({message:'PIC wajib dihubungkan ke outlet aktif'});
+  
+  let outletId = null;
+  if(['pic','warehouse','cashier'].includes(role)){
+    if(!rawOutletId)return res.status(400).json({message:'Role ini wajib dihubungkan ke lokasi'});
+    let locType = null;
+    if(!conn){
+      const loc = demoStates.get(req.auth.org)?.data?.locations?.find(item=>item.id===rawOutletId&&item.active);
+      locType = loc ? loc.type : null;
+    } else {
+      const [locs] = await conn.execute('SELECT type FROM locations WHERE id=? AND organization_id=? AND active=TRUE',[rawOutletId, req.auth.org]);
+      if(locs.length) locType = locs[0].type;
+    }
+    if(!locType) return res.status(400).json({message:'Lokasi tidak valid atau belum aktif'});
+    if(role==='warehouse' && locType!=='warehouse') return res.status(400).json({message:'Staf Gudang harus ditempatkan di Gudang'});
+    if((role==='pic'||role==='cashier') && locType!=='outlet') return res.status(400).json({message:'PIC/Kasir harus ditempatkan di Outlet'});
+    outletId = rawOutletId;
   }
   if(!conn){
     if(demoUsers.some(item=>item.email===email&&item.id!==targetId))return res.status(409).json({message:'Email sudah digunakan akun lain'});
-    Object.assign(target,{name,email,role,outletId:role==='pic'?outletId:undefined,active:finalActive,...(password?{demo_password:password}:{})});
+    Object.assign(target,{name,email,role,outletId,active:finalActive,...(password?{demo_password:password}:{})});
     return res.json({user:safeUser(target)});
   }
   const [duplicate]=await conn.execute('SELECT id FROM users WHERE email=? AND id<>? LIMIT 1',[email,targetId]);
   if(duplicate.length)return res.status(409).json({message:'Email sudah digunakan akun lain'});
-  const params=[name,email,role,role==='pic'?outletId:null,finalActive];
+  const params=[name,email,role,outletId,finalActive];
   let sql='UPDATE users SET name=?,email=?,role=?,outlet_id=?,active=?';
   if(password){sql+=',password_hash=?';params.push(await bcrypt.hash(password,12));}
   sql+=' WHERE id=? AND organization_id=?';params.push(targetId,req.auth.org);
   await conn.execute(sql,params);
-  res.json({user:{id:targetId,name,email,role,outletId:role==='pic'?outletId:undefined,active:finalActive,organizationId:req.auth.org}});
+  res.json({user:{id:targetId,name,email,role,outletId,active:finalActive,organizationId:req.auth.org}});
 });
 
 // ── Forgot Password (Request OTP) ────────────────────────────────────────────

@@ -1232,7 +1232,18 @@ function App() {
           data={data}
           close={() => setModal(null)}
           uploadImage={uploadImage}
-          save={(profile: any) => {
+          save={async (profile: any) => {
+            const res = await fetch('/api/organization', {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.token}` },
+              body: JSON.stringify(profile)
+            });
+            if (!res.ok) {
+              const err = await res.json().catch(() => ({}));
+              throw new Error(err.message || 'Gagal menyimpan profil usaha');
+            }
+            // Update user organizationName if ownerName changed
+            setUser((u: any) => ({ ...u, organizationName: profile.name }));
             setData((d) => ({ ...d, business: profile }));
             setModal(null);
             notify("Profil usaha berhasil diperbarui");
@@ -4242,6 +4253,7 @@ function ProductModal({
   );
 }
 function LocationModal({ close, save, location, onDelete }: any) {
+  const [isSaving, setIsSaving] = useState(false);
   const editing=Boolean(location),[name, setName] = useState(location?.name||""),
     [type, setType] = useState<"warehouse" | "outlet">(location?.type||"outlet"),[address,setAddress]=useState(location?.address||""),[active,setActive]=useState(location?.active??true);
   return (
@@ -4251,9 +4263,15 @@ function LocationModal({ close, save, location, onDelete }: any) {
       close={close}
     >
       <form
-        onSubmit={(e) => {
+        onSubmit={async (e) => {
           e.preventDefault();
-          save(name, type, address, active);
+          if (isSaving) return;
+          setIsSaving(true);
+          try {
+            await save(name, type, address, active);
+          } catch(err) {
+            setIsSaving(false);
+          }
         }}
       >
         <Field label="Nama lokasi">
@@ -4275,7 +4293,7 @@ function LocationModal({ close, save, location, onDelete }: any) {
             <option value="warehouse">Gudang</option>
           </select>
         </Field>
-        <ModalActions close={close} onDelete={onDelete} />
+        <ModalActions close={close} onDelete={onDelete} disabled={isSaving} />
       </form>
     </Modal>
   );

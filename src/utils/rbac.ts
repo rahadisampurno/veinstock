@@ -52,7 +52,7 @@ export function resolveUserScope(user?: SessionUser | null): Scope {
      'sale.view', 'sale.create', 'sale.void',
      'report.view', 'report.export'].forEach(p => permissions.add(p as ActionType));
   } else if (role === 'finance') {
-    ['product.view', 'location.view', 'user.view', 'stock.view', 'sale.view', 'report.view', 'report.export'].forEach(p => permissions.add(p as ActionType));
+    ['stock.view', 'report.view', 'report.export'].forEach(p => permissions.add(p as ActionType));
   } else if (role === 'warehouse') {
     ['product.view', 'location.view', 'stock.view', 'stock.in', 'stock.out', 'stock.adjust', 'stock.opname',
      'transfer.create', 'transfer.send', 'report.view', 'report.export'].forEach(p => permissions.add(p as ActionType));

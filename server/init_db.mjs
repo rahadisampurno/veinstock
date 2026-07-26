@@ -45,7 +45,8 @@ async function init() {
       type ENUM('warehouse', 'outlet') NOT NULL,
       address TEXT,
       active BOOLEAN NOT NULL DEFAULT TRUE,
-      INDEX idx_org (organization_id)
+      INDEX idx_org (organization_id),
+      UNIQUE KEY uq_org_loc_name (organization_id, name, type)
     )`,
     `CREATE TABLE IF NOT EXISTS products (
       id VARCHAR(40) PRIMARY KEY,

@@ -33,7 +33,7 @@ export function resolveUserScope(user) {
      'sale.view', 'sale.create', 'sale.void',
      'report.view', 'report.export'].forEach(p => permissions.add(p));
   } else if (role === 'finance') {
-    ['product.view', 'location.view', 'user.view', 'stock.view', 'sale.view', 'report.view', 'report.export'].forEach(p => permissions.add(p));
+    ['stock.view', 'report.view', 'report.export'].forEach(p => permissions.add(p));
   } else if (role === 'warehouse') {
     ['product.view', 'location.view', 'stock.view', 'stock.in', 'stock.out', 'stock.adjust', 'stock.opname',
      'transfer.create', 'transfer.send', 'report.view', 'report.export'].forEach(p => permissions.add(p));

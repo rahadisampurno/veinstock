@@ -111,8 +111,16 @@ export async function getStateFromSQL(conn, orgId) {
     createdAt: sc.created_at
   }));
 
-  const [orgs] = await conn.execute('SELECT name FROM organizations WHERE id = ?', [orgId]);
-  const business = orgs[0] ? { name: orgs[0].name } : { name: "VEINSTOCK" };
+  const [orgs] = await conn.execute('SELECT name, owner_name, phone, email, address, logo_url, negative_stock_policy FROM organizations WHERE id = ?', [orgId]);
+  const business = orgs[0] ? { 
+    name: orgs[0].name,
+    ownerName: orgs[0].owner_name || '',
+    phone: orgs[0].phone || '',
+    email: orgs[0].email || '',
+    address: orgs[0].address || '',
+    logoUrl: orgs[0].logo_url || '',
+    negativeStockPolicy: orgs[0].negative_stock_policy || 'BLOCK'
+  } : { name: "VEINSTOCK" };
 
   const [states] = await conn.execute('SELECT version, payload FROM app_state WHERE id = ?', [orgId]);
   const rawState = states[0]?.payload || {};
