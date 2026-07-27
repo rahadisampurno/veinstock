@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS users (
   name VARCHAR(120) NOT NULL,
   email VARCHAR(190) NOT NULL,
   password_hash VARCHAR(255) NOT NULL,
-  role ENUM('owner','pic','finance') NOT NULL,
+  role ENUM('owner','pic','finance','admin','warehouse','cashier') NOT NULL,
   outlet_id VARCHAR(40) NULL,
   active BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,

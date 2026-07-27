@@ -125,6 +125,7 @@ function App() {
   // Menahan pembaruan dari perangkat lain saat Owner masih memiliki perubahan
   // lokal yang belum selesai dikirim ke server.
   const hasPendingLocalChanges = useRef(false);
+  const syncQueue = useRef<Promise<any>>(Promise.resolve());
   const user = authUser;
   useEffect(() => {
     if (user) saveData(data, user.organizationId);
@@ -133,7 +134,7 @@ function App() {
       return;
     }
     hasPendingLocalChanges.current = true;
-    const timer = window.setTimeout(async () => {
+    syncQueue.current = syncQueue.current.then(async () => {
       try {
         const response = await fetch("/api/state", {
           method: "PUT",
@@ -144,9 +145,17 @@ function App() {
           body: JSON.stringify({ data, version: serverVersion.current }),
         });
         if (response.status === 409) {
-          setToast(
-            "Data berubah di perangkat lain. Muat ulang halaman sebelum melanjutkan.",
-          );
+          setToast("Data berubah di perangkat lain. Menyinkronkan ulang...");
+          hasPendingLocalChanges.current = false;
+          const res = await fetch("/api/state", { headers: { Authorization: `Bearer ${token}` } });
+          if (res.ok) {
+            const result = await res.json();
+            if (result.data && Number(result.version) > serverVersion.current) {
+              serverVersion.current = Number(result.version);
+              skipNextSync.current = true;
+              setData(normalizeData(result.data));
+            }
+          }
           return;
         }
         const result = await response.json();
@@ -156,11 +165,11 @@ function App() {
         }
         serverVersion.current = result.version;
         hasPendingLocalChanges.current = false;
+        setToast("Penyimpanan berhasil");
       } catch {
         /* Mode lokal tetap dapat digunakan saat API belum aktif. */
       }
-    }, 500);
-    return () => window.clearTimeout(timer);
+    });
   }, [data, token, user]);
   useEffect(() => {
     if (!token || !user) {
@@ -251,6 +260,30 @@ function App() {
     setToast(message);
     window.setTimeout(() => setToast(""), 3000);
   };
+  const syncDataNow = async (newData: any) => {
+    if (!token) return;
+    hasPendingLocalChanges.current = true;
+    const response = await fetch("/api/state", {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ data: newData, version: serverVersion.current }),
+    });
+    const result = await response.json();
+    if (response.status === 409) {
+      throw new Error("Data berubah di perangkat lain. Muat ulang halaman sebelum melanjutkan.");
+    }
+    if (!response.ok) {
+      throw new Error(result.message || "Perubahan belum dapat disimpan");
+    }
+    serverVersion.current = result.version;
+    skipNextSync.current = true;
+    setData(newData);
+    hasPendingLocalChanges.current = false;
+  };
+
   const checkAuth = (action: ActionType, locationId?: string) => {
     const auth = authorizeAction(user, action, locationId);
     if (!auth.allowed) notify(auth.reason || "Akses ditolak");
@@ -359,7 +392,21 @@ function App() {
     );
     return result.url as string;
   };
-  const logout = () => {
+  const logout = async () => {
+    if (hasPendingLocalChanges.current && token) {
+      try {
+        await fetch("/api/state", {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ data, version: serverVersion.current }),
+        });
+      } catch (e) {
+        console.error("Gagal sinkronisasi terakhir:", e);
+      }
+    }
     setAuthUser(null);
     setToken(null);
     setHydrated(false);
@@ -811,7 +858,8 @@ function App() {
               locations={locationMap}
               setPage={setPage}
               organizationName={data.business?.name || "Usaha Anda"}
-              canEdit={user.role !== "finance"}
+              canEdit={checkAuth('sale.create')}
+              canSetup={checkAuth('product.create')}
               role={user.role}
               outletId={user.outletId}
             />
@@ -830,7 +878,7 @@ function App() {
               edit={(id: string) => checkAuth('location.update') && setModal(`location:${id}`)}
             />
           )}
-          {page === "receipts" && (
+          {page === "receipts" && checkAuth('stock.in') && (
             <ReceiptsPage
               data={data}
               variants={variantMap}
@@ -1033,29 +1081,25 @@ function App() {
       {modal === "location" && (
         <LocationModal
           close={() => setModal(null)}
-          save={(name: string, type: "warehouse" | "outlet", address: string, active: boolean) => {
-            return new Promise<void>((resolve, reject) => {
-              setData((d) => {
-                const key = name.toLowerCase().trim() + '|' + type;
-                if (d.locations.some(l => (l.name.toLowerCase().trim() + '|' + l.type) === key)) {
-                  setTimeout(() => notify("Terdapat lokasi dengan nama dan jenis yang sama (duplikat)"), 0);
-                  reject(new Error("Duplicate"));
-                  return d;
-                }
-                setTimeout(() => {
-                  setModal(null);
-                  notify("Lokasi usaha berhasil ditambahkan");
-                  resolve();
-                }, 0);
-                return {
-                  ...d,
-                  locations: [
-                    ...d.locations,
-                    { id: newId("loc"), name, type, address, active },
-                  ],
-                };
-              });
-            });
+          save={async (name: string, type: "warehouse" | "outlet", address: string, active: boolean) => {
+            const key = name.toLowerCase().trim() + '|' + type;
+            if (data.locations.some(l => (l.name.toLowerCase().trim() + '|' + l.type) === key)) {
+              notify("Terdapat lokasi dengan nama dan jenis yang sama (duplikat)");
+              throw new Error("Duplicate");
+            }
+            const newLocation = { id: newId("loc"), name, type, address, active };
+            const newData = {
+              ...data,
+              locations: [...data.locations, newLocation],
+            };
+            try {
+              await syncDataNow(newData);
+              setModal(null);
+              notify("Lokasi usaha berhasil ditambahkan");
+            } catch (err: any) {
+              notify(err.message || "Gagal menyimpan lokasi");
+              throw err;
+            }
           }}
         />
       )}
@@ -1881,6 +1925,7 @@ function Dashboard({
   setPage,
   organizationName,
   canEdit,
+  canSetup,
   role,
   outletId,
 }: any) {
@@ -1910,7 +1955,7 @@ function Dashboard({
           </button>
         )}
       </section>
-      {canEdit&&(data.products.length===0||data.balances.length===0)&&<section className="onboarding"><div><small>PANDUAN MULAI</small><h2>Siapkan stok pertama Anda</h2><p>Ikuti urutan ini agar saldo awal tercatat sebagai transaksi dan mudah diaudit.</p></div><ol><li className={data.locations.length?'done':''}><b>1. Buat lokasi</b><span>Gudang atau outlet tempat stok disimpan.</span><button onClick={()=>setPage('locations')}>Buka lokasi</button></li><li className={data.products.length?'done':''}><b>2. Tambah produk & varian</b><span>Masukkan ukuran, warna, SKU, harga, dan minimum stok.</span><button onClick={()=>setPage('products')}>Buka produk</button></li><li className={data.balances.length?'done':''}><b>3. Catat stok masuk</b><span>Pilih supplier atau hasil produksi untuk membentuk saldo awal.</span><button onClick={()=>setPage('receipts')}>Catat stok</button></li></ol></section>}
+      {canSetup&&(data.products.length===0||data.balances.length===0)&&<section className="onboarding"><div><small>PANDUAN MULAI</small><h2>Siapkan stok pertama Anda</h2><p>Ikuti urutan ini agar saldo awal tercatat sebagai transaksi dan mudah diaudit.</p></div><ol><li className={data.locations.length?'done':''}><b>1. Buat lokasi</b><span>Gudang atau outlet tempat stok disimpan.</span><button onClick={()=>setPage('locations')}>Buka lokasi</button></li><li className={data.products.length?'done':''}><b>2. Tambah produk & varian</b><span>Masukkan ukuran, warna, SKU, harga, dan minimum stok.</span><button onClick={()=>setPage('products')}>Buka produk</button></li><li className={data.balances.length?'done':''}><b>3. Catat stok masuk</b><span>Pilih supplier atau hasil produksi untuk membentuk saldo awal.</span><button onClick={()=>setPage('receipts')}>Catat stok</button></li></ol></section>}
       <section className="stats-grid">
         <Stat
           label="Penjualan hari ini"

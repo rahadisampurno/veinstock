@@ -384,6 +384,7 @@ app.post('/api/login', async (req,res) => {
   if(conn){ const [rows]=await conn.execute('SELECT u.*,o.name organization_name FROM users u JOIN organizations o ON o.id=u.organization_id WHERE u.email=? AND u.active=TRUE AND o.active=TRUE LIMIT 1',[email]); user=rows[0]; if(!user || !await bcrypt.compare(password,user.password_hash)) return res.status(401).json({message:'Email atau password tidak sesuai'}); }
   else { user=demoUsers.find(item=>item.email===email); if(!user || password!==(user.demo_password||'VeinStock123!')) return res.status(401).json({message:'Email atau password tidak sesuai'}); }
   const publicUser=safeUser(user);
+  if(!publicUser.role) return res.status(403).json({message:'Role pengguna tidak valid atau kosong'});
   res.json({token:jwt.sign({sub:publicUser.id,role:publicUser.role,org:publicUser.organizationId},jwtSecret,{expiresIn:'12h'}),user:publicUser});
 });
 app.post('/api/register',async(req,res)=>{
@@ -577,6 +578,7 @@ app.patch('/api/users/:id',requireAuth,async(req,res)=>{
   const conn=await db(),actor=await currentUser(conn,req.auth),targetId=String(req.params.id||'');
   if(!actor||actor.role!=='owner')return res.status(403).json({message:'Hanya Owner yang dapat mengubah profil pengguna'});
   const requestedRole=String(req.body?.role||''),rawOutletId=req.body?.outletId||null,active=req.body?.active!==false;
+  const name=String(req.body?.name||'').trim(),email=String(req.body?.email||'').trim().toLowerCase(),password=req.body?.password?String(req.body.password):null;
   if(name.length<2||!email.includes('@')||(password&&password.length<8))return res.status(400).json({message:'Nama, email, atau password belum valid'});
   let target;
   if(!conn)target=demoUsers.find(item=>item.id===targetId&&item.organization_id===req.auth.org);
@@ -727,6 +729,8 @@ app.get('/api/state', requireAuth, async (req, res) => {
     if (scope.scopeType === 'all') return data;
     return {
       ...data,
+      locations: (data.locations||[]).filter(l => scope.allowedLocationIds.includes(l.id)),
+      users: (data.users||[]).filter(u => u.id === actor.id),
       balances: (data.balances||[]).filter(b => scope.allowedLocationIds.includes(b.locationId)),
       sales: (data.sales||[]).filter(s => scope.allowedLocationIds.includes(s.locationId)),
       movements: (data.movements||[]).filter(m => scope.allowedLocationIds.includes(m.locationId)),
