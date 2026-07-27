@@ -126,17 +126,33 @@ export async function getStateFromSQL(conn, orgId) {
   const rawState = states[0]?.payload || {};
   const version = Number(states[0]?.version || 0);
 
+  const mergeLegacy = (sqlArr, rawArr) => {
+    const map = new Map();
+    (rawArr || []).forEach(item => map.set(item.id, item));
+    (sqlArr || []).forEach(item => map.set(item.id, item));
+    return Array.from(map.values());
+  };
+
+  const mergeLegacyBalances = (sqlArr, rawArr) => {
+    const map = new Map();
+    (rawArr || []).forEach(item => map.set(`${item.locationId}-${item.variantId}`, item));
+    (sqlArr || []).forEach(item => map.set(`${item.locationId}-${item.variantId}`, item));
+    return Array.from(map.values());
+  };
+
+  const sqlLocations = locations.map(l => ({ ...l, active: l.active === 1 }));
+
   return {
     version,
     data: {
       business,
-      locations: locations.map(l => ({ ...l, active: l.active === 1 })),
-      products,
-      balances,
-      sales,
-      transfers,
-      movements,
-      stockCounts,
+      locations: mergeLegacy(sqlLocations, rawState.locations),
+      products: mergeLegacy(products, rawState.products),
+      balances: mergeLegacyBalances(balances, rawState.balances),
+      sales: mergeLegacy(sales, rawState.sales),
+      transfers: mergeLegacy(transfers, rawState.transfers),
+      movements: mergeLegacy(movements, rawState.movements),
+      stockCounts: mergeLegacy(stockCounts, rawState.stockCounts),
       receipts: rawState.receipts || [],
       returns: rawState.returns || [],
       suppliers: rawState.suppliers || [],
