@@ -561,6 +561,11 @@ app.post('/api/users',requireAuth,async(req,res)=>{
     } else {
       const [locs] = await conn.execute('SELECT type FROM locations WHERE id=? AND organization_id=? AND active=TRUE',[rawOutletId, req.auth.org]);
       if(locs.length) locType = locs[0].type;
+      else {
+        const [states] = await conn.execute('SELECT payload FROM app_state WHERE id=?', [req.auth.org]);
+        const loc = states[0]?.payload?.locations?.find(l => l.id === rawOutletId && l.active !== false);
+        if (loc) locType = loc.type;
+      }
     }
     if(!locType) return res.status(400).json({message:'Lokasi tidak valid atau belum aktif'});
     if(role==='warehouse' && locType!=='warehouse') return res.status(400).json({message:'Staf Gudang harus ditempatkan di Gudang'});
@@ -598,6 +603,11 @@ app.patch('/api/users/:id',requireAuth,async(req,res)=>{
     } else {
       const [locs] = await conn.execute('SELECT type FROM locations WHERE id=? AND organization_id=? AND active=TRUE',[rawOutletId, req.auth.org]);
       if(locs.length) locType = locs[0].type;
+      else {
+        const [states] = await conn.execute('SELECT payload FROM app_state WHERE id=?', [req.auth.org]);
+        const loc = states[0]?.payload?.locations?.find(l => l.id === rawOutletId && l.active !== false);
+        if (loc) locType = loc.type;
+      }
     }
     if(!locType) return res.status(400).json({message:'Lokasi tidak valid atau belum aktif'});
     if(role==='warehouse' && locType!=='warehouse') return res.status(400).json({message:'Staf Gudang harus ditempatkan di Gudang'});
