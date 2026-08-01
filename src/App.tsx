@@ -757,16 +757,15 @@ function App() {
       </aside>
       <main>
         <header>
-          <button
-            className="icon-btn menu-btn"
-            aria-label="Buka menu"
-            onClick={() => {
-              if (isMobileViewport) setSidebar(true);
-              else setDesktopSidebar(true);
-            }}
-          >
-            <Menu />
-          </button>
+          {isMobileViewport && (
+            <button
+              className="icon-btn menu-btn"
+              aria-label="Buka menu navigasi"
+              onClick={() => setSidebar(true)}
+            >
+              <Menu />
+            </button>
+          )}
           <div>
             <small>{user.organizationName.toUpperCase()} / OPERASIONAL</small>
             <h1>{titles[page]}</h1>

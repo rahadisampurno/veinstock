@@ -1281,7 +1281,8 @@ body{font-size:16px;line-height:1.5}.brand small{font-size:12px}.workspace>span{
   .sidebar.sidebar-collapsed .sidebar-panel { display: none; }
   .app-shell.sidebar-is-expanded main { margin-left: 342px; }
   .app-shell.sidebar-is-collapsed main { margin-left: 98px; }
-  .app-shell.sidebar-is-collapsed .menu-btn { display: block !important; }
+  /* Desktop memakai hover pada rail sidebar; tombol burger hanya dipakai di layar sentuh. */
+  .app-shell.sidebar-is-collapsed .menu-btn { display: none !important; }
   .sidebar-collapse-button {
     display: flex;
     align-items: center;
