@@ -4755,7 +4755,7 @@ function SaleModal({ data, close, save, fixedLocation }: any) {
     if (scannerVideoRef.current) scannerVideoRef.current.srcObject = null;
     setCameraOpen(false);
   };
-  const openCameraScanner = () => {
+  const openCameraScanner = async () => {
     setCameraError("");
     if (!navigator.mediaDevices?.getUserMedia) {
       setCameraError("Kamera tidak tersedia di perangkat ini. Gunakan scanner Bluetooth atau masukkan SKU.");
@@ -4765,7 +4765,26 @@ function SaleModal({ data, close, save, fixedLocation }: any) {
       setCameraError("Browser ini belum mendukung pembacaan barcode kamera. Gunakan Chrome terbaru atau scanner Bluetooth.");
       return;
     }
-    setCameraOpen(true);
+    try {
+      // getUserMedia wajib dipanggil langsung dari event klik. Di sebagian
+      // Android, pemanggilan yang ditunda lewat effect dianggap bukan aksi
+      // pengguna dan akan ditolak walaupun izin Chrome sudah aktif.
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+      });
+      scannerStreamRef.current = stream;
+      setCameraOpen(true);
+    } catch (error: any) {
+      const messageByErrorName: Record<string, string> = {
+        NotAllowedError: "Izin kamera ditolak oleh perangkat atau browser. Tutup lalu buka ulang Chrome, kemudian tekan Scan dan pilih Izinkan.",
+        NotFoundError: "Kamera tidak ditemukan pada perangkat ini.",
+        NotReadableError: "Kamera sedang digunakan aplikasi lain. Tutup aplikasi Kamera, WhatsApp, atau Instagram lalu coba lagi.",
+        OverconstrainedError: "Kamera belakang tidak dapat digunakan. Coba lagi setelah menutup aplikasi lain.",
+      };
+      setCameraError(messageByErrorName[error?.name] || "Kamera tidak dapat dibuka. Coba lagi atau gunakan scanner Bluetooth.");
+      stopCameraScanner();
+    }
   };
   const updateQuantity = (variantId: string, quantity: number) => {
     if (quantity <= 0) {
@@ -4777,20 +4796,16 @@ function SaleModal({ data, close, save, fixedLocation }: any) {
   useEffect(() => {
     if (isOffline && !isTouchDevice) requestAnimationFrame(() => scannerRef.current?.focus());
   }, [isOffline, isTouchDevice]);
-  // Sesi kamera dimulai hanya setelah tombol Scan ditekan; perubahan keranjang
-  // tidak boleh menghentikan pemindaian yang sedang berlangsung.
+  // Izin kamera diminta dari handler klik; effect ini hanya memasang stream ke
+  // video dan menjalankan pembacaan barcode agar Android tidak menolak izin.
   useEffect(() => {
-    if (!cameraOpen) return;
+    if (!cameraOpen || !scannerStreamRef.current) return;
     let cancelled = false;
     let detectorTimer: number | null = null;
     const start = async () => {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
-          audio: false,
-        });
-        if (cancelled) { stream.getTracks().forEach((track) => track.stop()); return; }
-        scannerStreamRef.current = stream;
+        const stream = scannerStreamRef.current;
+        if (!stream || cancelled) return;
         if (scannerVideoRef.current) {
           scannerVideoRef.current.srcObject = stream;
           await scannerVideoRef.current.play();
@@ -4813,9 +4828,9 @@ function SaleModal({ data, close, save, fixedLocation }: any) {
             // Frame yang belum siap dibaca tidak boleh menghentikan kamera.
           }
         }, 280);
-      } catch (error: any) {
-        setCameraError(error?.name === "NotAllowedError" ? "Izin kamera ditolak. Izinkan kamera untuk memindai barcode." : "Kamera tidak dapat dibuka. Coba lagi atau gunakan scanner Bluetooth.");
-        setCameraOpen(false);
+      } catch {
+        setCameraError("Pemindai kamera tidak dapat dijalankan. Perbarui Chrome atau gunakan scanner Bluetooth.");
+        stopCameraScanner();
       }
     };
     void start();
