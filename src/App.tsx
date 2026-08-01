@@ -4724,6 +4724,7 @@ function SaleModal({ data, close, save, fixedLocation }: any) {
   const scannerRef = useRef<HTMLInputElement>(null);
   const scannerVideoRef = useRef<HTMLVideoElement>(null);
   const scannerStreamRef = useRef<MediaStream | null>(null);
+  const barcodePhotoRef = useRef<HTMLInputElement>(null);
   const isOffline = channel === "offline";
   const isTouchDevice = typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches;
   const findScannedVariant = (rawValue: string) => {
@@ -4755,6 +4756,18 @@ function SaleModal({ data, close, save, fixedLocation }: any) {
     if (scannerVideoRef.current) scannerVideoRef.current.srcObject = null;
     setCameraOpen(false);
   };
+  const getCameraPermissionError = async (error: any) => {
+    if (error?.name !== "NotAllowedError") return null;
+    try {
+      const permission = await navigator.permissions?.query({ name: "camera" as PermissionName });
+      if (permission?.state === "denied") {
+        return "Izin kamera untuk situs Menengs masih diblokir di Chrome. Ketuk ikon pengaturan di kiri alamat situs → Izin → Kamera → Izinkan, lalu muat ulang halaman.";
+      }
+    } catch {
+      // Browser lama tidak selalu mendukung Permissions API untuk kamera.
+    }
+    return "Kamera ditolak oleh perangkat atau browser. Pastikan Chrome tidak sedang memakai kamera di aplikasi lain, lalu coba kembali.";
+  };
   const openCameraScanner = async () => {
     setCameraError("");
     if (!navigator.mediaDevices?.getUserMedia) {
@@ -4777,13 +4790,39 @@ function SaleModal({ data, close, save, fixedLocation }: any) {
       setCameraOpen(true);
     } catch (error: any) {
       const messageByErrorName: Record<string, string> = {
-        NotAllowedError: "Izin kamera ditolak oleh perangkat atau browser. Tutup lalu buka ulang Chrome, kemudian tekan Scan dan pilih Izinkan.",
         NotFoundError: "Kamera tidak ditemukan pada perangkat ini.",
         NotReadableError: "Kamera sedang digunakan aplikasi lain. Tutup aplikasi Kamera, WhatsApp, atau Instagram lalu coba lagi.",
         OverconstrainedError: "Kamera belakang tidak dapat digunakan. Coba lagi setelah menutup aplikasi lain.",
       };
-      setCameraError(messageByErrorName[error?.name] || "Kamera tidak dapat dibuka. Coba lagi atau gunakan scanner Bluetooth.");
+      setCameraError((await getCameraPermissionError(error)) || messageByErrorName[error?.name] || "Kamera tidak dapat dibuka. Coba lagi atau gunakan scanner Bluetooth.");
       stopCameraScanner();
+    }
+  };
+  const scanBarcodePhoto = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setCameraError("");
+    try {
+      const Detector = (window as any).BarcodeDetector;
+      if (!Detector) throw new Error("unsupported");
+      const imageUrl = URL.createObjectURL(file);
+      const image = new Image();
+      await new Promise<void>((resolve, reject) => {
+        image.onload = () => resolve();
+        image.onerror = () => reject(new Error("invalid-image"));
+        image.src = imageUrl;
+      });
+      const codes = await new Detector().detect(image);
+      URL.revokeObjectURL(imageUrl);
+      const rawValue = codes[0]?.rawValue;
+      if (!rawValue) {
+        setCameraError("Barcode belum terbaca dari foto. Pastikan barcode terlihat utuh dan pencahayaan cukup.");
+      } else if (!applyScannedValue(rawValue)) {
+        setCameraError("Barcode ditemukan, tetapi produknya tidak tersedia pada stok lokasi ini.");
+      }
+    } catch {
+      setCameraError("Foto barcode tidak dapat dipindai di browser ini. Gunakan input SKU atau scanner Bluetooth.");
     }
   };
   const updateQuantity = (variantId: string, quantity: number) => {
@@ -4910,8 +4949,12 @@ function SaleModal({ data, close, save, fixedLocation }: any) {
               <button type="button" className="pos-camera-button" onClick={openCameraScanner} aria-label="Pindai barcode dengan kamera">
                 <Camera size={18} /><span>Scan</span>
               </button>
+              <input ref={barcodePhotoRef} type="file" accept="image/*" capture="environment" className="visually-hidden" onChange={scanBarcodePhoto} />
             </div>
-            {cameraError && <p className="pos-scan-feedback" role="status">{cameraError}</p>}
+            {cameraError && <div className="pos-scan-feedback" role="status">
+              <span>{cameraError}</span>
+              <button type="button" onClick={() => barcodePhotoRef.current?.click()}>Pilih foto barcode</button>
+            </div>}
             {cameraOpen && <div className="pos-camera-scanner">
               <video ref={scannerVideoRef} muted playsInline aria-label="Pratinjau kamera pemindai barcode" />
               <div><span>Arahkan kamera ke barcode produk</span><button type="button" onClick={stopCameraScanner}><X size={16} /> Tutup kamera</button></div>
