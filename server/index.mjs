@@ -59,6 +59,32 @@ async function backfillBarcodes(pool) {
   }
 }
 
+// Versi awal aplikasi menyimpan sebagian transaksi tanpa `cashierId`. Kolom
+// relasional sekarang wajib diisi, sehingga satu transaksi lama yang cacat
+// sebelumnya dapat menggagalkan CRUD lain (misalnya menambah lokasi). Tandai
+// riwayat tersebut sebagai hasil migrasi agar akuntabilitas user saat ini
+// tetap jujur dan sinkronisasi berikutnya selalu dapat berjalan.
+async function backfillLegacySaleCashiers(pool) {
+  const [states] = await pool.execute('SELECT id, payload FROM app_state');
+  let organizationsUpdated = 0;
+  let salesBackfilled = 0;
+  for (const row of states) {
+    const state = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload;
+    if (!state || !Array.isArray(state.sales)) continue;
+    let changed = false;
+    for (const sale of state.sales) {
+      if (sale.cashierId) continue;
+      sale.cashierId = 'system-migration';
+      changed = true;
+      salesBackfilled += 1;
+    }
+    if (!changed) continue;
+    organizationsUpdated += 1;
+    await pool.execute('UPDATE app_state SET payload = ? WHERE id = ?', [JSON.stringify(state), row.id]);
+  }
+  if (salesBackfilled) console.info(`Backfilled cashier identity for ${salesBackfilled} legacy sales across ${organizationsUpdated} organizations.`);
+}
+
 const app = express();
 const port = Number(process.env.PORT || 8787);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -409,6 +435,7 @@ async function db() {
     } catch (error) {
       if (error?.code !== 'ER_DUP_FIELDNAME') throw error;
     }
+    await backfillLegacySaleCashiers(pool);
     await pool.execute(`CREATE TABLE IF NOT EXISTS sale_items (
       sale_id VARCHAR(40) NOT NULL,
       variant_id VARCHAR(40) NOT NULL,
@@ -804,6 +831,8 @@ async function executeCommand(req, res, mutate) {
     state.attendances ||= [];
     state.loans ||= [];
     state.payrolls ||= [];
+    state.sales ||= [];
+    for (const sale of state.sales) sale.cashierId ||= 'system-migration';
     assignMissingBarcodes(state, req.auth.org);
     await mutate(state, actor);
     assignMissingBarcodes(state, req.auth.org);

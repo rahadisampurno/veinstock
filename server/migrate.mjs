@@ -69,7 +69,7 @@ async function run() {
       for (const sale of data.sales || []) {
          await conn.execute(
            `INSERT IGNORE INTO sales (id, organization_id, location_id, total, method, status, note, cashier_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-           [sale.id ?? 'unknown', orgId, sale.locationId ?? 'unknown', sale.total ?? 0, sale.method ?? 'Tunai', sale.status ?? 'completed', sale.note ?? null, sale.cashierId ?? null, sale.createdAt ?? new Date().toISOString()]
+           [sale.id ?? 'unknown', orgId, sale.locationId ?? 'unknown', sale.total ?? 0, sale.method ?? 'Tunai', sale.status ?? 'completed', sale.note ?? null, sale.cashierId || 'system-migration', sale.createdAt ?? new Date().toISOString()]
          );
          for (const item of sale.items || []) {
            await conn.execute(

@@ -1,3 +1,8 @@
+// Transaksi yang dibuat sebelum field `cashierId` diterapkan tidak boleh
+// membuat seluruh sinkronisasi organisasi gagal. Nilai ini sengaja bukan ID
+// owner agar riwayat lama tidak keliru terlihat dibuat oleh seorang pengguna.
+const LEGACY_CASHIER_ID = 'system-migration';
+
 export async function syncStateToSQL(conn, orgId, data) {
   // 1. Locations
   for (const loc of data.locations || []) {
@@ -35,7 +40,7 @@ export async function syncStateToSQL(conn, orgId, data) {
   for (const sale of data.sales || []) {
      await conn.execute(
        `INSERT INTO sales (id, organization_id, location_id, total, channel, method, status, note, cashier_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE total=VALUES(total), channel=VALUES(channel), method=VALUES(method), status=VALUES(status), note=VALUES(note), cashier_id=VALUES(cashier_id)`,
-       [sale.id ?? 'unknown', orgId, sale.locationId ?? 'unknown', sale.total ?? 0, sale.channel ?? 'offline', sale.payment ?? sale.method ?? 'Tunai', sale.status ?? 'completed', sale.note ?? null, sale.cashierId ?? null, sale.createdAt ?? new Date().toISOString()]
+       [sale.id ?? 'unknown', orgId, sale.locationId ?? 'unknown', sale.total ?? 0, sale.channel ?? 'offline', sale.payment ?? sale.method ?? 'Tunai', sale.status ?? 'completed', sale.note ?? null, sale.cashierId || LEGACY_CASHIER_ID, sale.createdAt ?? new Date().toISOString()]
      );
      // `sale_items` tidak memiliki primary key sendiri pada instalasi lama.
      // Menambahkan ulang seluruh state dengan INSERT IGNORE menyebabkan setiap
