@@ -39,7 +39,9 @@ const assignMissingBarcodes = (state, organizationId) => {
   const used = new Set((state?.products || []).flatMap(product => (product.variants || []).map(variant => variant.barcode)).filter(Boolean));
   let changed = false;
   for (const product of state?.products || []) for (const variant of product.variants || []) {
-    if (!/^\d{13}$/.test(String(variant.barcode || ''))) {
+    // Barcode supplier dapat berupa Code 128/Code 39, bukan hanya EAN-13.
+    // Buat barcode internal hanya bila memang belum ada nilainya.
+    if (!String(variant.barcode || '').trim()) {
       variant.barcode = internalBarcode(`${organizationId}:${variant.id}`, used);
       used.add(variant.barcode);
       changed = true;

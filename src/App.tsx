@@ -169,7 +169,7 @@ const barcodeModules = (barcode?: string) => {
 };
 const BarcodeGraphic = ({ value, label, compact = false }: { value?: string; label?: string; compact?: boolean }) => {
   const modules = barcodeModules(value);
-  if (!modules) return <span className="barcode-pending">Barcode akan dibuat saat disimpan</span>;
+  if (!modules) return <span className="barcode-pending">{value ? `Barcode: ${value}` : "Barcode akan dibuat saat disimpan"}</span>;
   const bars: ReactElement[] = [];
   let start = 0;
   while (start < modules.length) {
@@ -195,6 +195,92 @@ const printBarcodeLabel = (productName: string, variantName: string, barcode?: s
   printable.document.write(`<!doctype html><html><head><title>Label barcode</title><style>body{font-family:Arial,sans-serif;margin:24px;text-align:center;color:#172033}h1{font-size:18px;margin:0 0 5px}p{margin:0 0 18px;color:#536274}svg{display:block;width:100%;height:100px;color:#000}code{letter-spacing:3px;font-size:16px}</style></head><body><h1>${escapeHtml(productName)}</h1><p>${escapeHtml(variantName)}</p><svg viewBox="0 0 ${modules.length} 44" preserveAspectRatio="none">${bars}</svg><code>${escapeHtml(String(barcode))}</code><script>window.onload=()=>window.print()</script></body></html>`);
   printable.document.close();
 };
+const findVariantByBarcode = (variants: any[], rawValue: string) => {
+  const value = String(rawValue || "").trim().toLowerCase();
+  if (!value) return undefined;
+  return variants.find((variant: any) => variant?.barcode?.toLowerCase() === value || variant?.sku?.toLowerCase() === value);
+};
+
+/** Kamera dipakai hanya setelah tombol Scan ditekan. Komponen ini dipakai pada
+ * seluruh alur stok agar hasil scan selalu mengarah ke varian yang sama. */
+function BarcodeScanControl({ onDetected, label = "Scan", className = "" }: { onDetected: (value: string) => boolean | Promise<boolean>; label?: string; className?: string }) {
+  const [open, setOpen] = useState(false);
+  const [feedback, setFeedback] = useState("");
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const onDetectedRef = useRef(onDetected);
+  const applyRef = useRef<(value: string) => Promise<boolean>>(async () => false);
+  useEffect(() => { onDetectedRef.current = onDetected; }, [onDetected]);
+  const stop = () => {
+    streamRef.current?.getTracks().forEach(track => track.stop());
+    streamRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
+    setOpen(false);
+  };
+  const beep = () => {
+    const Context = window.AudioContext || (window as any).webkitAudioContext;
+    if (!Context) return;
+    const context = new Context();
+    const play = () => [1420, 2020].forEach((frequency, index) => {
+      const oscillator = context.createOscillator(), gain = context.createGain(), start = context.currentTime + index * .065;
+      oscillator.type = "square"; oscillator.frequency.setValueAtTime(frequency, start);
+      gain.gain.setValueAtTime(.0001, start); gain.gain.exponentialRampToValueAtTime(.035, start + .004); gain.gain.exponentialRampToValueAtTime(.0001, start + .055);
+      oscillator.connect(gain).connect(context.destination); oscillator.start(start); oscillator.stop(start + .07);
+    });
+    if (context.state === "suspended") void context.resume().then(play).catch(() => undefined); else play();
+  };
+  const apply = async (value: string) => {
+    const found = await onDetectedRef.current(value);
+    if (!found) { setFeedback("Barcode atau SKU tidak ditemukan pada data yang dapat digunakan di menu ini."); return false; }
+    beep(); setFeedback("Barcode berhasil dipindai."); stop(); return true;
+  };
+  useEffect(() => { applyRef.current = apply; });
+  const start = async () => {
+    setFeedback("");
+    if (!navigator.mediaDevices?.getUserMedia) { setFeedback("Kamera tidak tersedia. Gunakan scanner Bluetooth atau masukkan barcode/SKU."); return; }
+    if (!(window as any).BarcodeDetector) { setFeedback("Chrome di perangkat ini belum mendukung pembacaan barcode kamera. Gunakan scanner Bluetooth atau masukkan barcode/SKU."); return; }
+    try {
+      // Harus langsung dari klik pengguna agar Chrome Android dapat meminta izin.
+      streamRef.current = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+      setOpen(true);
+    } catch (error: any) {
+      const message: Record<string, string> = {
+        NotAllowedError: "Izin kamera ditolak. Izinkan Kamera untuk situs ini di Chrome lalu muat ulang halaman.",
+        NotFoundError: "Kamera tidak ditemukan pada perangkat ini.",
+        NotReadableError: "Kamera sedang dipakai aplikasi lain. Tutup aplikasi Kamera lalu coba lagi.",
+      };
+      setFeedback(message[error?.name] || "Kamera tidak dapat dibuka. Coba lagi atau gunakan scanner Bluetooth.");
+      stop();
+    }
+  };
+  useEffect(() => {
+    if (!open || !streamRef.current) return;
+    let cancelled = false, timer: number | undefined;
+    const run = async () => {
+      try {
+        if (videoRef.current) { videoRef.current.srcObject = streamRef.current; await videoRef.current.play(); }
+        const Detector = (window as any).BarcodeDetector;
+        const preferred = ["ean_13", "ean_8", "code_128", "code_39", "upc_a", "upc_e"];
+        const supported = typeof Detector.getSupportedFormats === "function" ? await Detector.getSupportedFormats() : preferred;
+        const formats = preferred.filter(format => supported.includes(format));
+        const detector = formats.length ? new Detector({ formats }) : new Detector();
+        timer = window.setInterval(async () => {
+          const video = videoRef.current;
+          if (cancelled || !video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+          try { const code = (await detector.detect(video))[0]?.rawValue; if (code) await applyRef.current(code); } catch { /* frame belum siap */ }
+        }, 260);
+      } catch { setFeedback("Pemindai tidak dapat dijalankan. Gunakan scanner Bluetooth atau masukkan barcode/SKU."); stop(); }
+    };
+    void run();
+    return () => { cancelled = true; if (timer) window.clearInterval(timer); };
+  }, [open]);
+  useEffect(() => () => stop(), []);
+  return <div className={`barcode-scan-control ${className}`}>
+    <button type="button" className="barcode-scan-button" onClick={() => void start()}><Camera size={17} />{label}</button>
+    {feedback && <small className="barcode-scan-feedback" role="status">{feedback}</small>}
+    {open && <div className="pos-camera-scanner"><video ref={videoRef} muted playsInline aria-label="Pratinjau kamera pemindai barcode" /><div><span>Arahkan kamera ke barcode produk</span><button type="button" onClick={stop}><X size={16} /> Tutup</button></div></div>}
+  </div>;
+}
 // Transfer lama belum memiliki kode dokumen. Baris yang lahir dalam proses
 // batch yang sama memakai timestamp ID yang sama, sehingga tetap dapat
 // ditampilkan sebagai satu dokumen tanpa mengubah histori aslinya.
@@ -1929,6 +2015,14 @@ function Products({ data, open, edit, exportProducts, locationId, canCreate, can
     }))
     .filter((product: any) => product.variants.length > 0);
   const categories = Array.from(new Set(scopedProducts.map((p: any) => p.category))).sort();
+  const scannableVariants = scopedProducts.flatMap((product: any) => product.variants.map((variant: any) => ({ ...variant, productId: product.id })));
+  const scanProduct = (value: string) => {
+    const variant = findVariantByBarcode(scannableVariants, value);
+    if (!variant) return false;
+    setSearch(variant.barcode || variant.sku || value);
+    if (canEdit) edit(variant.productId);
+    return true;
+  };
 
   return (
     <PageBlock
@@ -1940,8 +2034,9 @@ function Products({ data, open, edit, exportProducts, locationId, canCreate, can
       onSecondaryAction={exportProducts}
     >
       <div style={{ display: 'flex', gap: '12px' }}>
-        <div style={{ flex: 1 }}>
+        <div className="scan-search-row" style={{ flex: 1 }}>
           <ListSearch value={search} setValue={setSearch} placeholder="Cari produk, varian, SKU, atau kategori" />
+          <BarcodeScanControl label="Scan" onDetected={scanProduct} />
         </div>
         <select 
           style={{ width: '200px', height: '44px', borderRadius: '12px', border: '1px solid #d9e1e8', padding: '0 14px', outline: 'none', background: '#fff' }} 
@@ -2549,11 +2644,19 @@ function Stock({ data, updateMinimum, variants, role, outletId }: any) {
           </select>
           <small>{location?.type === "warehouse" ? "Gudang" : "Outlet / cabang"}{location?.isCentralWarehouse ? " · Gudang pusat" : ""}</small>
         </div>
-        <ListSearch
-          value={search}
-          setValue={setSearch}
-          placeholder="Cari varian atau SKU"
-        />
+        <div className="scan-search-row">
+          <ListSearch
+            value={search}
+            setValue={setSearch}
+            placeholder="Cari varian, SKU, atau barcode"
+          />
+          <BarcodeScanControl label="Scan" onDetected={(value) => {
+            const variant = findVariantByBarcode(Object.values(variants), value);
+            if (!variant || !locationRows.some((row: any) => row.variantId === variant.id)) return false;
+            setSearch(variant.barcode || variant.sku || value);
+            return true;
+          }} />
+        </div>
       </section>
       <div className="stock-filter-row">
         <span>Tampilkan:</span>
@@ -2669,6 +2772,7 @@ function Transfers({
   
   const [page, setPage] = useState<number>(1);
   const [selectedCodes, setSelectedCodes] = useState<string[]>([]);
+  const [receiveVerifyGroup, setReceiveVerifyGroup] = useState<any>(null);
   const ITEMS_PER_PAGE = 10;
 
   useEffect(() => {
@@ -2716,7 +2820,7 @@ function Transfers({
 
   const receiveGroups = async (groupsToReceive: any[]) => {
     const pending = groupsToReceive.filter((group) => group.items.some((item: any) => item.status === "sent"));
-    if (!pending.length) return;
+    if (!pending.length) return false;
     try {
       // Each transfer code is an atomic server-side command. A failed document
       // cannot make the client show a received status before the database does.
@@ -2725,14 +2829,16 @@ function Transfers({
       }
       setSelectedCodes([]);
       notify(`${pending.length} dokumen transfer diterima; stok tujuan telah bertambah`);
+      return true;
     } catch (error) {
       notify(error instanceof Error ? error.message : "Transfer tidak dapat diterima");
+      return false;
     }
   };
   const canReceive = (group: any) => groupStatus(group) === "sent" && (role === "owner" || group.toId === outletId);
   const selectableGroups = paginatedRows.filter((group: any) => canReceive(group));
   const selectedGroups = paginatedRows.filter((group: any) => selectedCodes.includes(group.key) && canReceive(group));
-  return (
+  return (<>
     <PageBlock
       title="Transfer antar lokasi"
       desc="Stok tujuan bertambah setelah penerima mengonfirmasi barang."
@@ -2787,7 +2893,7 @@ function Transfers({
               <div className="transfer-route"><small>RUTE PENGIRIMAN</small><b>{locations[group.fromId]?.name || group.fromName || "Lokasi asal"}</b><span>→</span><b>{locations[group.toId]?.name || group.toName || "Lokasi tujuan"}</b></div>
               <div className="transfer-items-summary"><small>ISI PENGIRIMAN</small><b>{group.items.length} varian · {group.items.reduce((sum: number, item: any) => sum + item.quantity, 0)} item</b><span>{group.items.slice(0, 2).map((item: any) => `${variants[item.variantId]?.productName} · ${variants[item.variantId]?.name}`).join(" · ")}{group.items.length > 2 ? ` +${group.items.length - 2} lainnya` : ""}</span></div>
             </div>
-            <div className="transfer-document-actions">{canReceive(group) && <button className="small-primary" onClick={(event) => { event.stopPropagation(); receiveGroups([group]); }}><Check size={16} /> Terima</button>}{status !== "cancelled" && role === "owner" && <button className="table-action danger-text" onClick={(event) => { event.stopPropagation(); cancel(group.key); }}>Batalkan</button>}</div>
+            <div className="transfer-document-actions">{canReceive(group) && <button className="small-primary" onClick={(event) => { event.stopPropagation(); setReceiveVerifyGroup(group); }}><Check size={16} /> Terima</button>}{status !== "cancelled" && role === "owner" && <button className="table-action danger-text" onClick={(event) => { event.stopPropagation(); cancel(group.key); }}>Batalkan</button>}</div>
           </article>;
         }) : <div className="empty standalone"><PackagePlus /><b>Belum ada transfer stok.</b><span>Buat transfer untuk mengirim stok antar lokasi.</span></div>}
       </div>
@@ -2815,7 +2921,31 @@ function Transfers({
         </div>
       )}
     </PageBlock>
-  );
+    {receiveVerifyGroup && <TransferReceiveScanner group={receiveVerifyGroup} variants={variants} locations={locations} close={() => setReceiveVerifyGroup(null)} confirm={async () => { if (await receiveGroups([receiveVerifyGroup])) setReceiveVerifyGroup(null); }} />}
+  </>);
+}
+function TransferReceiveScanner({ group, variants, locations, close, confirm }: any) {
+  const [verified, setVerified] = useState<Record<string, boolean>>({});
+  const [saving, setSaving] = useState(false);
+  const expectedIds = Array.from(new Set(group.items.map((item: any) => item.variantId))) as string[];
+  const complete = expectedIds.every((id: string) => verified[id]);
+  return <Modal title={`Verifikasi ${group.code}`} desc={`Scan setiap jenis varian sebelum menerima transfer dari ${locations[group.fromId]?.name || "lokasi asal"}.`} close={close}>
+    <div className="transfer-receive-scanner">
+      <BarcodeScanControl label="Scan varian diterima" onDetected={(value) => {
+        const variant = findVariantByBarcode(Object.values(variants), value);
+        if (!variant || !expectedIds.includes(variant.id)) return false;
+        setVerified((current) => ({ ...current, [variant.id]: true }));
+        return true;
+      }} />
+      <div className="transfer-verify-list">
+        {group.items.map((item: any) => {
+          const variant = variants[item.variantId];
+          return <div key={item.id} className={verified[item.variantId] ? "verified" : ""}><span>{verified[item.variantId] ? <Check size={16} /> : <PackagePlus size={16} />}</span><b>{variant?.productName} · {variant?.name}</b><small>{qty(item.quantity, variant?.unit)} {verified[item.variantId] ? "· terverifikasi" : "· belum dipindai"}</small></div>;
+        })}
+      </div>
+    </div>
+    <footer className="modal-actions"><button type="button" className="secondary" onClick={close}>Batal</button><button type="button" className="primary" disabled={!complete || saving} onClick={() => { setSaving(true); void confirm(); }}><Check />{saving ? "Menerima..." : "Terima transfer"}</button></footer>
+  </Modal>;
 }
 function Sales({ data, variants, locations, open, cancel, detail, role, outletId, canCancel }: any) {
   const [search, setSearch] = useState("");
@@ -3864,8 +3994,10 @@ function ProductModal({
               <Field label="SKU (Otomatis jika kosong)">
                 <input value={v.sku} onChange={(e) => updateVariant(index, 'sku', e.target.value)} />
               </Field>
-              <Field label="Barcode">
+              <Field label="Barcode (scan atau isi manual)">
                 <div className="barcode-field">
+                  <input value={v.barcode || ""} onChange={(e) => updateVariant(index, "barcode", e.target.value)} placeholder="Barcode akan dibuat otomatis bila kosong" />
+                  <BarcodeScanControl label="Scan barcode" onDetected={(value) => { updateVariant(index, "barcode", value); return true; }} />
                   <BarcodeGraphic value={v.barcode} />
                   {v.barcode && <button type="button" className="table-action" onClick={() => printBarcodeLabel(name, v.name, v.barcode)}>Cetak label</button>}
                 </div>
@@ -4267,6 +4399,19 @@ function ReceiptModal({ data, receipt, close, save, prefillLocationId, prefillVa
               ))}
           </AppSelect>
         </Field>
+        {!receipt && <Field label="Scan barcode / SKU">
+          <BarcodeScanControl label="Scan barang" onDetected={(value) => {
+            const variant = findVariantByBarcode(variants, value);
+            if (!variant) return false;
+            const product = products.find((item: any) => item.id && item.variants.some((itemVariant: any) => itemVariant.id === variant.id));
+            if (!product) return false;
+            setSelectedProductId(product.id);
+            setProductPickerOpen(false);
+            setSelectedItems((current) => ({ ...current, [variant.id]: current[variant.id] || { quantity: 1, unitCost: variant.cost || 0 } }));
+            return true;
+          }} />
+          <small className="scan-field-hint">Scan setiap varian barang yang datang; varian langsung masuk ke daftar penerimaan.</small>
+        </Field>}
         {receipt ? (
           <div className="form-grid">
             <Field label={`Jumlah (${variants.find((v:any) => v.id === receipt.variantId)?.unit || "unit"})`}>
@@ -4411,6 +4556,16 @@ function ReturnModal({ data, close, save }: any) {
                 </option>
               ))}
           </select>
+        </Field>
+        <Field label="Scan barang retur">
+          <BarcodeScanControl label="Scan barang" onDetected={(value) => {
+            const variant = findVariantByBarcode(variants, value);
+            if (!variant) return false;
+            setSelectedProductName(variant.productName);
+            setSelectedItems((current) => ({ ...current, [variant.id]: current[variant.id] || { quantity: 1 } }));
+            return true;
+          }} />
+          <small className="scan-field-hint">Barcode yang dipindai langsung menambahkan varian ke retur.</small>
         </Field>
         <Field label="Pilih produk">
           <AppSelect value={selectedProductName} onChange={(e: any) => setSelectedProductName(e.target.value)} placeholder="Pilih nama produk">
@@ -4643,6 +4798,16 @@ function TransferModal({ data, close, save, fixedFrom, initialTo, initialVariant
                 </option>
               ))}
           </select>
+        </Field>
+        <Field label="Scan varian untuk dikirim">
+          <BarcodeScanControl label="Scan varian" onDetected={(value) => {
+            const variant = findVariantByBarcode(variants, value);
+            if (!variant || getBalance(data.balances, from, variant.id) <= 0) return false;
+            setSelectedTransferProduct(variant.productName);
+            setSelectedItems((current) => ({ ...current, [variant.id]: current[variant.id] || { quantity: 1 } }));
+            return true;
+          }} />
+          <small className="scan-field-hint">Scan varian satu per satu saat menyiapkan barang. Hanya stok dari lokasi asal yang dapat dipilih.</small>
         </Field>
         <Field label="Pilih produk">
           <AppSelect value={selectedTransferProduct} onChange={(e: any) => setSelectedTransferProduct(e.target.value)} placeholder="Pilih nama produk"><option value="" disabled>Pilih nama produk</option>{transferProducts.map((product: any) => <option key={product.name} value={product.name} data-meta={`Total stok: ${qty(product.quantity, product.unit)}`}>{product.name}</option>)}</AppSelect>
@@ -5134,6 +5299,19 @@ function OpnameModal({ data, item, close, save, fixedLocation }: any) {
             ))}
           </AppSelect>
         </Field>
+        {!item && <Field label="Scan barang fisik">
+          <BarcodeScanControl label="Scan barang" onDetected={(value) => {
+            const variant = findVariantByBarcode(variants, value);
+            if (!variant) return false;
+            const product = products.find((current: any) => current.variants.some((currentVariant: any) => currentVariant.id === variant.id));
+            if (!product) return false;
+            setSelectedProductId(product.id);
+            setProductPickerOpen(false);
+            setSelectedItems((current) => ({ ...current, [variant.id]: current[variant.id] || { actualQty: 0, reason: "Hasil hitung fisik akhir hari" } }));
+            return true;
+          }} />
+          <small className="scan-field-hint">Setelah scan, masukkan jumlah fisik aktual untuk menyelesaikan opname.</small>
+        </Field>}
         <Field label="Pilih produk">
           <div className="product-picker">
             <button type="button" className={`product-picker-trigger ${productPickerOpen ? "open" : ""}`} onClick={() => setProductPickerOpen((open) => !open)} aria-expanded={productPickerOpen}>

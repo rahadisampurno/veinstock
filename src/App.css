@@ -692,6 +692,7 @@ body{font-size:16px;line-height:1.5}.brand small{font-size:12px}.workspace>span{
 .pos-camera-scanner video { display: block; width: 100%; max-height: 260px; object-fit: cover; background: #0e2434; }
 .pos-camera-scanner > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 11px; color: #fff; font-size: 12px; font-weight: 700; }
 .pos-camera-scanner button { display: inline-flex; align-items: center; gap: 5px; border: 0; border-radius: 8px; padding: 7px 9px; background: #ffffff18; color: #fff; font-weight: 700; cursor: pointer; }
+.scan-search-row{display:flex;align-items:flex-start;gap:8px;min-width:0}.scan-search-row .list-search{flex:1;min-width:0}.barcode-scan-control{display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap}.barcode-scan-button{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:44px;padding:0 13px;border:1px solid var(--blue);border-radius:10px;background:#effbff;color:var(--blue);font-weight:800;white-space:nowrap;cursor:pointer}.barcode-scan-button:hover{background:#dff6fc}.barcode-scan-feedback{flex-basis:100%;padding:8px 10px;border-radius:8px;background:#fff4ec;color:#a1481e;font-size:12px;line-height:1.4}.barcode-scan-control .pos-camera-scanner{width:100%;flex-basis:100%}.scan-field-hint{display:block;margin-top:7px;color:var(--muted);font-size:12px;line-height:1.4}.barcode-field{align-items:center;flex-wrap:wrap}.barcode-field>input{flex:1 1 220px;min-width:0}.barcode-field .barcode-scan-control{flex:0 0 auto}.barcode-field .barcode-graphic{flex:1 1 160px}.transfer-verify-list{display:grid;gap:8px;margin-top:14px}.transfer-verify-list>div{display:grid;grid-template-columns:28px 1fr;gap:3px 9px;align-items:center;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:#fff}.transfer-verify-list>div>span{grid-row:1 / span 2;display:grid;place-items:center;width:26px;height:26px;border-radius:50%;background:#eef5f7;color:var(--muted)}.transfer-verify-list>div.verified{border-color:#8be0c5;background:#f0fcf7}.transfer-verify-list>div.verified>span{background:#d9f8eb;color:#087c58}.transfer-verify-list b{font-size:13px}.transfer-verify-list small{color:var(--muted);font-size:12px}
 .pos-category-tabs { display: flex; gap: 8px; overflow-x: auto; padding: 10px 0 2px; scrollbar-width: thin; }
 .pos-category-tabs button { flex: 0 0 auto; border: 1px solid #e4c6c2; border-radius: 999px; background: #fff; color: var(--muted); cursor: pointer; font-size: 12px; font-weight: 800; padding: 8px 12px; }
 .pos-category-tabs button.active { border-color: #d92d27; background: #d92d27; color: #fff; }
@@ -1332,6 +1333,7 @@ body{font-size:16px;line-height:1.5}.brand small{font-size:12px}.workspace>span{
 }
 
 @media (max-width: 1024px) {
+  .scan-search-row{align-items:stretch}.scan-search-row .barcode-scan-button{min-height:42px;padding:0 11px}.barcode-field .barcode-scan-control{width:100%}.barcode-field .barcode-scan-button{width:100%}
   .app-shell.sidebar-is-drawer main { margin-left: 0; }
   .sidebar.sidebar-drawer {
     display: flex;
