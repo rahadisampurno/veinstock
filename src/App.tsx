@@ -13,6 +13,7 @@ import {
   CalendarDays,
   Boxes,
   Check,
+  Camera,
   ClipboardCheck,
   Calculator,
   Download,
@@ -252,16 +253,18 @@ function App() {
   );
   const [token, setToken] = useState<string | null>(() => readSession()?.token || null);
   const [hydrated, setHydrated] = useState(false);
-  const [page, setPage] = useState<Page>("dashboard");
+  const [page, setPageState] = useState<Page>("dashboard");
   const [helpSection, setHelpSection] = useState<string | null>(null);
   const [sidebar, setSidebar] = useState(false);
-  const [desktopSidebar, setDesktopSidebar] = useState(() => localStorage.getItem("menengs_sidebar_mode") !== "collapsed");
+  // Desktop menggunakan rail ringkas secara konsisten; panel lengkap muncul
+  // saat pointer berada di rail sehingga tidak membutuhkan tombol ciutkan.
+  const desktopSidebar = false;
   // Preview saat pointer berada di rail. Ini tidak mengubah preferensi
   // collapse yang disimpan pengguna.
   const [sidebarHoverPreview, setSidebarHoverPreview] = useState(false);
   const [isMobileViewport, setIsMobileViewport] = useState(() => window.innerWidth <= 1024);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
-  const [modal, setModal] = useState<string | null>(null);
+  const [modal, setModalState] = useState<string | null>(null);
   const [notificationIntent, setNotificationIntent] = useState<NotificationIntent | null>(null);
   const [toast, setToast] = useState<{ message: string; tone: ToastTone } | null>(null);
   const [confirm, setConfirm] = useState<{ message: string, onConfirm: () => void | Promise<void> } | null>(null);
@@ -269,6 +272,8 @@ function App() {
   const serverVersion = useRef(0);
   const dataRef = useRef(data);
   const toastTimer = useRef<number | null>(null);
+  const historyReady = useRef(false);
+  const restoringHistory = useRef(false);
   const showToast = (message: string, tone: ToastTone) => {
     if (toastTimer.current) window.clearTimeout(toastTimer.current);
     setToast({ message, tone });
@@ -281,15 +286,63 @@ function App() {
   // lokal yang belum selesai dikirim ke server.
   const hasPendingLocalChanges = useRef(false);
   const user = authUser;
+  const historyUrlForPage = (nextPage: Page) => `${window.location.pathname}${window.location.search}#${nextPage}`;
+  const setPage = (nextPage: Page) => {
+    if (nextPage === page) {
+      setSidebar(false);
+      return;
+    }
+    setPageState(nextPage);
+    setSidebar(false);
+    setUserMenuOpen(false);
+    if (historyReady.current && !restoringHistory.current) {
+      window.history.pushState({ menengs: true, page: nextPage, modal: false }, "", historyUrlForPage(nextPage));
+    }
+  };
+  const setModal = (nextModal: string | null) => {
+    if (nextModal === modal) return;
+    if (nextModal === null) {
+      setModalState(null);
+      if (modal && historyReady.current && window.history.state?.menengs && window.history.state?.modal) {
+        window.history.back();
+      }
+      return;
+    }
+    setModalState(nextModal);
+    setUserMenuOpen(false);
+    if (historyReady.current && !restoringHistory.current) {
+      window.history.pushState({ menengs: true, page, modal: true }, "", historyUrlForPage(page));
+    }
+  };
+  useEffect(() => {
+    const knownPages = new Set<Page>(["dashboard", "products", "locations", "receipts", "stock", "transfers", "sales", "returns", "opname", "history", "reports", "business", "users", "help", "analytics", "employees", "attendance", "loans", "pricing", "suppliers"]);
+    const currentHash = window.location.hash.slice(1) as Page;
+    const initialPage = knownPages.has(currentHash) ? currentHash : page;
+    if (initialPage !== page) setPageState(initialPage);
+    if (!window.history.state?.menengs) {
+      window.history.replaceState({ menengs: true, page: initialPage, modal: false }, "", historyUrlForPage(initialPage));
+    }
+    historyReady.current = true;
+    const onPopState = (event: PopStateEvent) => {
+      const state = event.state;
+      restoringHistory.current = true;
+      setModalState(null);
+      setSidebar(false);
+      setUserMenuOpen(false);
+      if (state?.menengs && knownPages.has(state.page)) setPageState(state.page);
+      window.setTimeout(() => { restoringHistory.current = false; }, 0);
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  // Riwayat UI cukup dipasang sekali; nilai halaman selanjutnya ditangani event popstate.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   useEffect(() => {
     const updateViewport = () => setIsMobileViewport(window.innerWidth <= 1024);
     updateViewport();
     window.addEventListener("resize", updateViewport);
     return () => window.removeEventListener("resize", updateViewport);
   }, []);
-  useEffect(() => {
-    localStorage.setItem("menengs_sidebar_mode", desktopSidebar ? "expanded" : "collapsed");
-  }, [desktopSidebar]);
   const applyLocalData = (update: AppData | ((current: AppData) => AppData)) => {
     const nextData = typeof update === "function" ? update(dataRef.current) : update;
     dataRef.current = nextData;
@@ -374,6 +427,8 @@ function App() {
   }, [token, user?.organizationId, hydrated]);
   useEffect(() => {
     if (user?.role === "employee") setPage("attendance");
+    // Akun karyawan selalu dimulai dari absensi setelah identitas berubah.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.role]);
   useEffect(() => {
     if (modal !== "receipt" && modal !== "transfer") setNotificationIntent(null);
@@ -714,7 +769,6 @@ function App() {
                 </button>
               ))}
             </div>
-            <button className="rail-collapse" title="Perluas menu" aria-label="Perluas menu" onClick={() => setDesktopSidebar(true)}>›</button>
           </div>
         ) : (
           <div className="sidebar-panel">
@@ -749,9 +803,6 @@ function App() {
               );
             })}
           </nav>
-          <button className="sidebar-collapse-button" aria-label="Ciutkan menu" onClick={() => setDesktopSidebar(false)}>
-            <span aria-hidden="true">‹</span> Ciutkan menu
-          </button>
         </div>
         )}
       </aside>
@@ -4655,6 +4706,8 @@ function SaleModal({ data, close, save, fixedLocation }: any) {
     [categoryFilter, setCategoryFilter] = useState("all"),
     [payment, setPayment] = useState("QRIS"),
     [cart, setCart] = useState<Array<{ variantId: string; quantity: number }>>([]),
+    [cameraOpen, setCameraOpen] = useState(false),
+    [cameraError, setCameraError] = useState(""),
     categories = Array.from(new Set(variants.map((item: any) => item.category).filter(Boolean))).sort() as string[],
     matchingVariants = variants.filter((item: any) =>
       (categoryFilter === "all" || item.category === categoryFilter) &&
@@ -4669,7 +4722,18 @@ function SaleModal({ data, close, save, fixedLocation }: any) {
     return groups;
   }, {}));
   const scannerRef = useRef<HTMLInputElement>(null);
+  const scannerVideoRef = useRef<HTMLVideoElement>(null);
+  const scannerStreamRef = useRef<MediaStream | null>(null);
   const isOffline = channel === "offline";
+  const isTouchDevice = typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches;
+  const findScannedVariant = (rawValue: string) => {
+    const value = rawValue.trim().toLowerCase();
+    if (!value) return undefined;
+    return variants.find((item: any) =>
+      (item.sku?.toLowerCase() === value || item.barcode?.toLowerCase() === value) &&
+      getBalance(data.balances, loc, item.id) > 0,
+    );
+  };
   const addToCart = (variantId: string) => {
     setCart((current) => {
       const found = current.find((item) => item.variantId === variantId);
@@ -4678,7 +4742,30 @@ function SaleModal({ data, close, save, fixedLocation }: any) {
         : [...current, { variantId, quantity: 1 }];
     });
     setSkuSearch("");
-    requestAnimationFrame(() => scannerRef.current?.focus());
+  };
+  const applyScannedValue = (rawValue: string) => {
+    const candidate = findScannedVariant(rawValue) || (sellableMatchingVariants.length === 1 ? sellableMatchingVariants[0] : undefined);
+    if (!candidate) return false;
+    addToCart(candidate.id);
+    return true;
+  };
+  const stopCameraScanner = () => {
+    scannerStreamRef.current?.getTracks().forEach((track) => track.stop());
+    scannerStreamRef.current = null;
+    if (scannerVideoRef.current) scannerVideoRef.current.srcObject = null;
+    setCameraOpen(false);
+  };
+  const openCameraScanner = () => {
+    setCameraError("");
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraError("Kamera tidak tersedia di perangkat ini. Gunakan scanner Bluetooth atau masukkan SKU.");
+      return;
+    }
+    if (!(window as any).BarcodeDetector) {
+      setCameraError("Browser ini belum mendukung pembacaan barcode kamera. Gunakan Chrome terbaru atau scanner Bluetooth.");
+      return;
+    }
+    setCameraOpen(true);
   };
   const updateQuantity = (variantId: string, quantity: number) => {
     if (quantity <= 0) {
@@ -4688,8 +4775,59 @@ function SaleModal({ data, close, save, fixedLocation }: any) {
     setCart((current) => current.map((item) => item.variantId === variantId ? { ...item, quantity } : item));
   };
   useEffect(() => {
-    if (isOffline) requestAnimationFrame(() => scannerRef.current?.focus());
-  }, [isOffline]);
+    if (isOffline && !isTouchDevice) requestAnimationFrame(() => scannerRef.current?.focus());
+  }, [isOffline, isTouchDevice]);
+  // Sesi kamera dimulai hanya setelah tombol Scan ditekan; perubahan keranjang
+  // tidak boleh menghentikan pemindaian yang sedang berlangsung.
+  useEffect(() => {
+    if (!cameraOpen) return;
+    let cancelled = false;
+    let detectorTimer: number | null = null;
+    const start = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: false,
+        });
+        if (cancelled) { stream.getTracks().forEach((track) => track.stop()); return; }
+        scannerStreamRef.current = stream;
+        if (scannerVideoRef.current) {
+          scannerVideoRef.current.srcObject = stream;
+          await scannerVideoRef.current.play();
+        }
+        const Detector = (window as any).BarcodeDetector;
+        const preferredFormats = ["ean_13", "ean_8", "code_128", "code_39", "upc_a", "upc_e", "qr_code"];
+        const supportedFormats = typeof Detector.getSupportedFormats === "function"
+          ? await Detector.getSupportedFormats()
+          : preferredFormats;
+        const formats = preferredFormats.filter((format) => supportedFormats.includes(format));
+        const detector = formats.length ? new Detector({ formats }) : new Detector();
+        detectorTimer = window.setInterval(async () => {
+          const video = scannerVideoRef.current;
+          if (!video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || cancelled) return;
+          try {
+            const codes = await detector.detect(video);
+            const rawValue = codes[0]?.rawValue;
+            if (rawValue && applyScannedValue(rawValue)) stopCameraScanner();
+          } catch {
+            // Frame yang belum siap dibaca tidak boleh menghentikan kamera.
+          }
+        }, 280);
+      } catch (error: any) {
+        setCameraError(error?.name === "NotAllowedError" ? "Izin kamera ditolak. Izinkan kamera untuk memindai barcode." : "Kamera tidak dapat dibuka. Coba lagi atau gunakan scanner Bluetooth.");
+        setCameraOpen(false);
+      }
+    };
+    void start();
+    return () => {
+      cancelled = true;
+      if (detectorTimer) window.clearInterval(detectorTimer);
+      scannerStreamRef.current?.getTracks().forEach((track) => track.stop());
+      scannerStreamRef.current = null;
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cameraOpen]);
+  useEffect(() => () => stopCameraScanner(), []);
   
   const totalQty = cart.reduce((acc, c) => acc + c.quantity, 0);
   const totalAmount = cart.reduce((acc, c) => {
@@ -4740,21 +4878,29 @@ function SaleModal({ data, close, save, fixedLocation }: any) {
         <div className={isOffline ? "pos-product-picker" : ""} style={{ background: 'var(--bg)', padding: '16px', borderRadius: '8px', marginBottom: '16px', border: '1px solid var(--border)' }}>
           <h4 style={{ margin: '0 0 12px', fontSize: 13, color: 'var(--muted)' }}>TAMBAH PRODUK</h4>
           <Field label="">
-            <input
-              ref={scannerRef}
-              value={skuSearch}
-              onChange={(e) => setSkuSearch(e.target.value)}
-              placeholder="Cari produk, varian, atau scan barcode"
-              autoComplete="off"
-              onKeyDown={(e) => {
-                if (e.key !== 'Enter') return;
-                e.preventDefault();
-                const keyword = skuSearch.trim().toLowerCase();
-                const exact = variants.find((item: any) => (item.sku?.toLowerCase() === keyword || item.barcode === keyword) && getBalance(data.balances, loc, item.id) > 0);
-                const candidate = exact || (sellableMatchingVariants.length === 1 ? sellableMatchingVariants[0] : undefined);
-                if (candidate) addToCart(candidate.id);
-              }}
-            />
+            <div className="pos-scan-row">
+              <input
+                ref={scannerRef}
+                value={skuSearch}
+                onChange={(e) => setSkuSearch(e.target.value)}
+                placeholder="Cari produk, varian, atau SKU"
+                autoComplete="off"
+                inputMode="search"
+                onKeyDown={(e) => {
+                  if (e.key !== 'Enter') return;
+                  e.preventDefault();
+                  if (!applyScannedValue(skuSearch)) setCameraError("Barcode atau SKU tidak ditemukan pada stok lokasi ini.");
+                }}
+              />
+              <button type="button" className="pos-camera-button" onClick={openCameraScanner} aria-label="Pindai barcode dengan kamera">
+                <Camera size={18} /><span>Scan</span>
+              </button>
+            </div>
+            {cameraError && <p className="pos-scan-feedback" role="status">{cameraError}</p>}
+            {cameraOpen && <div className="pos-camera-scanner">
+              <video ref={scannerVideoRef} muted playsInline aria-label="Pratinjau kamera pemindai barcode" />
+              <div><span>Arahkan kamera ke barcode produk</span><button type="button" onClick={stopCameraScanner}><X size={16} /> Tutup kamera</button></div>
+            </div>}
             <div className="pos-category-tabs" aria-label="Kategori produk">
               <button type="button" className={categoryFilter === "all" ? "active" : ""} onClick={() => setCategoryFilter("all")}>Semua</button>
               {categories.map((category) => <button type="button" key={category} className={categoryFilter === category ? "active" : ""} onClick={() => setCategoryFilter(category)}>{category}</button>)}
@@ -4781,7 +4927,7 @@ function SaleModal({ data, close, save, fixedLocation }: any) {
         </div>
         
         {cart.length > 0 && (
-          <div style={{ marginBottom: 16 }}>
+          <div className="pos-cart-table" style={{ marginBottom: 16 }}>
             <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse', textAlign: 'left' }}>
               <thead>
                 <tr style={{ borderBottom: '1px solid var(--border)' }}>
