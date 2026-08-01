@@ -7,17 +7,17 @@ export default defineConfig({
   plugins: [react(), VitePWA({
     registerType: 'autoUpdate',
     manifest: {
-      name: 'VEINSTOCK - Sistem Stok UMKM',
-      short_name: 'VEINSTOCK',
-      description: 'Sistem stok dan penjualan multi-UMKM dan multi-lokasi.',
+      name: 'Menengs - Sistem Stok & Penjualan',
+      short_name: 'Menengs',
+      description: 'Sistem stok dan penjualan seluruh outlet Menengs.',
       lang: 'id',
-      theme_color: '#092f4f',
-      background_color: '#f3f6f8',
+      theme_color: '#bc2018',
+      background_color: '#fff8eb',
       display: 'standalone',
       start_url: '/',
       icons: [
-        { src: '/veinstock-icon-192-v2.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
-        { src: '/veinstock-icon-512-v2.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
+        { src: '/menengs-icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+        { src: '/menengs-icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
       ],
     },
     workbox: { 
@@ -26,4 +26,15 @@ export default defineConfig({
     },
   })],
   server: { proxy: { '/api': 'http://127.0.0.1:8787' } },
+  build: {
+    rollupOptions: {
+      output: {
+        // Grafik tidak diperlukan pada layar kasir/operasional awal; pisahkan
+        // agar bundle utama tetap ringan saat aplikasi pertama dibuka.
+        manualChunks: {
+          charts: ['recharts'],
+        },
+      },
+    },
+  },
 })

@@ -4,7 +4,7 @@ export const sections = [
   {
     id: "setup",
     icon: <Store />,
-    title: "Mulai Menggunakan VEINSTOCK",
+    title: "Mulai Menggunakan Menengs",
     desc: "Siapkan usaha, lokasi, produk, dan stok awal sebelum mulai mencatat aktivitas.",
     articles: [
       {
@@ -27,7 +27,7 @@ export const sections = [
         title: "Menambahkan gudang dan outlet.",
         content: (
           <div className="article-body">
-            <p>Setiap stok barang di VeinStock akan dipisahkan berdasarkan Lokasi (bisa berupa Gudang Pusat, Outlet Cabang, atau Toko Fisik).</p>
+            <p>Setiap stok barang di Menengs dipisahkan berdasarkan lokasi, misalnya Gudang Pusat, Outlet Cabang, atau Toko Fisik.</p>
             <ol>
               <li>Pilih menu <strong>Lokasi Usaha</strong> di sidebar sebelah kiri.</li>
               <li>Klik tombol <strong>Tambah Lokasi</strong>.</li>
@@ -218,7 +218,7 @@ export const sections = [
               <li>Buka menu <strong>Transfer Stok</strong>, lalu klik <strong>Buat Transfer</strong>.</li>
               <li>Pilih Lokasi Asal pengirim barang dan Lokasi Tujuan penerima.</li>
               <li>Masukkan daftar barang beserta kuantitasnya.</li>
-              <li>Klik Simpan. Status transfer ini akan menjadi <strong>Dikirim (Menunggu Konfirmasi)</strong>.</li>
+              <li>Klik Simpan. Status transfer akan menjadi <strong>Dalam Perjalanan</strong> sampai dikonfirmasi penerima.</li>
             </ol>
             <div className="alert-info">Stok di lokasi asal otomatis langsung berkurang, namun stok di lokasi tujuan BELUM bertambah.</div>
           </div>
@@ -256,7 +256,7 @@ export const sections = [
         title: "Cara membatalkan transfer.",
         content: (
           <div className="article-body">
-            <p>Jika terjadi kesalahan input atau batal dikirim, Anda dapat menekan tombol <strong>Batal</strong> (ikon silang/X merah) pada dokumen transfer yang belum diterima.</p>
+            <p>Jika terjadi kesalahan input atau barang batal dikirim, Owner atau Admin dapat menekan tombol <strong>Batalkan</strong> pada dokumen transfer yang belum diterima.</p>
             <p>Stok yang tadinya sudah terpotong di lokasi asal akan otomatis dikembalikan ke saldo semula.</p>
           </div>
         )
@@ -299,7 +299,7 @@ export const sections = [
           <div className="article-body">
             <p>Aktivitas harian paling penting untuk mencatat omset:</p>
             <ol>
-              <li>Buka menu <strong>Penjualan & Retur</strong>, klik <strong>Catat Penjualan</strong>.</li>
+              <li>Buka menu <strong>Penjualan</strong>, lalu klik <strong>Catat Penjualan</strong>.</li>
               <li>Pilih Lokasi dari mana barang tersebut dikeluarkan (terjual).</li>
               <li>Pilih Metode Pembayaran dan Kanal Penjualan (Toko, E-commerce, dll).</li>
               <li>Pilih barang dan atur Harga Jual/Diskon secara fleksibel.</li>
@@ -313,7 +313,7 @@ export const sections = [
         title: "Memahami kapan stok berkurang.",
         content: (
           <div className="article-body">
-            <p>Di VeinStock, setiap data penjualan yang disimpan akan <strong>secara otomatis seketika itu juga memotong jumlah stok</strong> di gudang/lokasi yang dipilih. Tidak perlu mencatat pengeluaran stok secara manual.</p>
+            <p>Di Menengs, setiap penjualan yang berhasil disimpan akan <strong>langsung memotong jumlah stok</strong> pada lokasi yang dipilih. Anda tidak perlu mencatat pengeluaran stok secara manual.</p>
           </div>
         )
       },
@@ -336,7 +336,7 @@ export const sections = [
         title: "Mengembalikan stok dari transaksi batal.",
         content: (
           <div className="article-body">
-            <p>Kabar baiknya, ketika Anda membatalkan sebuah dokumen Penjualan, sistem VeinStock akan <strong>otomatis mengembalikan stok</strong> barang-barang di nota tersebut ke gudang asal penjualan.</p>
+            <p>Ketika dokumen penjualan dibatalkan, Menengs akan <strong>otomatis mengembalikan stok</strong> barang pada nota tersebut ke lokasi asal penjualan.</p>
           </div>
         )
       },
@@ -345,9 +345,9 @@ export const sections = [
         title: "Mencatat retur barang.",
         content: (
           <div className="article-body">
-            <p>Gunakan tab <strong>Retur</strong> jika pembeli mengembalikan barang yang dibelinya karena tidak cocok/cacat.</p>
+            <p>Gunakan menu <strong>Retur Barang</strong> jika pembeli mengembalikan barang yang dibelinya karena tidak cocok atau cacat.</p>
             <ol>
-              <li>Buka menu Penjualan & Retur, pindah ke tab <strong>Retur Pelanggan</strong>.</li>
+              <li>Buka menu <strong>Retur Barang</strong>, lalu klik <strong>Catat Retur</strong>.</li>
               <li>Klik Buat Retur.</li>
               <li>Pilih Lokasi tujuan pengembalian stok.</li>
               <li>Masukkan jumlah barang yang diretur. Setelah disimpan, stok tersebut otomatis bertambah kembali di sistem Anda.</li>
@@ -357,10 +357,10 @@ export const sections = [
       },
       {
         id: "sales-6",
-        title: "Memahami hak akses Kasir dan PIC.",
+        title: "Memahami hak akses Kasir dan PIC Outlet.",
         content: (
           <div className="article-body">
-            <p>Pengguna dengan peran (role) <strong>Kasir</strong> atau <strong>PIC Outlet</strong> tidak bisa membatalkan penjualan. Opsi pembatalan hanya tersedia bagi Owner atau Admin demi alasan keamanan dan pencegahan kecurangan kasir (menjual lalu membatalkan diam-diam).</p>
+            <p><strong>Kasir</strong> hanya dapat mencatat dan melihat penjualan di lokasi tugasnya; kasir tidak dapat membatalkan nota. <strong>PIC Outlet</strong> memiliki akses operasional pada outlet yang ditugaskan, termasuk menerima transfer dan menangani pembatalan bila diberi wewenang. Owner dan Admin tetap bertanggung jawab mengawasi riwayat transaksi.</p>
           </div>
         )
       }
@@ -451,12 +451,13 @@ export const sections = [
           <div className="article-body">
             <p>Sistem membagi izin (role) pengguna ke beberapa tingkatan:</p>
             <ul>
-              <li><strong>Owner (Pemilik):</strong> Memiliki akses penuh ke semua fitur, profil usaha, hak membatalkan transaksi, laporan, dan merubah akun staf.</li>
-              <li><strong>Admin Cabang:</strong> Membantu fungsi manajemen di cabang tertentu.</li>
-              <li><strong>PIC Outlet / Kepala Toko:</strong> Hanya bisa mengakses dan melihat data transaksi di outlet yang ditugaskan kepadanya.</li>
-              <li><strong>Staf Gudang:</strong> Fokus pada input Stok Masuk, Transfer, dan Opname. Tidak memiliki akses ke laporan nilai uang/penjualan.</li>
-              <li><strong>Kasir:</strong> Hanya bisa membuat Penjualan dan melihat Stok. Tidak bisa membatalkan nota yang sudah dicetak.</li>
-              <li><strong>Keuangan:</strong> Fokus pada data Penjualan dan Laporan Omset, namun tidak bisa mengedit stok.</li>
+              <li><strong>Owner (Pemilik):</strong> Mengelola seluruh data usaha, pengguna, stok, transaksi, dan laporan.</li>
+              <li><strong>Admin:</strong> Membantu pengelolaan operasional, stok, transaksi, dan pengguna sesuai kebijakan usaha.</li>
+              <li><strong>PIC Outlet / Kepala Toko:</strong> Mengelola operasional pada outlet penempatannya, termasuk stok, penerimaan transfer, dan penjualan.</li>
+              <li><strong>Staf Gudang:</strong> Fokus pada stok masuk, transfer, dan stok opname di lokasi penempatannya.</li>
+              <li><strong>Kasir:</strong> Mencatat dan melihat penjualan di lokasi penempatannya; tidak dapat membatalkan nota.</li>
+              <li><strong>Keuangan:</strong> Melihat dan mengunduh laporan tanpa mengubah stok fisik.</li>
+              <li><strong>Karyawan:</strong> Mengakses absensi dan riwayat absensi pribadi.</li>
             </ul>
           </div>
         )
@@ -467,8 +468,8 @@ export const sections = [
         content: (
           <div className="article-body">
             <ol>
-              <li>Hanya Pemilik (Owner) yang bisa mengakses menu <strong>Manajemen Tim</strong>.</li>
-              <li>Klik Tambah Tim.</li>
+              <li>Owner membuka menu <strong>Pengguna & Akses</strong>.</li>
+              <li>Klik <strong>Tambah Pengguna</strong>.</li>
               <li>Masukkan Email staf (pastikan aktif karena dipakai untuk login) dan Nama.</li>
               <li>Pilih Role yang sesuai dengan jabatannya.</li>
             </ol>
@@ -489,7 +490,7 @@ export const sections = [
         title: "Memindahkan lokasi penempatan staf.",
         content: (
           <div className="article-body">
-            <p>Buka menu Manajemen Tim, edit (ubah) akun pengguna tersebut, lalu pilih lokasi penempatan (Outlet) yang baru dari dropdown. Penjualan berikutnya akan menyesuaikan lokasi barunya.</p>
+            <p>Buka menu <strong>Pengguna & Akses</strong>, edit akun pengguna tersebut, lalu pilih lokasi penempatan baru. Transaksi berikutnya akan memakai lokasi yang baru.</p>
           </div>
         )
       },
@@ -498,7 +499,7 @@ export const sections = [
         title: "Mengaktifkan dan menonaktifkan akun.",
         content: (
           <div className="article-body">
-            <p>Jika ada karyawan yang *resign* atau diberhentikan, tidak perlu menghapus akunnya. Edit akun pengguna dan set statusnya menjadi <strong>Tidak Aktif</strong>. Ia tidak akan bisa login lagi ke aplikasi, namun riwayat transaksinya di masa lalu tetap ada untuk audit.</p>
+            <p>Jika ada karyawan yang berhenti bekerja, tidak perlu menghapus akunnya. Edit akun pengguna dan ubah status menjadi <strong>Tidak Aktif</strong>. Ia tidak dapat login lagi, tetapi riwayat transaksi tetap tersimpan untuk audit.</p>
           </div>
         )
       },

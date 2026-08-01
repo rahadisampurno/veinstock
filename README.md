@@ -1,15 +1,12 @@
-# VEINSTOCK
+# MENENGS
 
-Sistem stok dan penjualan multi-UMKM dan multi-lokasi berbasis web/PWA.
+Sistem stok dan penjualan internal Menengs untuk gudang dan outlet berbasis web/PWA.
 
-## Multi-UMKM
+## Operasional Menengs
 
-- Setiap UMKM mendaftar dan memperoleh ruang kerja (`organization`) sendiri.
-- Data produk, lokasi, stok, penjualan, transfer, opname, dan histori dipisahkan berdasarkan ID organisasi pada backend.
-- ID organisasi ditandatangani di JWT dan tidak dipercaya dari input browser.
-- Owner dapat menambah lokasi serta akun PIC/Keuangan khusus usahanya.
+- Owner dapat menambah lokasi serta akun PIC/Keuangan untuk operasional Menengs.
 - PIC hanya dapat memproses transaksi outlet yang ditugaskan; Keuangan memiliki akses baca.
-- Pengujian isolasi memastikan perubahan pada UMKM A tidak muncul pada UMKM B.
+- Pendaftaran akun publik dimatikan secara default. Owner membuat akun tim dari menu Pengaturan.
 
 ## Fitur MVP
 
@@ -41,7 +38,7 @@ Tanpa konfigurasi database, server menggunakan memori untuk demonstrasi. Akun lo
 - Owner: `owner@meneng.id`
 - PIC: `pic@meneng.id`
 - Keuangan: `finance@meneng.id`
-- Password demo: `VeinStock123!`
+- Password awal ditentukan melalui variabel `INITIAL_ADMIN_PASSWORD`; jangan gunakan kredensial contoh untuk deployment produksi.
 
 ## Build production
 
@@ -64,11 +61,11 @@ Server production menyajikan hasil build dari folder `dist` dan API dari proses 
 8. Gunakan Node.js 22.x, build command `npm run build`, dan entry file `server/index.mjs`.
 9. Hubungkan domain atau subdomain dan aktifkan SSL.
 
-Database dan akun demo awal dibuat otomatis ketika aplikasi pertama kali berjalan. UMKM baru dapat memilih **Daftar UMKM** pada halaman masuk dan langsung memperoleh workspace privat. Ganti password demo sebelum aplikasi diberikan kepada pengguna operasional.
+Database dan akun awal dibuat otomatis ketika aplikasi pertama kali berjalan. Ganti password awal sebelum aplikasi digunakan secara operasional. Pendaftaran mandiri hanya dapat diaktifkan secara eksplisit dengan `ALLOW_SELF_REGISTRATION=true` untuk kebutuhan pengembangan/migrasi.
 
 ### Kecocokan paket Hostinger
 
-Aplikasi memakai satu Node.js Web App dan satu database MySQL bersama dengan pemisahan tenant secara logis. Tidak membutuhkan VPS, aplikasi desktop, atau database terpisah untuk setiap UMKM. Berdasarkan paket Hostinger yang sudah diperiksa pada 23 Juli 2026, resource dan slot Web App yang tersedia mencukupi untuk peluncuran awal VEINSTOCK; kapasitas perlu dipantau dan dinaikkan ketika jumlah pengguna serta transaksi sudah besar.
+Aplikasi memakai satu Node.js Web App dan satu database MySQL untuk seluruh operasional Menengs. Berdasarkan paket Hostinger yang sudah diperiksa pada 23 Juli 2026, resource dan slot Web App yang tersedia mencukupi untuk peluncuran awal; kapasitas tetap perlu dipantau saat jumlah pengguna serta transaksi bertambah.
 
 ## Environment variables
 
@@ -76,7 +73,7 @@ Lihat [.env.example](.env.example). Jangan commit file `.env` atau kredensial pr
 
 ## Optimasi gambar
 
-Upload gambar diproses di backend sebelum dikirim ke Cloudinary. File dibatasi maksimal 5 MB, orientasi diperbaiki otomatis, ukuran maksimum dibuat 1200×1200 piksel tanpa memperbesar gambar kecil, metadata dibuang, dan hasil dikonversi ke WebP kualitas 75. Setiap tenant disimpan pada folder Cloudinary `veinstock/{organizationId}`.
+Upload gambar diproses di backend sebelum dikirim ke Cloudinary. File dibatasi maksimal 5 MB, orientasi diperbaiki otomatis, ukuran maksimum dibuat 1200×1200 piksel tanpa memperbesar gambar kecil, metadata dibuang, dan hasil dikonversi ke WebP kualitas 75. Setiap organisasi disimpan pada folder Cloudinary `menengs/{organizationId}`.
 
 ## Catatan sinkronisasi
 

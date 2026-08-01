@@ -33,7 +33,7 @@ async function init() {
       name VARCHAR(120) NOT NULL,
       email VARCHAR(190) NOT NULL,
       password_hash VARCHAR(255) NOT NULL,
-      role ENUM('owner','pic','finance','admin','warehouse','cashier') NOT NULL,
+      role ENUM('owner','pic','finance','admin','warehouse','cashier','employee') NOT NULL,
       outlet_id VARCHAR(40) NULL,
       active BOOLEAN NOT NULL DEFAULT TRUE,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -106,6 +106,7 @@ async function init() {
       organization_id VARCHAR(40) NOT NULL,
       location_id VARCHAR(40) NOT NULL,
       total INT NOT NULL,
+      channel VARCHAR(20) NOT NULL DEFAULT 'offline',
       method VARCHAR(50) NOT NULL,
       status VARCHAR(50) NOT NULL,
       note TEXT,
@@ -161,6 +162,7 @@ async function init() {
   for (const q of ddls) {
     await pool.execute(q);
   }
+  try { await pool.execute("ALTER TABLE sales ADD COLUMN channel VARCHAR(20) NOT NULL DEFAULT 'offline' AFTER total"); } catch (error) { if (error?.code !== 'ER_DUP_FIELDNAME') throw error; }
   console.log("All tables created successfully");
   await pool.end();
 }

@@ -2,8 +2,8 @@ export async function syncStateToSQL(conn, orgId, data) {
   // 1. Locations
   for (const loc of data.locations || []) {
     await conn.execute(
-      `INSERT INTO locations (id, organization_id, name, type, address, active) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE name=VALUES(name), type=VALUES(type), address=VALUES(address), active=VALUES(active)`,
-      [loc.id ?? 'unknown', orgId, loc.name ?? 'Unknown', loc.type ?? 'warehouse', loc.address ?? '', loc.active !== false]
+      `INSERT INTO locations (id, organization_id, name, type, address, active, is_central_warehouse) VALUES (?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE name=VALUES(name), type=VALUES(type), address=VALUES(address), active=VALUES(active), is_central_warehouse=VALUES(is_central_warehouse)`,
+      [loc.id ?? 'unknown', orgId, loc.name ?? 'Unknown', loc.type ?? 'warehouse', loc.address ?? '', loc.active !== false, loc.isCentralWarehouse === true]
     );
   }
 
@@ -11,12 +11,14 @@ export async function syncStateToSQL(conn, orgId, data) {
   for (const prod of data.products || []) {
     await conn.execute(
       `INSERT INTO products (id, organization_id, name, category, unit, active, image_url) VALUES (?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE name=VALUES(name), category=VALUES(category), unit=VALUES(unit), active=VALUES(active), image_url=VALUES(image_url)`,
-      [prod.id ?? 'unknown', orgId, prod.name ?? 'Unknown', prod.category ?? '', prod.unit ?? 'Pcs', prod.active !== false, prod.image ?? null]
+      // Frontend memakai `imageUrl`. Tetap baca `image` untuk data lama yang
+      // pernah tersimpan sebelum nama properti distandarkan.
+      [prod.id ?? 'unknown', orgId, prod.name ?? 'Unknown', prod.category ?? '', prod.unit ?? 'Pcs', prod.active !== false, prod.imageUrl ?? prod.image ?? null]
     );
     for (const v of prod.variants || []) {
       await conn.execute(
-        `INSERT INTO variants (id, product_id, organization_id, name, sku, cost, price, reseller_price, min_stock, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE name=VALUES(name), sku=VALUES(sku), cost=VALUES(cost), price=VALUES(price), reseller_price=VALUES(reseller_price), min_stock=VALUES(min_stock), active=VALUES(active)`,
-        [v.id ?? 'unknown', prod.id ?? 'unknown', orgId, v.name ?? 'Unknown', v.sku ?? '', v.cost ?? 0, v.price ?? 0, v.resellerPrice ?? 0, v.minStock ?? 0, v.active !== false]
+        `INSERT INTO variants (id, product_id, organization_id, name, sku, barcode, cost, price, reseller_price, min_stock, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE name=VALUES(name), sku=VALUES(sku), barcode=VALUES(barcode), cost=VALUES(cost), price=VALUES(price), reseller_price=VALUES(reseller_price), min_stock=VALUES(min_stock), active=VALUES(active)`,
+        [v.id ?? 'unknown', prod.id ?? 'unknown', orgId, v.name ?? 'Unknown', v.sku ?? '', v.barcode ?? null, v.cost ?? 0, v.price ?? 0, v.resellerPrice ?? 0, v.minStock ?? 0, v.active !== false]
       );
     }
   }
@@ -32,12 +34,21 @@ export async function syncStateToSQL(conn, orgId, data) {
   // 4. Sales
   for (const sale of data.sales || []) {
      await conn.execute(
-       `INSERT INTO sales (id, organization_id, location_id, total, method, status, note, cashier_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE status=VALUES(status)`,
-       [sale.id ?? 'unknown', orgId, sale.locationId ?? 'unknown', sale.total ?? 0, sale.method ?? 'Tunai', sale.status ?? 'completed', sale.note ?? null, sale.cashierId ?? null, sale.createdAt ?? new Date().toISOString()]
+       `INSERT INTO sales (id, organization_id, location_id, total, channel, method, status, note, cashier_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE total=VALUES(total), channel=VALUES(channel), method=VALUES(method), status=VALUES(status), note=VALUES(note), cashier_id=VALUES(cashier_id)`,
+       [sale.id ?? 'unknown', orgId, sale.locationId ?? 'unknown', sale.total ?? 0, sale.channel ?? 'offline', sale.payment ?? sale.method ?? 'Tunai', sale.status ?? 'completed', sale.note ?? null, sale.cashierId ?? null, sale.createdAt ?? new Date().toISOString()]
      );
-     for (const item of sale.items || []) {
+     // `sale_items` tidak memiliki primary key sendiri pada instalasi lama.
+     // Menambahkan ulang seluruh state dengan INSERT IGNORE menyebabkan setiap
+     // refresh menambah baris duplikat. Jadikan detail setiap transaksi sebagai
+     // snapshot idempoten: hapus detail lama lalu tulis satu kali per item unik.
+     await conn.execute('DELETE FROM sale_items WHERE sale_id = ?', [sale.id ?? 'unknown']);
+     const uniqueItems = Array.from(new Map((sale.items || []).map(item => {
+       const key = [item.variantId, item.quantity, item.price ?? 0, item.discount ?? 0, item.subtotal ?? 0].join('|');
+       return [key, item];
+     })).values());
+     for (const item of uniqueItems) {
        await conn.execute(
-         `INSERT IGNORE INTO sale_items (sale_id, variant_id, quantity, price, discount, subtotal) VALUES (?, ?, ?, ?, ?, ?)`,
+         `INSERT INTO sale_items (sale_id, variant_id, quantity, price, discount, subtotal) VALUES (?, ?, ?, ?, ?, ?)`,
          [sale.id ?? 'unknown', item.variantId ?? 'unknown', item.quantity ?? 0, item.price ?? 0, item.discount ?? 0, item.subtotal ?? 0]
        );
      }
@@ -46,8 +57,8 @@ export async function syncStateToSQL(conn, orgId, data) {
   // 5. Transfers
   for (const t of data.transfers || []) {
     await conn.execute(
-      `INSERT INTO transfers (id, organization_id, from_id, to_id, variant_id, quantity, status, created_at, received_at, cancelled_at, cancel_reason, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE status=VALUES(status), received_at=VALUES(received_at), cancelled_at=VALUES(cancelled_at), cancel_reason=VALUES(cancel_reason)`,
-      [t.id ?? 'unknown', orgId, t.fromId ?? 'unknown', t.toId ?? 'unknown', t.variantId ?? 'unknown', t.quantity ?? 0, t.status ?? 'pending', t.createdAt ?? new Date().toISOString(), t.receivedAt ?? null, t.cancelledAt ?? null, t.cancelReason ?? null, t.createdBy ?? null]
+      `INSERT INTO transfers (id, transfer_code, organization_id, from_id, to_id, variant_id, quantity, status, created_at, received_at, cancelled_at, cancel_reason, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE transfer_code=VALUES(transfer_code), status=VALUES(status), received_at=VALUES(received_at), cancelled_at=VALUES(cancelled_at), cancel_reason=VALUES(cancel_reason)`,
+      [t.id ?? 'unknown', t.transferCode ?? null, orgId, t.fromId ?? 'unknown', t.toId ?? 'unknown', t.variantId ?? 'unknown', t.quantity ?? 0, t.status ?? 'pending', t.createdAt ?? new Date().toISOString(), t.receivedAt ?? null, t.cancelledAt ?? null, t.cancelReason ?? null, t.createdBy ?? null]
     );
   }
 
@@ -69,9 +80,9 @@ export async function syncStateToSQL(conn, orgId, data) {
 }
 
 export async function getStateFromSQL(conn, orgId) {
-  const [locations] = await conn.execute('SELECT id, name, type, address, active FROM locations WHERE organization_id = ?', [orgId]);
-  const [products] = await conn.execute('SELECT id, name, category, unit, active, image_url as image FROM products WHERE organization_id = ?', [orgId]);
-  const [variants] = await conn.execute('SELECT id, product_id, name, sku, cost, price, reseller_price as resellerPrice, min_stock as minStock, active FROM variants WHERE organization_id = ?', [orgId]);
+  const [locations] = await conn.execute('SELECT id, name, type, address, active, is_central_warehouse as isCentralWarehouse FROM locations WHERE organization_id = ?', [orgId]);
+  const [products] = await conn.execute('SELECT id, name, category, unit, active, image_url as imageUrl FROM products WHERE organization_id = ?', [orgId]);
+  const [variants] = await conn.execute('SELECT id, product_id, name, sku, barcode, cost, price, reseller_price as resellerPrice, min_stock as minStock, active FROM variants WHERE organization_id = ?', [orgId]);
   
   for (const p of products) {
     p.active = p.active === 1;
@@ -84,7 +95,7 @@ export async function getStateFromSQL(conn, orgId) {
 
   const [balances] = await conn.execute('SELECT location_id as locationId, variant_id as variantId, quantity FROM balances WHERE organization_id = ?', [orgId]);
   
-  const [sales] = await conn.execute('SELECT id, location_id as locationId, total, method, status, note, cashier_id as cashierId, created_at as createdAt FROM sales WHERE organization_id = ?', [orgId]);
+  const [sales] = await conn.execute('SELECT id, location_id as locationId, total, channel, method, status, note, cashier_id as cashierId, created_at as createdAt FROM sales WHERE organization_id = ?', [orgId]);
   const saleIds = sales.map(s => s.id);
   let saleItems = [];
   if (saleIds.length > 0) {
@@ -92,14 +103,20 @@ export async function getStateFromSQL(conn, orgId) {
     saleItems = items;
   }
   for (const s of sales) {
-    s.items = saleItems.filter(i => i.sale_id === s.id).map(i => {
+    const seenItems = new Set();
+    s.items = saleItems.filter(i => i.sale_id === s.id).filter(item => {
+      const key = [item.variantId, item.quantity, item.price ?? 0, item.discount ?? 0, item.subtotal ?? 0].join('|');
+      if (seenItems.has(key)) return false;
+      seenItems.add(key);
+      return true;
+    }).map(i => {
       const copy = { ...i };
       delete copy.sale_id;
       return copy;
     });
   }
 
-  const [transfers] = await conn.execute('SELECT id, from_id as fromId, to_id as toId, variant_id as variantId, quantity, status, created_at as createdAt, received_at as receivedAt, cancelled_at as cancelledAt, cancel_reason as cancelReason, created_by as createdBy FROM transfers WHERE organization_id = ?', [orgId]);
+  const [transfers] = await conn.execute('SELECT id, transfer_code as transferCode, from_id as fromId, to_id as toId, variant_id as variantId, quantity, status, created_at as createdAt, received_at as receivedAt, cancelled_at as cancelledAt, cancel_reason as cancelReason, created_by as createdBy FROM transfers WHERE organization_id = ?', [orgId]);
 
   const [movements] = await conn.execute('SELECT id, location_id as locationId, variant_id as variantId, quantity, type, reason as note, reference_id as referenceId, date as createdAt, created_by as user FROM stock_movements WHERE organization_id = ?', [orgId]);
 
@@ -120,7 +137,7 @@ export async function getStateFromSQL(conn, orgId) {
     address: orgs[0].address || '',
     logoUrl: orgs[0].logo_url || '',
     negativeStockPolicy: orgs[0].negative_stock_policy || 'BLOCK'
-  } : { name: "VEINSTOCK" };
+  } : { name: "MENENGS" };
 
   const [states] = await conn.execute('SELECT version, payload FROM app_state WHERE id = ?', [orgId]);
   const rawState = states[0]?.payload || {};
@@ -129,7 +146,10 @@ export async function getStateFromSQL(conn, orgId) {
   const mergeLegacy = (sqlArr, rawArr) => {
     const map = new Map();
     (rawArr || []).forEach(item => map.set(item.id, item));
-    (sqlArr || []).forEach(item => map.set(item.id, item));
+    // Kolom yang belum dimodelkan pada skema relasional (mis. channel) tetap
+    // dipertahankan dari snapshot, sementara angka/status SQL menjadi sumber
+    // kebenaran saat tersedia.
+    (sqlArr || []).forEach(item => map.set(item.id, { ...(map.get(item.id) || {}), ...item }));
     return Array.from(map.values());
   };
 
@@ -140,7 +160,7 @@ export async function getStateFromSQL(conn, orgId) {
     return Array.from(map.values());
   };
 
-  const sqlLocations = locations.map(l => ({ ...l, active: l.active === 1 }));
+  const sqlLocations = locations.map(l => ({ ...l, active: l.active === 1, isCentralWarehouse: l.isCentralWarehouse === 1 }));
 
   return {
     version,
@@ -156,6 +176,12 @@ export async function getStateFromSQL(conn, orgId) {
       receipts: rawState.receipts || [],
       returns: rawState.returns || [],
       suppliers: rawState.suppliers || [],
+      employees: rawState.employees || [],
+      attendanceSettings: rawState.attendanceSettings || [],
+      attendances: rawState.attendances || [],
+      loans: rawState.loans || [],
+      payrolls: rawState.payrolls || [],
+      pricing: rawState.pricing || { hppRecipes: [], marketplaceConfigs: [] },
     }
   };
 }

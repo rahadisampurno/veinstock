@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { adjustBalance, getBalance, movement, seedData } from './store';
+import { adjustBalance, getBalance, movement, normalizeData, seedData } from './store';
 
 describe('inventory balance', () => {
   it('reduces source stock without changing another location', () => {
@@ -20,5 +20,17 @@ describe('inventory balance', () => {
     expect(entry.type).toBe('Penjualan offline');
     expect(entry.createdAt).toBeTruthy();
   });
-});
 
+  it('classifies legacy sales by their transaction location', () => {
+    const data = normalizeData({
+      ...seedData,
+      sales: [
+        { ...seedData.sales[0], id: 'legacy-outlet', channel: undefined as any },
+        { ...seedData.sales[1], id: 'legacy-online', channel: undefined as any },
+      ],
+    });
+
+    expect(data.sales.find(sale => sale.id === 'legacy-outlet')?.channel).toBe('offline');
+    expect(data.sales.find(sale => sale.id === 'legacy-online')?.channel).toBe('online');
+  });
+});

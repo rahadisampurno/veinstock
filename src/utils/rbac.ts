@@ -54,11 +54,11 @@ export function resolveUserScope(user?: SessionUser | null): Scope {
   } else if (role === 'finance') {
     ['stock.view', 'report.view', 'report.export'].forEach(p => permissions.add(p as ActionType));
   } else if (role === 'warehouse') {
-    ['product.view', 'location.view', 'stock.view', 'stock.in', 'stock.out', 'stock.adjust', 'stock.opname',
+    ['product.view', 'location.view', 'stock.view', 'stock.in', 'stock.out', 'stock.opname',
      'transfer.create', 'transfer.send', 'report.view', 'report.export'].forEach(p => permissions.add(p as ActionType));
   } else if (role === 'pic') {
-    ['product.view', 'location.view', 'stock.view', 'stock.adjust', 'stock.opname',
-     'transfer.receive', 'transfer.create', 'sale.view', 'sale.create', 'sale.void', 'report.view', 'report.export'].forEach(p => permissions.add(p as ActionType));
+    ['product.view', 'location.view', 'stock.view', 'stock.opname',
+     'transfer.receive', 'transfer.create', 'transfer.send', 'sale.view', 'sale.create', 'sale.void', 'report.view', 'report.export'].forEach(p => permissions.add(p as ActionType));
   } else if (role === 'cashier') {
     ['product.view', 'location.view', 'stock.view', 'sale.create', 'sale.view'].forEach(p => permissions.add(p as ActionType));
   }

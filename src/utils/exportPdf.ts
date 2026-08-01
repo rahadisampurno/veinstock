@@ -1,6 +1,3 @@
-import html2canvas from 'html2canvas';
-import { jsPDF } from 'jspdf';
-
 export const downloadPDF = async (elementId: string, filename: string) => {
   const element = document.getElementById(elementId);
   if (!element) {
@@ -9,6 +6,12 @@ export const downloadPDF = async (elementId: string, filename: string) => {
   }
 
   try {
+    // Library ekspor cukup besar dan hanya diperlukan saat pengguna benar-benar
+    // mencetak laporan; jangan masukkan ke bundle awal aplikasi kasir.
+    const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
+      import('html2canvas'),
+      import('jspdf'),
+    ]);
     const canvas = await html2canvas(element, { scale: 2, useCORS: true });
     const imgData = canvas.toDataURL('image/png');
     

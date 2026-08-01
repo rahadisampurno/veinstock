@@ -41,24 +41,33 @@ export const createEmptyData = (organizationName: string, owner: Pick<SessionUse
   business: { name: organizationName, ownerName: owner.name, email: owner.email },
   users: [{ id: owner.id, name: owner.name, email: owner.email, role: 'owner', active: true }],
   locations: [{ id: 'loc-owner', name: `Gudang ${organizationName}`, type: 'warehouse', active: true }],
-  products: [], balances: [], transfers: [], sales: [], movements: [], stockCounts: [], suppliers: [], receipts: [], returns: [],
+  products: [], balances: [], transfers: [], sales: [], movements: [], stockCounts: [], suppliers: [], receipts: [], returns: [], employees: [], attendanceSettings: [], attendances: [], loans: [], payrolls: [],
 });
 
-export const normalizeData = (data: AppData): AppData => ({
-  ...data,
-  business: data.business || { name: 'Usaha Saya', ownerName: data.users?.find(item=>item.role==='owner')?.name || 'Owner' },
-  users: data.users || [],
-  locations: data.locations || [],
-  products: data.products || [],
-  balances: data.balances || [],
-  transfers: data.transfers || [],
-  sales: data.sales || [],
-  movements: data.movements || [],
-  stockCounts: data.stockCounts || [],
-  suppliers: data.suppliers || [],
-  receipts: data.receipts || [],
-  returns: data.returns || []
-});
+export const normalizeData = (data: AppData): AppData => {
+  const locations = data.locations || [];
+  return {
+    ...data,
+    business: data.business || { name: 'Usaha Saya', ownerName: data.users?.find(item=>item.role==='owner')?.name || 'Owner' },
+    users: data.users || [],
+    locations,
+    products: data.products || [],
+    balances: data.balances || [],
+    transfers: data.transfers || [],
+    // Data sebelum kanal penjualan tersedia tetap harus muncul di analitik.
+    // Lokasi outlet berarti penjualan langsung; transaksi dari gudang diperlakukan sebagai online.
+    sales: (data.sales || []).map((sale) => {
+      if (sale.channel === 'offline' || sale.channel === 'online' || sale.channel === 'reseller') return sale;
+      const location = locations.find((item) => item.id === sale.locationId);
+      return { ...sale, channel: location?.type === 'outlet' ? 'offline' : 'online' };
+    }),
+    movements: data.movements || [],
+    stockCounts: data.stockCounts || [],
+    suppliers: data.suppliers || [],
+    receipts: data.receipts || [],
+    returns: data.returns || [], employees: data.employees || [], attendanceSettings: data.attendanceSettings || [], attendances: data.attendances || [], loans: data.loans || [], payrolls: data.payrolls || []
+  };
+};
 
 const keyFor = (organizationId = 'demo') => `veinstock_data_v2_${organizationId}`;
 export const loadData = (organizationId?: string): AppData => { try { return normalizeData(JSON.parse(localStorage.getItem(keyFor(organizationId)) || '')) } catch { return normalizeData(seedData) } };
