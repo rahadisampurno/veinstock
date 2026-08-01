@@ -4725,6 +4725,7 @@ function SaleModal({ data, close, save, fixedLocation }: any) {
   const scannerVideoRef = useRef<HTMLVideoElement>(null);
   const scannerStreamRef = useRef<MediaStream | null>(null);
   const barcodePhotoRef = useRef<HTMLInputElement>(null);
+  const scanAudioContextRef = useRef<AudioContext | null>(null);
   const isOffline = channel === "offline";
   const isTouchDevice = typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches;
   const findScannedVariant = (rawValue: string) => {
@@ -4744,10 +4745,48 @@ function SaleModal({ data, close, save, fixedLocation }: any) {
     });
     setSkuSearch("");
   };
+  const getScanAudioContext = () => {
+    const AudioContextConstructor = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioContextConstructor) return null;
+    if (!scanAudioContextRef.current || scanAudioContextRef.current.state === "closed") {
+      scanAudioContextRef.current = new AudioContextConstructor();
+    }
+    return scanAudioContextRef.current;
+  };
+  const primeScanAudio = () => {
+    const context = getScanAudioContext();
+    if (context?.state === "suspended") void context.resume().catch(() => undefined);
+  };
+  const playScanSuccessSound = () => {
+    const context = getScanAudioContext();
+    if (!context) return;
+    const play = () => {
+      const now = context.currentTime;
+      const makeTone = (frequency: number, start: number, duration: number) => {
+        const oscillator = context.createOscillator();
+        const gain = context.createGain();
+        oscillator.type = "square";
+        oscillator.frequency.setValueAtTime(frequency, start);
+        gain.gain.setValueAtTime(0.0001, start);
+        gain.gain.exponentialRampToValueAtTime(0.045, start + 0.004);
+        gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+        oscillator.connect(gain).connect(context.destination);
+        oscillator.start(start);
+        oscillator.stop(start + duration + 0.01);
+      };
+      // Dua bunyi pendek memberi konfirmasi yang jelas seperti scanner kasir,
+      // namun volumenya sengaja rendah agar tidak mengganggu area outlet.
+      makeTone(1_450, now, 0.052);
+      makeTone(2_050, now + 0.064, 0.072);
+    };
+    if (context.state === "suspended") void context.resume().then(play).catch(() => undefined);
+    else play();
+  };
   const applyScannedValue = (rawValue: string) => {
     const candidate = findScannedVariant(rawValue) || (sellableMatchingVariants.length === 1 ? sellableMatchingVariants[0] : undefined);
     if (!candidate) return false;
     addToCart(candidate.id);
+    playScanSuccessSound();
     return true;
   };
   const stopCameraScanner = () => {
@@ -4882,6 +4921,7 @@ function SaleModal({ data, close, save, fixedLocation }: any) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cameraOpen]);
   useEffect(() => () => stopCameraScanner(), []);
+  useEffect(() => () => { void scanAudioContextRef.current?.close(); }, []);
   
   const totalQty = cart.reduce((acc, c) => acc + c.quantity, 0);
   const totalAmount = cart.reduce((acc, c) => {
@@ -4940,13 +4980,14 @@ function SaleModal({ data, close, save, fixedLocation }: any) {
                 placeholder="Cari produk, varian, atau SKU"
                 autoComplete="off"
                 inputMode="search"
+                onPointerDown={primeScanAudio}
                 onKeyDown={(e) => {
                   if (e.key !== 'Enter') return;
                   e.preventDefault();
                   if (!applyScannedValue(skuSearch)) setCameraError("Barcode atau SKU tidak ditemukan pada stok lokasi ini.");
                 }}
               />
-              <button type="button" className="pos-camera-button" onClick={openCameraScanner} aria-label="Pindai barcode dengan kamera">
+              <button type="button" className="pos-camera-button" onClick={() => { primeScanAudio(); void openCameraScanner(); }} aria-label="Pindai barcode dengan kamera">
                 <Camera size={18} /><span>Scan</span>
               </button>
               <input ref={barcodePhotoRef} type="file" accept="image/*" capture="environment" className="visually-hidden" onChange={scanBarcodePhoto} />
