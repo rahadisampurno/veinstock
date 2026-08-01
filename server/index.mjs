@@ -77,7 +77,11 @@ app.use((req, res, next) => {
     'X-Content-Type-Options': 'nosniff',
     'X-Frame-Options': 'SAMEORIGIN',
     'Referrer-Policy': 'no-referrer',
-    'Permissions-Policy': 'camera=(), microphone=(), geolocation=()'
+    // Pemindaian barcode POS menggunakan kamera pada origin aplikasi sendiri.
+    // `camera=()` memblokir getUserMedia sebelum Chrome sempat menampilkan
+    // dialog izin; karena itu hanya self yang diizinkan, sementara fitur lain
+    // yang tidak dipakai tetap tertutup.
+    'Permissions-Policy': 'camera=(self), microphone=(), geolocation=()'
   });
   if (isProduction) res.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   next();
