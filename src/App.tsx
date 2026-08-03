@@ -4187,10 +4187,10 @@ function ProductModal({
             <button type="button" onClick={applyBulk} style={{ background: 'var(--green)', color: 'white', border: 'none', padding: '6px 12px', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer' }}>Terapkan</button>
           </div>
           <div className="form-grid">
-            <Field label="Harga Modal"><input type="number" min="0" value={String(bulkCost)} onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); setBulkCost(e.target.value) }} placeholder="Opsional" style={{ background: 'white' }} /></Field>
-            <Field label="Harga Jual"><input type="number" min="0" value={String(bulkPrice)} onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); setBulkPrice(e.target.value) }} placeholder="Opsional" style={{ background: 'white' }} /></Field>
-            <Field label="Harga Reseller"><input type="number" min="0" value={String(bulkReseller)} onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); setBulkReseller(e.target.value) }} placeholder="Opsional" style={{ background: 'white' }} /></Field>
-            <Field label="Min Stok"><input type="number" min="0" value={String(bulkMinStock)} onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); setBulkMinStock(e.target.value) }} placeholder="Opsional" style={{ background: 'white' }} /></Field>
+            <Field label="Harga Modal"><input type="number" min="0" value={String(bulkCost)} onChange={(e) => setBulkCost(e.currentTarget.value.replace(/^0+(?=\d)/, ''))} placeholder="Opsional" style={{ background: 'white' }} /></Field>
+            <Field label="Harga Jual"><input type="number" min="0" value={String(bulkPrice)} onChange={(e) => setBulkPrice(e.currentTarget.value.replace(/^0+(?=\d)/, ''))} placeholder="Opsional" style={{ background: 'white' }} /></Field>
+            <Field label="Harga Reseller"><input type="number" min="0" value={String(bulkReseller)} onChange={(e) => setBulkReseller(e.currentTarget.value.replace(/^0+(?=\d)/, ''))} placeholder="Opsional" style={{ background: 'white' }} /></Field>
+            <Field label="Min Stok"><input type="number" min="0" value={String(bulkMinStock)} onChange={(e) => setBulkMinStock(e.currentTarget.value.replace(/^0+(?=\d)/, ''))} placeholder="Opsional" style={{ background: 'white' }} /></Field>
           </div>
         </div>
 
@@ -4248,21 +4248,21 @@ function ProductModal({
                 </div>
               </Field>
               <Field label={`Harga Modal${bulkCost !== '' ? ' (Dilewati)' : ''}`}>
-                <input required type="number" min="0" value={v.cost === 0 ? '' : String(v.cost)} onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); updateVariant(index, 'cost', +e.target.value) }} />
+                <input required type="number" min="0" value={v.cost === 0 ? '' : String(v.cost)} onChange={(e) => updateVariant(index, 'cost', Number(e.currentTarget.value.replace(/^0+(?=\d)/, '')) || 0)} />
               </Field>
               <Field label={`Harga Jual${bulkPrice !== '' ? ' (Dilewati)' : ''}`}>
-                <input required type="number" min="0" value={v.price === 0 ? '' : String(v.price)} onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); updateVariant(index, 'price', +e.target.value) }} />
+                <input required type="number" min="0" value={v.price === 0 ? '' : String(v.price)} onChange={(e) => updateVariant(index, 'price', Number(e.currentTarget.value.replace(/^0+(?=\d)/, '')) || 0)} />
               </Field>
               <Field label={`Harga Reseller${bulkReseller !== '' ? ' (Dilewati)' : ''}`}>
-                <input type="number" min="0" value={v.resellerPrice === 0 ? '' : String(v.resellerPrice)} onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); updateVariant(index, 'resellerPrice', +e.target.value) }} />
+                <input type="number" min="0" value={v.resellerPrice === 0 ? '' : String(v.resellerPrice)} onChange={(e) => updateVariant(index, 'resellerPrice', Number(e.currentTarget.value.replace(/^0+(?=\d)/, '')) || 0)} />
               </Field>
               <Field label={`Min Stok${bulkMinStock !== '' ? ' (Dilewati)' : ''}`}>
-                <input type="number" min="0" value={v.minStock === 0 ? '' : String(v.minStock)} onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); updateVariant(index, 'minStock', +e.target.value) }} />
+                <input type="number" min="0" value={v.minStock === 0 ? '' : String(v.minStock)} onChange={(e) => updateVariant(index, 'minStock', Number(e.currentTarget.value.replace(/^0+(?=\d)/, '')) || 0)} />
               </Field>
               {!editing && includeInitialStock && (
                 <Field label="Stok Awal">
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <input type="number" min="0" value={v.initialStock === 0 ? '' : String(v.initialStock)} onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); updateVariant(index, 'initialStock', +e.target.value) }} placeholder="0" style={{ flex: 1 }} />
+                    <input type="number" min="0" value={v.initialStock === 0 ? '' : String(v.initialStock)} onChange={(e) => updateVariant(index, 'initialStock', Number(e.currentTarget.value.replace(/^0+(?=\d)/, '')) || 0)} placeholder="0" style={{ flex: 1 }} />
                     <span style={{ fontSize: '14px', color: '#64748b' }}>{unit}</span>
                   </div>
                   <span className="upload-hint" style={{ marginTop: '4px' }}>Isi jumlah barang yang sudah tersedia.</span>
@@ -4680,7 +4680,7 @@ function ReceiptModal({ data, receipt, close, save, uploadImage, prefillLocation
                 type="number"
                 min="1"
                 value={String(selectedItems[receipt.variantId]?.quantity || 1)}
-                onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); setSelectedItems({...selectedItems, [receipt.variantId]: { ...selectedItems[receipt.variantId], quantity: +e.target.value }}); }}
+                onChange={(e) => setSelectedItems({...selectedItems, [receipt.variantId]: { ...selectedItems[receipt.variantId], quantity: Number(e.currentTarget.value.replace(/^0+(?=\d)/, '')) || 0 }})}
               />
             </Field>
             <Field label={`Harga modal per ${variants.find((v:any) => v.id === receipt.variantId)?.unit || "unit"}`}>
@@ -4688,7 +4688,7 @@ function ReceiptModal({ data, receipt, close, save, uploadImage, prefillLocation
                 type="number"
                 min="0"
                 value={String(selectedItems[receipt.variantId]?.unitCost || 0)}
-                onChange={(e) => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); setSelectedItems({...selectedItems, [receipt.variantId]: { ...selectedItems[receipt.variantId], unitCost: +e.target.value }}); }}
+                onChange={(e) => setSelectedItems({...selectedItems, [receipt.variantId]: { ...selectedItems[receipt.variantId], unitCost: Number(e.currentTarget.value.replace(/^0+(?=\d)/, '')) || 0 }})}
               />
             </Field>
           </div>
@@ -4736,10 +4736,10 @@ function ReceiptModal({ data, receipt, close, save, uploadImage, prefillLocation
                     <div key={vid} className="form-grid" style={{ background: '#f8fafc', padding: 12, borderRadius: 6, marginBottom: 8, border: '1px solid #e2e8f0' }}>
                       <div style={{ gridColumn: '1 / -1', fontSize: 13 }}><b>{v.productName} · {v.name}</b></div>
                       <Field label={`Jumlah (${v.unit})`}>
-                         <input type="number" min="1" value={String(item.quantity)} onChange={e => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); setSelectedItems({...selectedItems, [vid]: { ...item, quantity: +(e.target.value || 0) }}) }} style={{ background: 'white' }} />
+                         <input type="number" min="1" value={String(item.quantity)} onChange={e => setSelectedItems({...selectedItems, [vid]: { ...item, quantity: Number(e.currentTarget.value.replace(/^0+(?=\d)/, '')) || 0 }})} style={{ background: 'white' }} />
                       </Field>
                       <Field label="Harga Modal">
-                         <input type="number" min="0" value={String(item.unitCost)} onChange={e => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); setSelectedItems({...selectedItems, [vid]: { ...item, unitCost: +(e.target.value || 0) }}) }} style={{ background: 'white' }} />
+                         <input type="number" min="0" value={String(item.unitCost)} onChange={e => setSelectedItems({...selectedItems, [vid]: { ...item, unitCost: Number(e.currentTarget.value.replace(/^0+(?=\d)/, '')) || 0 }})} style={{ background: 'white' }} />
                       </Field>
                     </div>
                   );
@@ -4875,7 +4875,7 @@ function ReturnModal({ data, close, save, uploadImage }: any) {
                 <div key={vid} style={{ background: '#f8fafc', padding: 12, borderRadius: 6, marginBottom: 8, border: '1px solid #e2e8f0' }}>
                   <div style={{ fontSize: 13, marginBottom: 8 }}><b>{v.productName} · {v.name}</b></div>
                   <Field label={`Jumlah (${v.unit})`}>
-                     <input type="number" min="1" value={String(item.quantity)} onChange={e => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); setSelectedItems({...selectedItems, [vid]: { quantity: +(e.target.value || 0) }}) }} style={{ background: 'white' }} />
+                     <input type="number" min="1" value={String(item.quantity)} onChange={e => setSelectedItems({...selectedItems, [vid]: { quantity: Number(e.currentTarget.value.replace(/^0+(?=\d)/, '')) || 0 }})} style={{ background: 'white' }} />
                   </Field>
                 </div>
               );
@@ -5129,7 +5129,7 @@ function TransferModal({ data, close, save, uploadImage, fixedFrom, initialFrom,
                 <div key={vid} className={exceedsStock ? "transfer-item-invalid" : ""} style={{ background: '#f8fafc', padding: 12, borderRadius: 6, marginBottom: 8, border: '1px solid #e2e8f0' }}>
                   <div style={{ fontSize: 13, marginBottom: 8 }}><b>{v.productName} · {v.name}</b></div>
                   <Field label={`Jumlah (${v.unit})`}>
-                     <input className={exceedsStock ? "invalid" : ""} type="number" min="1" max={available} value={String(item.quantity)} onChange={e => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); setSelectedItems({...selectedItems, [vid]: { quantity: +(e.target.value || 0) }}) }} style={{ background: 'white' }} />
+                     <input className={exceedsStock ? "invalid" : ""} type="number" min="1" max={available} value={String(item.quantity)} onChange={e => setSelectedItems({...selectedItems, [vid]: { quantity: Number(e.currentTarget.value.replace(/^0+(?=\d)/, '')) || 0 }})} style={{ background: 'white' }} />
                   </Field>
                   <small className={exceedsStock ? "transfer-stock-error" : "transfer-stock-limit"}>{exceedsStock ? `Jumlah melebihi stok tersedia (${qty(available, v.unit)}).` : `Maksimum yang dapat ditransfer: ${qty(available, v.unit)}.`}</small>
                 </div>
@@ -5645,7 +5645,7 @@ function OpnameModal({ data, item, close, save, fixedLocation }: any) {
                   <div className="opname-item-head"><div><b>{v.productName} · {v.name}</b><small>Stok sistem: {qty(getBalance(data.balances, loc, v.id), v.unit)}</small></div><span className={selectedItem.actualQty - getBalance(data.balances, loc, v.id) === 0 ? "status ok" : "status wait"}>{selectedItem.actualQty - getBalance(data.balances, loc, v.id) === 0 ? "Sesuai" : `Selisih ${selectedItem.actualQty - getBalance(data.balances, loc, v.id) > 0 ? "+" : ""}${qty(selectedItem.actualQty - getBalance(data.balances, loc, v.id), v.unit)}`}</span></div>
                   <div className="form-grid">
                   <Field label={`Stok fisik (${v.unit})`}>
-                     <input type="number" min="0" value={String(selectedItem.actualQty)} onChange={e => { e.target.value = e.target.value.replace(/^0+(?=\d)/, ''); setSelectedItems({...selectedItems, [vid]: { ...selectedItem, actualQty: +(e.target.value || 0) }}) }} style={{ background: 'white' }} />
+                     <input type="number" min="0" value={String(selectedItem.actualQty)} onChange={e => setSelectedItems({...selectedItems, [vid]: { ...selectedItem, actualQty: Number(e.currentTarget.value.replace(/^0+(?=\d)/, '')) || 0 }})} style={{ background: 'white' }} />
                   </Field>
                   <Field label="Alasan / catatan">
                      <textarea required value={selectedItem.reason} onChange={e => setSelectedItems({...selectedItems, [vid]: { ...selectedItem, reason: e.target.value }})} style={{ background: 'white' }} />
