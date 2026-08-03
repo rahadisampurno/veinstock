@@ -113,6 +113,6 @@ Status gate: **IN PROGRESS — retest opname menunggu deployment patch.**
 - Severity: **High**
 - Bukti production: kontrol `Stok fisik` diisi `2`, tetapi dokumen tersimpan sebagai `0` dan membuat koreksi `-1 pcs`.
 - Akar masalah: beberapa field dalam item yang sama memperbarui object React dari closure lama; perubahan field berikutnya dapat menimpa perubahan angka sebelumnya dalam event yang berdekatan.
-- Cakupan perbaikan: seluruh editor item stok masuk, retur, transfer, dan opname menggunakan functional state update agar perubahan antarkolom tidak saling menimpa. Retest pertama menunjukkan event otomatis pada input angka masih belum masuk ke state React; handler angka kemudian dipindahkan ke event input native (`onInput`).
+- Cakupan perbaikan: seluruh editor item stok masuk, retur, transfer, dan opname menggunakan functional state update agar perubahan antarkolom tidak saling menimpa. Retest production kedua menunjukkan event otomatis pada input angka belum selalu masuk ke state React; handler kini memakai `onInput` serta sinkronisasi fallback `onBlur`.
 - Verifikasi lokal: 27 automated test lulus, lint bersih, dan production build berhasil.
-- Status: **FIXED LOCALLY (PATCH 2) — menunggu deploy dan production retest.** Dua dokumen opname gagal selama audit sudah dibatalkan dan tetap dipertahankan sebagai jejak audit.
+- Status: **FIXED LOCALLY (PATCH 3) — menunggu deploy dan production retest.** Local browser retest membuktikan nilai fisik `2` tetap `2` setelah fokus berpindah ke field alasan. Dua dokumen opname gagal selama audit sudah dibatalkan dan tetap dipertahankan sebagai jejak audit.
