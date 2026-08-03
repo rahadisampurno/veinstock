@@ -7,7 +7,7 @@ Target: `https://aquamarine-weasel-163192.hostingersite.com/`
 
 **COMPLETE — laporan asal sudah diklasifikasikan dengan bukti production.**
 
-Baseline lokal sudah sehat: 26 automated test lulus, production build berhasil, dan lint tidak memiliki error (tersisa satu warning React Hook). Pengujian transaksi production terautentikasi masih menunggu kredensial akun uji.
+Baseline lokal sudah sehat: 27 automated test lulus, production build berhasil, dan lint bersih. Pengujian transaksi production terautentikasi telah dijalankan dengan akun uji Owner, PIC, dan Finance.
 
 ## Bukti deployment
 
@@ -54,7 +54,7 @@ Laporan menyatakan 28 FAIL, tetapi hanya memberikan 6 defect. Sebanyak 22 hasil 
 
 1. ~~Kredensial akun uji production untuk Owner, PIC satu outlet, dan Finance.~~
 2. ~~Retest produk, stok masuk, transfer, reload, dan RBAC.~~
-3. Pengujian POS dilanjutkan setelah validasi harga nol dideploy.
+3. ~~Pengujian POS dilanjutkan setelah validasi harga nol dideploy.~~
 4. DEPLOY-01 dilanjutkan pada fase deployment/PWA.
 
 Phase 1 hanya boleh dimulai setelah klasifikasi di atas lengkap.
@@ -85,4 +85,34 @@ Data tersebut dipertahankan sementara untuk pengujian transfer, POS, RBAC, dan c
 - Tindakan pengujian: transaksi dibatalkan sebelum disimpan sehingga tidak ada penjualan nol yang dibuat.
 - Perbaikan lokal: frontend menolak harga jual `<= 0`; command API create/update product juga menolak harga jual `<= 0` serta memvalidasi modal, nama varian, dan SKU duplikat.
 - Regression test: ditambahkan dan lulus.
+- Status: **CLOSED — perbaikan sudah dideploy dan production retest lulus.**
+
+## Phase 2 — POS, pembatalan, dan rekonsiliasi stok
+
+Status gate: **PASS**
+
+| Pemeriksaan | Hasil | Bukti production |
+|---|---|---|
+| Harga jual valid | PASS | Produk E2E diperbarui menjadi modal Rp1.000 dan harga jual Rp1.500; POS menampilkan harga Rp1.500. |
+| Penjualan POS | PASS | PIC menjual 1 pcs melalui QRIS; transaksi baru muncul dengan status Selesai dan nilai Rp1.500. |
+| Akumulasi omzet | PASS | Total transaksi menjadi 5 dan omzet menjadi Rp1.852.810 setelah penjualan. |
+| Mutasi stok keluar | PASS | Stok Outlet berubah dari 1 pcs menjadi 0 pcs dan status menjadi Habis. |
+| Persistensi mutasi | PASS | Setelah full reload, stok tetap 0 pcs. |
+| Pembatalan transaksi | PASS | Transaksi E2E dibatalkan dengan alasan audit dan status berubah menjadi Dibatalkan. |
+| Pemulihan stok otomatis | PASS | Stok Outlet kembali menjadi 1 pcs setelah pembatalan. |
+| Persistensi pemulihan | PASS | Setelah full reload, stok tetap 1 pcs dengan status Aman. |
+
+Kesimpulan Phase 2: jalur kritis POS dari penjualan, pencatatan omzet, pengurangan stok, pembatalan, hingga pemulihan stok sudah konsisten dan persisten di production.
+
+## Phase 3 — Operasional lanjutan
+
+Status gate: **IN PROGRESS — retest opname menunggu deployment patch.**
+
+### DATA-02 — Perubahan field opname dapat tertimpa state lama
+
+- Severity: **High**
+- Bukti production: kontrol `Stok fisik` diisi `2`, tetapi dokumen tersimpan sebagai `0` dan membuat koreksi `-1 pcs`.
+- Akar masalah: beberapa field dalam item yang sama memperbarui object React dari closure lama; perubahan field berikutnya dapat menimpa perubahan angka sebelumnya dalam event yang berdekatan.
+- Cakupan perbaikan: seluruh editor item stok masuk, retur, transfer, dan opname diubah menggunakan functional state update agar perubahan antarkolom tidak saling menimpa.
+- Verifikasi lokal: 27 automated test lulus, lint bersih, dan production build berhasil.
 - Status: **FIXED LOCALLY — menunggu deploy dan production retest.**
