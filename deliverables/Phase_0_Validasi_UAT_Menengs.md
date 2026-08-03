@@ -116,3 +116,13 @@ Status gate: **IN PROGRESS — retest opname menunggu deployment patch.**
 - Cakupan perbaikan: seluruh editor item stok masuk, retur, transfer, dan opname menggunakan functional state update agar perubahan antarkolom tidak saling menimpa. Retest production kedua menunjukkan event otomatis pada input angka belum selalu masuk ke state React; handler kini memakai `onInput` serta sinkronisasi fallback `onBlur`.
 - Verifikasi lokal: 27 automated test lulus, lint bersih, dan production build berhasil.
 - Status: **FIXED LOCALLY (PATCH 3) — menunggu deploy dan production retest.** Local browser retest membuktikan nilai fisik `2` tetap `2` setelah fokus berpindah ke field alasan. Dua dokumen opname gagal selama audit sudah dibatalkan dan tetap dipertahankan sebagai jejak audit.
+
+### HPP-01 — Total biaya bahan tidak bereaksi dan jumlah desimal tidak stabil
+
+- Severity: **High**
+- Bukti: jumlah `1` dan harga satuan `100000` tetap menampilkan total `Rp 0` pada UI production.
+- Perbaikan: kalkulasi HPP dipusatkan dalam fungsi teruji; input jumlah, harga satuan, yield, biaya tambahan, dan parameter marketplace disinkronkan melalui `onInput` serta `onBlur`.
+- Dukungan desimal: input jumlah dan harga memakai `step="any"` dan `inputMode="decimal"`, sehingga nilai seperti `1.5 Kg` didukung.
+- Verifikasi local browser: `1.5 × Rp100.000` menghasilkan total baris dan subtotal `Rp150.000`.
+- Regression test: 3 test HPP baru lulus; total suite menjadi 30 test.
+- Status: **FIXED LOCALLY — menunggu deploy dan production retest.**
