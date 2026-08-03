@@ -49,7 +49,7 @@ import {
 import { sections, popularArticles } from "./data/helpData";
 import { downloadExcel } from "./utils/exportExcel";
 import { downloadPDF } from "./utils/exportPdf";
-import { calculateHppCosts, isDecimalDraft, materialLineCost, nonNegativeNumber } from "./utils/hpp";
+import { calculateHppCosts, isDecimalDraft, materialLineCost, nonNegativeNumber, normalizeDecimalDraft } from "./utils/hpp";
 import type {
   AppData,
   Channel,
@@ -90,7 +90,7 @@ type Page =
   | "suppliers";
 
 const normalizeNumberInput = (input: HTMLInputElement) => {
-  input.value = input.value.replace(/^0+(?=\d)/, "");
+  input.value = normalizeDecimalDraft(input.value);
   return input.value;
 };
 
@@ -107,8 +107,9 @@ function DecimalInput({ value, onValue, label }: { value: number; onValue: (valu
     onInput={(event) => {
       const next = event.currentTarget.value;
       if (!isDecimalDraft(next)) return;
-      setDraft(next);
-      onValue(nonNegativeNumber(next));
+      const normalized = normalizeDecimalDraft(next);
+      setDraft(normalized);
+      onValue(nonNegativeNumber(normalized));
     }}
     onBlur={() => {
       const normalized = nonNegativeNumber(draft);

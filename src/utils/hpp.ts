@@ -7,6 +7,15 @@ export const nonNegativeNumber = (value: unknown) => {
 
 export const isDecimalDraft = (value: string) => /^\d*(?:[.,]\d*)?$/.test(value);
 
+export const normalizeDecimalDraft = (value: string) => {
+  if (!value) return "";
+  const separatorIndex = value.search(/[.,]/);
+  const integerPart = separatorIndex >= 0 ? value.slice(0, separatorIndex) : value;
+  const separatorAndFraction = separatorIndex >= 0 ? value.slice(separatorIndex) : "";
+  const normalizedInteger = (integerPart || "0").replace(/^0+(?=\d)/, "");
+  return `${normalizedInteger}${separatorAndFraction}`;
+};
+
 export const materialLineCost = (material: Pick<HppMaterial, "quantity" | "unitCost">) =>
   nonNegativeNumber(material.quantity) * nonNegativeNumber(material.unitCost);
 

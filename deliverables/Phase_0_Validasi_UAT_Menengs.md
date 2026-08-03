@@ -123,8 +123,9 @@ Status gate: **IN PROGRESS — retest opname menunggu deployment patch.**
 - Bukti: jumlah `1` dan harga satuan `100000` tetap menampilkan total `Rp 0` pada UI production.
 - Perbaikan: kalkulasi HPP dipusatkan dalam fungsi teruji; input desimal menggunakan draft teks sehingga nilai sementara seperti `1.` tidak dinormalisasi saat pengguna masih mengetik dan posisi kursor tetap stabil.
 - Dukungan desimal: input menerima titik maupun koma, sehingga `1.5 Kg` dan `1,5 Kg` sama-sama dihitung sebagai 1,5 Kg.
+- Normalisasi angka: seluruh input numerik menghapus nol tidak bermakna di depan (`02222` → `2222`, `00.5` → `0.5`) tanpa merusak nilai desimal yang valid.
 - Verifikasi local browser: `1.5 × Rp100.000` menghasilkan total baris dan subtotal `Rp150.000`.
-- Regression test: 4 test HPP baru lulus; total suite menjadi 31 test.
+- Regression test: normalisasi angka dan kalkulasi HPP tercakup; total suite menjadi 32 test.
 - Status: **FIXED LOCALLY — menunggu deploy dan production retest.**
 
 ### SHIP-01 — Packing bergantung pada identifikasi pola resi

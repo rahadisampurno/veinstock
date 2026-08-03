@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calculateHppCosts, isDecimalDraft, materialLineCost, nonNegativeNumber } from "./hpp";
+import { calculateHppCosts, isDecimalDraft, materialLineCost, nonNegativeNumber, normalizeDecimalDraft } from "./hpp";
 
 describe("HPP calculations", () => {
   it("calculates a material line using decimal quantities", () => {
@@ -11,6 +11,14 @@ describe("HPP calculations", () => {
     expect(isDecimalDraft("1,5")).toBe(true);
     expect(isDecimalDraft("1.2.3")).toBe(false);
     expect(nonNegativeNumber("1,5")).toBe(1.5);
+  });
+
+  it("removes leading zeroes without breaking decimal values", () => {
+    expect(normalizeDecimalDraft("02222")).toBe("2222");
+    expect(normalizeDecimalDraft("000")).toBe("0");
+    expect(normalizeDecimalDraft("00.5")).toBe("0.5");
+    expect(normalizeDecimalDraft("0,5")).toBe("0,5");
+    expect(normalizeDecimalDraft("1.")).toBe("1.");
   });
 
   it("calculates subtotals and HPP per yield", () => {
