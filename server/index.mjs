@@ -768,7 +768,6 @@ async function currentUser(conn,auth){
 // snapshot endpoint.  A POS or transfer action must be calculated on the
 // server's latest committed data, not on a potentially stale browser copy.
 const commandId = prefix => `${prefix}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
-const shippingCarriers = ['SPX Express', 'J&T Express', 'JNE', 'SiCepat', 'AnterAja', 'Ninja Xpress', 'Lainnya'];
 const detectShippingCarrier = trackingNumber => {
   const value = String(trackingNumber || '').trim().toUpperCase().replace(/[\s._-]/g, '');
   if (/^SPX/.test(value)) return 'SPX Express';
@@ -1257,14 +1256,10 @@ app.post('/api/commands/shipping/ready', requireAuth, async (req, res) => {
     if (!authorization.allowed) throw forbiddenCommand(authorization.reason);
     if (!state.locations.some(location => location.id === locationId && location.active !== false)) throw invalidCommand('Lokasi packing tidak aktif atau tidak ditemukan.');
     if (!/^[A-Z0-9][A-Z0-9._-]{5,79}$/.test(trackingNumber)) throw invalidCommand('Nomor resi tidak valid. Periksa kembali hasil scan.');
-    const requestedCarrier = String(req.body?.carrier || '').trim();
     const detectedCarrier = detectShippingCarrier(trackingNumber);
-    // Pola yang dikenali selalu menang agar pilihan fallback tidak dapat
-    // mengubah resi SPX menjadi JNE secara keliru. Pilihan manual hanya dipakai
-    // untuk format resi yang memang belum dikenali.
-    const carrier = detectedCarrier || (requestedCarrier && requestedCarrier !== 'auto' ? requestedCarrier : null);
-    if (!carrier) throw invalidCommand('Ekspedisi resi ini belum dapat dikenali otomatis. Pilih ekspedisi manual lalu scan ulang.');
-    if (!shippingCarriers.includes(carrier)) throw invalidCommand('Pilihan ekspedisi tidak valid.');
+    // Packing tidak boleh gagal hanya karena pola resi ekspedisi berubah.
+    // Ekspedisi final ditetapkan saat paket masuk ke batch serah terima.
+    const carrier = detectedCarrier || 'Belum ditentukan';
     const existing = state.shipments.find(item => item.trackingNumber === trackingNumber);
     if (existing) throw invalidCommand(existing.status === 'handed_over' ? 'Resi ini sudah diserahkan ke ekspedisi.' : 'Resi ini sudah tercatat pada proses pengiriman.');
     state.shipments.unshift({
@@ -1289,7 +1284,6 @@ app.post('/api/commands/shipping/handover/scan', requireAuth, async (req, res) =
     if (!shipment) throw invalidCommand('Resi belum tercatat sebagai paket siap diangkut.');
     if (shipment.locationId !== locationId) throw invalidCommand('Resi berasal dari lokasi packing yang berbeda.');
     if (shipment.status !== 'ready') throw invalidCommand(shipment.status === 'handed_over' ? 'Resi sudah pernah diserahkan ke ekspedisi.' : 'Resi sudah dipindai dalam batch serah terima.');
-    if (shipment.carrier !== carrier && shipment.carrier !== 'Lainnya') throw invalidCommand(`Resi tercatat untuk ${shipment.carrier}, bukan ${carrier}.`);
     let batch = state.shipmentHandovers.find(item => item.batchCode === batchCode);
     if (!batch) {
       batch = { id: commandId('hnd'), batchCode, carrier, locationId, status: 'draft', createdAt: new Date().toISOString(), createdBy: actor.id };
@@ -1298,6 +1292,7 @@ app.post('/api/commands/shipping/handover/scan', requireAuth, async (req, res) =
     if (batch.status !== 'draft' || batch.locationId !== locationId || batch.carrier !== carrier) throw invalidCommand('Batch serah terima tidak sesuai atau sudah selesai.');
     shipment.status = 'handover_scanned';
     shipment.handoverBatchCode = batchCode;
+    shipment.carrier = carrier;
   });
 });
 

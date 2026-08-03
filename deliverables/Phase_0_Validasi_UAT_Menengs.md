@@ -126,3 +126,12 @@ Status gate: **IN PROGRESS — retest opname menunggu deployment patch.**
 - Verifikasi local browser: `1.5 × Rp100.000` menghasilkan total baris dan subtotal `Rp150.000`.
 - Regression test: 4 test HPP baru lulus; total suite menjadi 31 test.
 - Status: **FIXED LOCALLY — menunggu deploy dan production retest.**
+
+### SHIP-01 — Packing bergantung pada identifikasi pola resi
+
+- Severity: **High**
+- Bukti: resi SiCepat yang valid dapat ditolak ketika format nomornya tidak cocok dengan pola deteksi internal.
+- Perbaikan: menu Identifikasi ekspedisi dihapus dari tahap Packing. Resi dengan format valid selalu dapat dicatat sebagai Siap Diangkut; jika pola tidak dikenal, ekspedisi sementara menjadi `Belum ditentukan`.
+- Serah terima: ekspedisi final mengikuti pilihan Ekspedisi Batch dan disimpan pada resi saat scan checkpoint kedua.
+- Regression test: resi berpola tidak dikenal berhasil dicatat, dimasukkan ke batch SiCepat, dan diselesaikan sebagai SiCepat.
+- Status: **FIXED LOCALLY — menunggu deploy dan production retest.**
