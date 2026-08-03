@@ -1,9 +1,11 @@
 import type { HppAdditionalCost, HppMaterial } from "../types";
 
 export const nonNegativeNumber = (value: unknown) => {
-  const parsed = Number(value);
+  const parsed = Number(typeof value === "string" ? value.replace(",", ".") : value);
   return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
 };
+
+export const isDecimalDraft = (value: string) => /^\d*(?:[.,]\d*)?$/.test(value);
 
 export const materialLineCost = (material: Pick<HppMaterial, "quantity" | "unitCost">) =>
   nonNegativeNumber(material.quantity) * nonNegativeNumber(material.unitCost);

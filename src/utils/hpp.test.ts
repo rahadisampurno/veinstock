@@ -1,9 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { calculateHppCosts, materialLineCost } from "./hpp";
+import { calculateHppCosts, isDecimalDraft, materialLineCost, nonNegativeNumber } from "./hpp";
 
 describe("HPP calculations", () => {
   it("calculates a material line using decimal quantities", () => {
     expect(materialLineCost({ quantity: 1.5, unitCost: 100_000 })).toBe(150_000);
+  });
+
+  it("keeps valid decimal drafts and accepts Indonesian decimal commas", () => {
+    expect(isDecimalDraft("1.")).toBe(true);
+    expect(isDecimalDraft("1,5")).toBe(true);
+    expect(isDecimalDraft("1.2.3")).toBe(false);
+    expect(nonNegativeNumber("1,5")).toBe(1.5);
   });
 
   it("calculates subtotals and HPP per yield", () => {
