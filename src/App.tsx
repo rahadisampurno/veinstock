@@ -4680,7 +4680,7 @@ function ReceiptModal({ data, receipt, close, save, uploadImage, prefillLocation
                 type="number"
                 min="1"
                 value={String(selectedItems[receipt.variantId]?.quantity || 1)}
-                onChange={(e) => { const quantity = Number(e.currentTarget.value.replace(/^0+(?=\d)/, '')) || 0; setSelectedItems((current) => ({...current, [receipt.variantId]: { ...current[receipt.variantId], quantity }})); }}
+                onInput={(e) => { const quantity = Number(e.currentTarget.value.replace(/^0+(?=\d)/, '')) || 0; setSelectedItems((current) => ({...current, [receipt.variantId]: { ...current[receipt.variantId], quantity }})); }}
               />
             </Field>
             <Field label={`Harga modal per ${variants.find((v:any) => v.id === receipt.variantId)?.unit || "unit"}`}>
@@ -4688,7 +4688,7 @@ function ReceiptModal({ data, receipt, close, save, uploadImage, prefillLocation
                 type="number"
                 min="0"
                 value={String(selectedItems[receipt.variantId]?.unitCost || 0)}
-                onChange={(e) => { const unitCost = Number(e.currentTarget.value.replace(/^0+(?=\d)/, '')) || 0; setSelectedItems((current) => ({...current, [receipt.variantId]: { ...current[receipt.variantId], unitCost }})); }}
+                onInput={(e) => { const unitCost = Number(e.currentTarget.value.replace(/^0+(?=\d)/, '')) || 0; setSelectedItems((current) => ({...current, [receipt.variantId]: { ...current[receipt.variantId], unitCost }})); }}
               />
             </Field>
           </div>
@@ -4736,10 +4736,10 @@ function ReceiptModal({ data, receipt, close, save, uploadImage, prefillLocation
                     <div key={vid} className="form-grid" style={{ background: '#f8fafc', padding: 12, borderRadius: 6, marginBottom: 8, border: '1px solid #e2e8f0' }}>
                       <div style={{ gridColumn: '1 / -1', fontSize: 13 }}><b>{v.productName} · {v.name}</b></div>
                       <Field label={`Jumlah (${v.unit})`}>
-                         <input type="number" min="1" value={String(item.quantity)} onChange={e => { const quantity = Number(e.currentTarget.value.replace(/^0+(?=\d)/, '')) || 0; setSelectedItems((current) => ({...current, [vid]: { ...current[vid], quantity }})); }} style={{ background: 'white' }} />
+                         <input type="number" min="1" value={String(item.quantity)} onInput={e => { const quantity = Number(e.currentTarget.value.replace(/^0+(?=\d)/, '')) || 0; setSelectedItems((current) => ({...current, [vid]: { ...current[vid], quantity }})); }} style={{ background: 'white' }} />
                       </Field>
                       <Field label="Harga Modal">
-                         <input type="number" min="0" value={String(item.unitCost)} onChange={e => { const unitCost = Number(e.currentTarget.value.replace(/^0+(?=\d)/, '')) || 0; setSelectedItems((current) => ({...current, [vid]: { ...current[vid], unitCost }})); }} style={{ background: 'white' }} />
+                         <input type="number" min="0" value={String(item.unitCost)} onInput={e => { const unitCost = Number(e.currentTarget.value.replace(/^0+(?=\d)/, '')) || 0; setSelectedItems((current) => ({...current, [vid]: { ...current[vid], unitCost }})); }} style={{ background: 'white' }} />
                       </Field>
                     </div>
                   );
@@ -4875,7 +4875,7 @@ function ReturnModal({ data, close, save, uploadImage }: any) {
                 <div key={vid} style={{ background: '#f8fafc', padding: 12, borderRadius: 6, marginBottom: 8, border: '1px solid #e2e8f0' }}>
                   <div style={{ fontSize: 13, marginBottom: 8 }}><b>{v.productName} · {v.name}</b></div>
                   <Field label={`Jumlah (${v.unit})`}>
-                     <input type="number" min="1" value={String(item.quantity)} onChange={e => { const quantity = Number(e.currentTarget.value.replace(/^0+(?=\d)/, '')) || 0; setSelectedItems((current) => ({...current, [vid]: { quantity }})); }} style={{ background: 'white' }} />
+                     <input type="number" min="1" value={String(item.quantity)} onInput={e => { const quantity = Number(e.currentTarget.value.replace(/^0+(?=\d)/, '')) || 0; setSelectedItems((current) => ({...current, [vid]: { quantity }})); }} style={{ background: 'white' }} />
                   </Field>
                 </div>
               );
@@ -5129,7 +5129,7 @@ function TransferModal({ data, close, save, uploadImage, fixedFrom, initialFrom,
                 <div key={vid} className={exceedsStock ? "transfer-item-invalid" : ""} style={{ background: '#f8fafc', padding: 12, borderRadius: 6, marginBottom: 8, border: '1px solid #e2e8f0' }}>
                   <div style={{ fontSize: 13, marginBottom: 8 }}><b>{v.productName} · {v.name}</b></div>
                   <Field label={`Jumlah (${v.unit})`}>
-                     <input className={exceedsStock ? "invalid" : ""} type="number" min="1" max={available} value={String(item.quantity)} onChange={e => { const quantity = Number(e.currentTarget.value.replace(/^0+(?=\d)/, '')) || 0; setSelectedItems((current) => ({...current, [vid]: { quantity }})); }} style={{ background: 'white' }} />
+                     <input className={exceedsStock ? "invalid" : ""} type="number" min="1" max={available} value={String(item.quantity)} onInput={e => { const quantity = Number(e.currentTarget.value.replace(/^0+(?=\d)/, '')) || 0; setSelectedItems((current) => ({...current, [vid]: { quantity }})); }} style={{ background: 'white' }} />
                   </Field>
                   <small className={exceedsStock ? "transfer-stock-error" : "transfer-stock-limit"}>{exceedsStock ? `Jumlah melebihi stok tersedia (${qty(available, v.unit)}).` : `Maksimum yang dapat ditransfer: ${qty(available, v.unit)}.`}</small>
                 </div>
@@ -5645,7 +5645,7 @@ function OpnameModal({ data, item, close, save, fixedLocation }: any) {
                   <div className="opname-item-head"><div><b>{v.productName} · {v.name}</b><small>Stok sistem: {qty(getBalance(data.balances, loc, v.id), v.unit)}</small></div><span className={selectedItem.actualQty - getBalance(data.balances, loc, v.id) === 0 ? "status ok" : "status wait"}>{selectedItem.actualQty - getBalance(data.balances, loc, v.id) === 0 ? "Sesuai" : `Selisih ${selectedItem.actualQty - getBalance(data.balances, loc, v.id) > 0 ? "+" : ""}${qty(selectedItem.actualQty - getBalance(data.balances, loc, v.id), v.unit)}`}</span></div>
                   <div className="form-grid">
                   <Field label={`Stok fisik (${v.unit})`}>
-                     <input type="number" min="0" value={String(selectedItem.actualQty)} onChange={e => { const actualQty = Number(e.currentTarget.value.replace(/^0+(?=\d)/, '')) || 0; setSelectedItems((current) => ({...current, [vid]: { ...current[vid], actualQty }})); }} style={{ background: 'white' }} />
+                     <input type="number" min="0" value={String(selectedItem.actualQty)} onInput={e => { const actualQty = Number(e.currentTarget.value.replace(/^0+(?=\d)/, '')) || 0; setSelectedItems((current) => ({...current, [vid]: { ...current[vid], actualQty }})); }} style={{ background: 'white' }} />
                   </Field>
                   <Field label="Alasan / catatan">
                      <textarea required value={selectedItem.reason} onChange={e => { const reason = e.currentTarget.value; setSelectedItems((current) => ({...current, [vid]: { ...current[vid], reason }})); }} style={{ background: 'white' }} />
