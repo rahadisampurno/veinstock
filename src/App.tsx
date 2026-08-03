@@ -86,6 +86,11 @@ type Page =
   | "pricing"
   | "suppliers";
 
+const normalizeNumberInput = (input: HTMLInputElement) => {
+  input.value = input.value.replace(/^0+(?=\d)/, "");
+  return input.value;
+};
+
 /**
  * Ikon navigasi Menengs dibuat khusus sebagai SVG inline agar konsisten dengan
  * karakter brand dan tetap tajam pada rail kecil maupun menu desktop.
@@ -334,6 +339,14 @@ function App() {
   // Data transaksi selalu dimuat dari server setelah autentikasi. localStorage
   // tidak lagi dipakai sebagai sumber data operasional.
   const [data, setDataState] = useState<AppData>(() => normalizeData(seedData));
+  useEffect(() => {
+    const preventLeadingZeroes = (event: Event) => {
+      const input = event.target;
+      if (input instanceof HTMLInputElement && input.type === "number") normalizeNumberInput(input);
+    };
+    document.addEventListener("input", preventLeadingZeroes, true);
+    return () => document.removeEventListener("input", preventLeadingZeroes, true);
+  }, []);
   const [authUser, setAuthUser] = useState<SessionUser | null>(
     () => readSession()?.user || null,
   );
@@ -645,6 +658,10 @@ function App() {
     const result = await response.json().catch(() => ({}));
     if (!response.ok)
       throw new Error(result.message || "Gagal memperbarui pengguna");
+    const linkedEmployee = (dataRef.current.employees || []).find((employee:any) => employee.userId === id);
+    if (linkedEmployee && payload.role) {
+      await runCommand(`/api/commands/employees/${linkedEmployee.id}`, { employee: { ...linkedEmployee, position: accessRoleLabel(payload.role) } }, "PATCH");
+    }
     applyLocalData((current) => ({
       ...current,
       users: current.users.map((item) =>
@@ -757,7 +774,7 @@ function App() {
     {
       group: "Karyawan",
       items: [
-        ["employees", "Karyawan", Users],
+        ["employees", "Tim & Akses", Users],
         ["attendance", "Kehadiran", Clock3],
         ["loans", "Kasbon & Penggajian", WalletCards]
       ]
@@ -772,7 +789,6 @@ function App() {
       group: "Pengaturan",
       items: [
         ["business", "Profil Usaha", Settings],
-        ["users", "Pengguna & Akses", Users],
         ["help", "Pusat Bantuan", LifeBuoy]
       ]
     }
@@ -790,9 +806,9 @@ function App() {
     history: "Histori Pergerakan Stok",
     reports: "Laporan Usaha",
     business: "Profil Bisnis & Organisasi",
-    users: "Manajemen Akses & Pengguna",
+    users: "Tim & Akses",
     analytics: "Analisis Kinerja Bisnis",
-    employees: "Karyawan",
+    employees: "Tim & Akses",
     attendance: "Kehadiran Karyawan",
     loans: "Kasbon & Penggajian",
     pricing: "Kalkulator HPP & Marketplace",
@@ -1015,6 +1031,7 @@ function App() {
             <Transfers
               data={data}
               runCommand={runCommand}
+              uploadImage={uploadImage}
               variants={variantMap}
               locations={locationMap}
               role={user.role}
@@ -1110,15 +1127,7 @@ function App() {
           {page === "business" && (
             <BusinessPage data={data} open={() => setModal("business")} />
           )}
-          {page === "users" && (
-            <UsersPage
-              data={data}
-              currentUser={user}
-              open={() => setModal("user")}
-              edit={(id: string) => setModal(`user:${id}`)}
-            />
-          )}
-          {page === "employees" && <EmployeesPage data={data} locations={locationMap} open={() => setModal("employee")} edit={(id:string) => setModal(`employee:${id}`)} />}
+          {(page === "employees" || page === "users") && <EmployeesPage data={data} locations={locationMap} open={() => setModal("user")} editAccess={(id:string) => setModal(`user:${id}`)} editEmployee={(id:string) => setModal(`employee:${id}`)} completeEmployee={(userId:string) => setModal(`employee-link:${userId}`)} />}
           {page === "attendance" && <AttendancePage data={data} user={user} runCommand={runCommand} notify={notify} />}
           {page === "loans" && <LoansPage data={data} locations={locationMap} open={() => setModal("loan")} openPayrollPayment={(employeeId:string) => setModal(`payroll:${employeeId}`)} confirmInstallment={(loan:any, employeeName:string) => setConfirm({ message: `Tandai 1 cicilan kasbon ${employeeName} sebesar ${money(loan.installmentAmount)} sebagai sudah dibayar? Tindakan ini akan memperbarui sisa cicilan.`, onConfirm: async () => { try { await runCommand(`/api/commands/loans/${loan.id}/installments`, {}); setConfirm(null); notify("Satu cicilan kasbon berhasil ditandai dibayar."); } catch (error:any) { notify(error.message || "Cicilan kasbon gagal diperbarui."); } } })} />}
           {page === "help" && <HelpPage initialSection={helpSection} clearInitialSection={() => setHelpSection(null)} />}
@@ -1126,6 +1135,7 @@ function App() {
         </div>
       </main>
       {modal === "employee" && <EmployeeModal data={data} close={() => setModal(null)} createAccount={createEmployeeAccount} save={async (employee: any) => { await runCommand("/api/commands/employees", { employee }); setModal(null); notify(employee.locationId ? "Akun dan penugasan karyawan berhasil disimpan." : "Akun karyawan berhasil dibuat. Tetapkan lokasi kerja sebelum absensi dapat dilakukan."); }} />}
+      {modal?.startsWith("employee-link:") && (() => { const initialUserId = modal.slice("employee-link:".length); return data.users.some((item:any) => item.id === initialUserId) ? <EmployeeModal data={data} initialUserId={initialUserId} close={() => setModal(null)} save={async (employee:any) => { await runCommand("/api/commands/employees", { employee }); setModal(null); notify("Data kerja staf berhasil dilengkapi dan sudah masuk penggajian."); }} /> : null; })()}
       {modal?.startsWith("employee:") && (() => { const employee = (data.employees || []).find((item:any) => item.id === modal.slice("employee:".length)); return employee ? <EmployeeModal data={data} employee={employee} close={() => setModal(null)} save={async (next:any) => { await runCommand(`/api/commands/employees/${next.id}`, { employee: next }, "PATCH"); setModal(null); notify(next.locationId ? "Penugasan karyawan berhasil diperbarui." : "Karyawan belum ditugaskan ke lokasi kerja."); }} /> : null; })()}
       {modal === "loan" && <LoanModal data={data} close={() => setModal(null)} save={async (loan: any) => { await runCommand("/api/commands/loans", { loan }); setModal(null); notify("Kasbon berhasil dicatat sebagai pengingat owner."); }} />}
       {modal === "supplier" && <SupplierModal close={() => setModal(null)} save={async (supplier:any) => { await runCommand("/api/commands/suppliers", { supplier }); setModal(null); notify("Supplier berhasil disimpan."); }} />}
@@ -1246,6 +1256,7 @@ function App() {
             <ReceiptModal
               data={data}
               receipt={receipt}
+              uploadImage={uploadImage}
               prefillLocationId={notificationIntent?.modal === "receipt" ? notificationIntent.locationId : undefined}
               prefillVariantId={notificationIntent?.modal === "receipt" ? notificationIntent.variantId : undefined}
               close={() => setModal(null)}
@@ -1284,6 +1295,7 @@ function App() {
       {modal === "return" && (
         <ReturnModal
           data={data}
+          uploadImage={uploadImage}
           close={() => setModal(null)}
           save={async (form: any) => {
             if (!form.reason?.trim() || form.items.length === 0)
@@ -1360,15 +1372,16 @@ function App() {
       {modal === "transfer" && (
         <TransferModal
           data={data}
+          uploadImage={uploadImage}
           close={() => setModal(null)}
           fixedFrom={user.role === "pic" ? user.outletId : undefined}
           initialTo={notificationIntent?.modal === "transfer" ? notificationIntent.locationId : undefined}
           initialVariantId={notificationIntent?.modal === "transfer" ? notificationIntent.variantId : undefined}
-          save={async (f: string, t: string, items: { variantId: string, quantity: number }[]) => {
+          save={async (f: string, t: string, items: { variantId: string, quantity: number }[], sendProofUrl?: string) => {
             if (f === t || items.length === 0)
               return notify("Pilih lokasi berbeda dan minimal satu produk");
             try {
-              await runCommand("/api/commands/transfers", { fromId: f, toId: t, items });
+              await runCommand("/api/commands/transfers", { fromId: f, toId: t, items, sendProofUrl });
               setModal(null);
               notify("Transfer dibuat dan menunggu konfirmasi outlet");
             } catch (error) {
@@ -2462,11 +2475,14 @@ function SuppliersPage({ data, open, edit }: any) {
     <div className="table-wrap"><table><thead><tr><th>Supplier</th><th>Kontak</th><th>Alamat</th><th>Dokumen penerimaan</th><th>Status</th><th>Aksi</th></tr></thead><tbody>{suppliers.length ? suppliers.map((supplier:any) => <tr key={supplier.id}><td><b>{supplier.name}</b></td><td>{supplier.phone || "-"}</td><td>{supplier.address || "-"}</td><td>{receiptCount(supplier.id)} dokumen</td><td><span className={`status ${supplier.active ? "ok" : "danger"}`}>{supplier.active ? "Aktif" : "Nonaktif"}</span></td><td><button className="table-action" onClick={() => edit(supplier.id)}>Atur</button></td></tr>) : <Empty text="Belum ada supplier. Tambahkan supplier sebelum mencatat pembelian." />}</tbody></table></div>
   </PageBlock>;
 }
-function EmployeesPage({ data, locations, open, edit }: any) {
+function EmployeesPage({ data, locations, open, editAccess, editEmployee, completeEmployee }: any) {
+  const accounts = data.users.filter((account:any) => account.role !== "owner");
   const employees = data.employees || [];
-  return <PageBlock title="Karyawan" desc="Buat akses login, jabatan, dan penugasan lokasi karyawan dalam satu alur." action="Tambah Karyawan" onAction={open}>
-    <div className="stats-grid compact"><Stat label="Karyawan aktif" value={employees.filter((item:any) => item.active).length} sub="Memiliki akun akses" /><Stat label="Menunggu penugasan" value={employees.filter((item:any) => item.active && !item.locationId).length} sub="Belum dapat absensi" tone="amber" /><Stat label="Estimasi gaji" value={money(employees.filter((item:any) => item.active).reduce((sum:number,item:any) => sum + item.monthlySalary, 0))} sub="Per bulan · belum termasuk kasbon" /></div>
-    <div className="table-wrap"><table><thead><tr><th>Karyawan</th><th>Jabatan</th><th>Lokasi kerja</th><th>Gaji bulanan</th><th>Status</th><th>Aksi</th></tr></thead><tbody>{employees.length ? employees.map((employee:any) => { const account = data.users.find((user:any) => user.id === employee.userId), assigned = Boolean(employee.locationId); return <tr key={employee.id}><td><b>{account?.name || "Akun tidak ditemukan"}</b><small className="block">{account?.email}</small></td><td>{employee.position}</td><td>{assigned ? locations[employee.locationId]?.name || "Lokasi tidak aktif" : <span className="status wait">Belum ditugaskan</span>}</td><td><b>{money(employee.monthlySalary)}</b></td><td><span className={`status ${employee.active && assigned ? "ok" : employee.active ? "wait" : "danger"}`}>{employee.active ? assigned ? "Siap absensi" : "Menunggu lokasi" : "Nonaktif"}</span></td><td><button className="table-action" onClick={() => edit(employee.id)}>Atur</button></td></tr>; }) : <Empty text="Belum ada karyawan. Buat akses login langsung dari menu ini." />}</tbody></table></div>
+  const linkedCount = accounts.filter((account:any) => employees.some((employee:any) => employee.userId === account.id)).length;
+  const payrollEstimate = employees.filter((employee:any) => employee.active).reduce((sum:number, employee:any) => sum + employee.monthlySalary, 0);
+  return <PageBlock title="Tim & Akses" desc="Kelola akun, hak akses, data kerja, absensi, dan penggajian staf dari satu tempat." action="Tambah Staf" onAction={open}>
+    <div className="stats-grid compact"><Stat label="Akun staf aktif" value={accounts.filter((account:any) => account.active).length} sub="Dapat masuk sesuai hak akses" /><Stat label="Data kerja lengkap" value={`${linkedCount}/${accounts.length}`} sub={linkedCount === accounts.length ? "Semua staf masuk penggajian" : `${accounts.length - linkedCount} staf perlu dilengkapi`} tone={linkedCount === accounts.length ? "blue" : "amber"} /><Stat label="Estimasi gaji" value={money(payrollEstimate)} sub="Per bulan · staf aktif" /></div>
+    <div className="table-wrap"><table><thead><tr><th>Staf</th><th>Peran staf</th><th>Lokasi kerja</th><th>Gaji bulanan</th><th>Status</th><th>Aksi</th></tr></thead><tbody>{accounts.length ? accounts.map((account:any) => { const employee = employees.find((item:any) => item.userId === account.id), assigned = Boolean(employee?.locationId); return <tr key={account.id}><td><b>{account.name}</b><small className="block">{account.email}</small></td><td><span className={`status ${account.active ? "ok" : "danger"}`}>{account.active ? accessRoleLabel(account.role) : "Akun nonaktif"}</span></td><td>{employee ? assigned ? locations[employee.locationId]?.name || "Lokasi tidak aktif" : <span className="status wait">Belum ditugaskan</span> : "-"}</td><td><b>{employee ? money(employee.monthlySalary) : "-"}</b></td><td>{employee ? <span className={`status ${employee.active && assigned ? "ok" : employee.active ? "wait" : "danger"}`}>{employee.active ? assigned ? "Siap absensi & gaji" : "Data kerja tanpa lokasi" : "Data kerja nonaktif"}</span> : <span className={`status ${account.active ? "wait" : "danger"}`}>{account.active ? "Lengkapi data kerja" : "Aktifkan akun dahulu"}</span>}</td><td><div className="team-row-actions"><button className="table-action" onClick={() => editAccess(account.id)}>Atur peran</button>{employee ? <button className="table-action" onClick={() => editEmployee(employee.id)}>Atur lokasi & gaji</button> : account.active ? <button className="table-action primary-link" onClick={() => completeEmployee(account.id)}>Lengkapi lokasi & gaji</button> : null}</div></td></tr>; }) : <Empty text="Belum ada staf. Tambahkan akun staf untuk memulai." />}</tbody></table></div>
   </PageBlock>;
 }
 function AttendancePage({ data, user, runCommand, notify }: any) {
@@ -2559,7 +2575,7 @@ function Stock({ data, updateMinimum, variants, role, outletId }: any) {
   const locationRows = data.balances.filter((b: any) => b.locationId === loc);
   const rows = locationRows.filter(
     (b: any) =>
-      `${variants[b.variantId]?.name} ${variants[b.variantId]?.sku}`
+      `${variants[b.variantId]?.productName} ${variants[b.variantId]?.name} ${variants[b.variantId]?.sku} ${variants[b.variantId]?.barcode || ""}`
         .toLowerCase()
         .includes(search.toLowerCase()) &&
       (stockFilter === "all" || (stockFilter === "empty" ? b.quantity === 0 : b.quantity < minimumFor(variants[b.variantId], b.locationId))),
@@ -2589,8 +2605,14 @@ function Stock({ data, updateMinimum, variants, role, outletId }: any) {
     return 0;
   });
 
-  const totalPages = Math.ceil(sortedRows.length / ITEMS_PER_PAGE) || 1;
-  const paginatedRows = sortedRows.slice((page - 1) * ITEMS_PER_PAGE, page * ITEMS_PER_PAGE);
+  const productGroups = Object.values(sortedRows.reduce((groups: Record<string, { name: string; rows: any[] }>, row: any) => {
+    const productName = variants[row.variantId]?.productName || "Produk tanpa nama";
+    if (!groups[productName]) groups[productName] = { name: productName, rows: [] };
+    groups[productName].rows.push(row);
+    return groups;
+  }, {})).sort((a: any, b: any) => a.name.localeCompare(b.name, "id"));
+  const totalPages = Math.ceil(productGroups.length / ITEMS_PER_PAGE) || 1;
+  const paginatedGroups = productGroups.slice((page - 1) * ITEMS_PER_PAGE, page * ITEMS_PER_PAGE) as { name: string; rows: any[] }[];
 
   const Th = ({ col, label }: { col: string; label: string }) => (
     <th style={{ cursor: "pointer", userSelect: "none" }} onClick={() => {
@@ -2676,8 +2698,10 @@ function Stock({ data, updateMinimum, variants, role, outletId }: any) {
             </tr>
           </thead>
           <tbody>
-            {paginatedRows.length ? (
-              paginatedRows.map((b: any) => {
+            {paginatedGroups.length ? (
+              paginatedGroups.flatMap((group) => [
+                <tr className="stock-product-group" key={`group-${group.name}`}><td colSpan={5}><b>{group.name}</b><span>{group.rows.length} varian</span></td></tr>,
+                ...group.rows.map((b: any) => {
                 const v = variants[b.variantId],
                   minimum = minimumFor(v, b.locationId),
                   low = b.quantity > 0 && b.quantity < minimum,
@@ -2685,10 +2709,9 @@ function Stock({ data, updateMinimum, variants, role, outletId }: any) {
                   draftKey = minimumKey(v.id),
                   draftMinimum = minimumDrafts[draftKey] ?? String(minimum);
                 return (
-                  <tr key={`${b.locationId}-${b.variantId}`}>
+                  <tr className="stock-variant-row" key={`${b.locationId}-${b.variantId}`}>
                     <td>
-                      <b>{v.productName}</b>
-                      <small className="block">{v.name}</small>
+                      <b>{v.name}</b>
                     </td>
                     <td>
                       <code>{v.sku}</code>
@@ -2720,7 +2743,7 @@ function Stock({ data, updateMinimum, variants, role, outletId }: any) {
                     </td>
                   </tr>
                 );
-              })
+              })])
             ) : (
               <Empty text="Belum ada saldo stok di lokasi ini." />
             )}
@@ -2730,7 +2753,7 @@ function Stock({ data, updateMinimum, variants, role, outletId }: any) {
       {totalPages > 1 && (
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 0' }}>
           <span style={{ fontSize: 13, color: 'var(--muted)' }}>
-            Menampilkan {(page - 1) * ITEMS_PER_PAGE + 1} - {Math.min(page * ITEMS_PER_PAGE, sortedRows.length)} dari {sortedRows.length} data
+            Menampilkan {(page - 1) * ITEMS_PER_PAGE + 1} - {Math.min(page * ITEMS_PER_PAGE, productGroups.length)} dari {productGroups.length} produk
           </span>
           <div style={{ display: 'flex', gap: 8 }}>
             <button
@@ -2756,6 +2779,7 @@ function Stock({ data, updateMinimum, variants, role, outletId }: any) {
 function Transfers({
   data,
   runCommand,
+  uploadImage,
   variants,
   locations,
   open,
@@ -2818,14 +2842,14 @@ function Transfers({
   const totalPages = Math.ceil(sortedRows.length / ITEMS_PER_PAGE) || 1;
   const paginatedRows = sortedRows.slice((page - 1) * ITEMS_PER_PAGE, page * ITEMS_PER_PAGE);
 
-  const receiveGroups = async (groupsToReceive: any[]) => {
+  const receiveGroups = async (groupsToReceive: any[], receiveProofUrl?: string) => {
     const pending = groupsToReceive.filter((group) => group.items.some((item: any) => item.status === "sent"));
     if (!pending.length) return false;
     try {
       // Each transfer code is an atomic server-side command. A failed document
       // cannot make the client show a received status before the database does.
       for (const group of pending) {
-        await runCommand(`/api/commands/transfers/${encodeURIComponent(group.items[0].transferCode || group.items[0].id)}/receive`, {});
+        await runCommand(`/api/commands/transfers/${encodeURIComponent(group.items[0].transferCode || group.items[0].id)}/receive`, { receiveProofUrl });
       }
       setSelectedCodes([]);
       notify(`${pending.length} dokumen transfer diterima; stok tujuan telah bertambah`);
@@ -2921,30 +2945,37 @@ function Transfers({
         </div>
       )}
     </PageBlock>
-    {receiveVerifyGroup && <TransferReceiveScanner group={receiveVerifyGroup} variants={variants} locations={locations} close={() => setReceiveVerifyGroup(null)} confirm={async () => { if (await receiveGroups([receiveVerifyGroup])) setReceiveVerifyGroup(null); }} />}
+    {receiveVerifyGroup && <TransferReceiveScanner group={receiveVerifyGroup} variants={variants} locations={locations} uploadImage={uploadImage} close={() => setReceiveVerifyGroup(null)} confirm={async (receiveProofUrl?:string) => { if (await receiveGroups([receiveVerifyGroup], receiveProofUrl)) setReceiveVerifyGroup(null); }} />}
   </>);
 }
-function TransferReceiveScanner({ group, variants, locations, close, confirm }: any) {
+function TransferReceiveScanner({ group, variants, locations, uploadImage, close, confirm }: any) {
   const [verified, setVerified] = useState<Record<string, boolean>>({});
   const [saving, setSaving] = useState(false);
+  const [proofFile, setProofFile] = useState<File | null>(null);
+  const [uploadError, setUploadError] = useState("");
   const expectedIds = Array.from(new Set(group.items.map((item: any) => item.variantId))) as string[];
+  const verifiedCount = expectedIds.filter((id: string) => verified[id]).length;
   const complete = expectedIds.every((id: string) => verified[id]);
-  return <Modal title={`Verifikasi ${group.code}`} desc={`Scan setiap jenis varian sebelum menerima transfer dari ${locations[group.fromId]?.name || "lokasi asal"}.`} close={close}>
+  return <Modal className="transfer-receive-modal" title={`Terima transfer ${group.code}`} desc="Cocokkan barang dengan bukti pengiriman sebelum menambah stok tujuan." close={close}>
     <div className="transfer-receive-scanner">
-      <BarcodeScanControl label="Scan varian diterima" onDetected={(value) => {
-        const variant = findVariantByBarcode(Object.values(variants), value);
-        if (!variant || !expectedIds.includes(variant.id)) return false;
-        setVerified((current) => ({ ...current, [variant.id]: true }));
-        return true;
-      }} />
+      <div className="transfer-receive-route"><div><small>DIKIRIM DARI</small><b>{locations[group.fromId]?.name || "Lokasi asal"}</b></div><ArrowRight /><div><small>DITERIMA DI</small><b>{locations[group.toId]?.name || "Lokasi tujuan"}</b></div></div>
+      <section className="transfer-sender-proof"><div className="transfer-receive-section-head"><div><small>BUKTI DARI PENGIRIM</small><b>Foto bukti pengiriman</b></div>{group.sendProofUrl && <a href={group.sendProofUrl} target="_blank" rel="noreferrer">Buka ukuran penuh</a>}</div>{group.sendProofUrl ? <a className="transfer-proof-image" href={group.sendProofUrl} target="_blank" rel="noreferrer"><img src={group.sendProofUrl} alt={`Bukti pengiriman ${group.code}`} /></a> : <div className="transfer-proof-empty"><Camera /><span><b>Pengirim tidak melampirkan foto</b><small>Bukti foto bersifat opsional.</small></span></div>}</section>
+      <div className="transfer-receive-section-head"><div><small>CHECKLIST BARANG</small><b>Centang barang yang sudah diterima</b></div><span>{verifiedCount}/{expectedIds.length} dicentang</span></div>
+      <div className="transfer-check-all">
+        <button type="button" onClick={() => setVerified(Object.fromEntries(expectedIds.map((id) => [id, true])))} disabled={complete}><Check size={15} /> Pilih semua</button>
+        {verifiedCount > 0 && <button type="button" className="clear" onClick={() => setVerified({})}>Batalkan semua</button>}
+      </div>
       <div className="transfer-verify-list">
         {group.items.map((item: any) => {
           const variant = variants[item.variantId];
-          return <div key={item.id} className={verified[item.variantId] ? "verified" : ""}><span>{verified[item.variantId] ? <Check size={16} /> : <PackagePlus size={16} />}</span><b>{variant?.productName} · {variant?.name}</b><small>{qty(item.quantity, variant?.unit)} {verified[item.variantId] ? "· terverifikasi" : "· belum dipindai"}</small></div>;
+          return <label key={item.id} className={verified[item.variantId] ? "verified" : ""}><input type="checkbox" checked={Boolean(verified[item.variantId])} onChange={(event) => setVerified((current) => ({ ...current, [item.variantId]: event.target.checked }))} /><span>{verified[item.variantId] ? <Check size={16} /> : <PackagePlus size={16} />}</span><span className="transfer-check-copy"><b>{variant?.productName} · {variant?.name}</b><small>{qty(item.quantity, variant?.unit)} {verified[item.variantId] ? "· sudah diterima" : "· belum dicentang"}</small></span></label>;
         })}
       </div>
+      <div className="transfer-receive-section-head receive-proof-title"><div><small>BUKTI PENERIMA</small><b>Foto saat barang diterima <em>Opsional</em></b></div></div>
+      <EvidencePhotoPicker file={proofFile} setFile={setProofFile} subject="penerimaan" />
+      {uploadError && <p className="login-error">{uploadError}</p>}
     </div>
-    <footer className="modal-actions"><button type="button" className="secondary" onClick={close}>Batal</button><button type="button" className="primary" disabled={!complete || saving} onClick={() => { setSaving(true); void confirm(); }}><Check />{saving ? "Menerima..." : "Terima transfer"}</button></footer>
+    <footer className="modal-actions"><button type="button" className="secondary" onClick={close}>Batal</button><button type="button" className="primary" disabled={!complete || saving} onClick={async () => { setSaving(true); setUploadError(""); try { const receiveProofUrl = proofFile ? await uploadImage(proofFile) : undefined; await confirm(receiveProofUrl); } catch (error) { setUploadError(error instanceof Error ? error.message : "Bukti penerimaan tidak dapat diunggah."); setSaving(false); } }}><Check />{saving ? "Menerima..." : complete ? "Terima transfer" : `Centang ${expectedIds.filter((id) => !verified[id]).length} varian lagi`}</button></footer>
   </Modal>;
 }
 function Sales({ data, variants, locations, open, cancel, detail, role, outletId, canCancel }: any) {
@@ -3321,19 +3352,21 @@ function HistoryPage({ data, variants, locations, role, outletId }: any) {
   );
 }
 function Reports({ data, variants, locations, notify, role, outletId }: any) {
-  const [period, setPeriod] = useState("month"),
-    [location, setLocation] = useState("all"),
+  const todayKey = jakartaDateKey();
+  const [dateFrom, setDateFrom] = useState(shiftDateKey(todayKey, -29));
+  const [dateTo, setDateTo] = useState(todayKey);
+  const [location, setLocation] = useState("all"),
     [product, setProduct] = useState("all"),
-    [channel, setChannel] = useState("all"),
-    now = Date.now(),
-    start =
-      period === "day"
-        ? now - 864e5
-        : period === "week"
-          ? now - 7 * 864e5
-          : period === "month"
-            ? now - 30 * 864e5
-            : 0;
+    [channel, setChannel] = useState("all");
+  const periodDays = dateFrom && dateTo ? Math.floor((new Date(`${dateTo}T12:00:00Z`).getTime() - new Date(`${dateFrom}T12:00:00Z`).getTime()) / 864e5) + 1 : 0;
+  const reportRangeLabel = !dateFrom && !dateTo ? "Semua tanggal" : dateFrom === dateTo ? new Date(`${dateFrom}T12:00:00`).toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" }) : `${new Date(`${dateFrom}T12:00:00`).toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" })} – ${new Date(`${dateTo}T12:00:00`).toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" })}`;
+  const inPeriod = (createdAt: string) => {
+    const key = jakartaDateKey(createdAt);
+    return (!dateFrom || key >= dateFrom) && (!dateTo || key <= dateTo);
+  };
+  const previousStartKey = periodDays ? shiftDateKey(dateFrom, -periodDays) : "0000-01-01";
+  const previousEndKey = periodDays ? shiftDateKey(dateFrom, -1) : "0000-01-01";
+  const inPreviousPeriod = (createdAt: string) => periodDays > 0 && jakartaDateKey(createdAt) >= previousStartKey && jakartaDateKey(createdAt) <= previousEndKey;
   const isPic = ["pic", "warehouse", "cashier", "admin"].includes(role) && outletId;
   const visibleLocations = isPic
     ? data.locations.filter((item: any) => item.id === outletId)
@@ -3341,49 +3374,90 @@ function Reports({ data, variants, locations, notify, role, outletId }: any) {
   const visibleBalances = isPic
     ? data.balances.filter((item: any) => item.locationId === outletId)
     : data.balances;
-  const sales = data.sales.filter(
-      (s: any) =>
-        s.status !== "cancelled" &&
+  const saleMatchesScope = (s: any) =>
+        s.status !== "voided" && s.status !== "cancelled" &&
         (!isPic || s.locationId === outletId) &&
-        new Date(s.createdAt).getTime() >= start &&
         (location === "all" || s.locationId === location) &&
-        (channel === "all" || s.channel === channel) &&
-        (product === "all" ||
-          s.items.some((i: any) => i.variantId === product)),
-    ),
-    total = sales.reduce((a: number, s: any) => a + s.total, 0),
-    receipts = (data.receipts || []).filter(
+        (channel === "all" || s.channel === channel);
+  const scopedSales = data.sales.filter(saleMatchesScope);
+  const normalizeSale = (sale: any) => {
+    const items = sale.items.filter((item: any) => product === "all" || item.variantId === product);
+    const allItemValue = sale.items.reduce((sum: number, item: any) => sum + Number(item.subtotal ?? (item.price || 0) * item.quantity), 0);
+    const selectedItemValue = items.reduce((sum: number, item: any) => sum + Number(item.subtotal ?? (item.price || 0) * item.quantity), 0);
+    const selectedQuantity = items.reduce((sum: number, item: any) => sum + item.quantity, 0);
+    const allQuantity = sale.items.reduce((sum: number, item: any) => sum + item.quantity, 0);
+    const reportTotal = product === "all"
+      ? Number(sale.total || selectedItemValue)
+      : allItemValue > 0
+        ? Number(sale.total || allItemValue) * (selectedItemValue / allItemValue)
+        : Number(sale.total || 0) * (selectedQuantity / Math.max(1, allQuantity));
+    return { ...sale, items, reportTotal };
+  };
+  const sales = scopedSales.filter((s: any) => inPeriod(s.createdAt)).map(normalizeSale).filter((s: any) => s.items.length);
+  const previousSales = scopedSales.filter((s: any) => inPreviousPeriod(s.createdAt)).map(normalizeSale).filter((s: any) => s.items.length);
+  const total = sales.reduce((sum: number, sale: any) => sum + sale.reportTotal, 0);
+  const previousTotal = previousSales.reduce((sum: number, sale: any) => sum + sale.reportTotal, 0);
+  const revenueChange = previousTotal > 0 ? ((total - previousTotal) / previousTotal) * 100 : null;
+  const cogs = sales.reduce((sum: number, sale: any) => sum + sale.items.reduce((lineSum: number, item: any) => lineSum + item.quantity * Number(item.unitCost || variants[item.variantId]?.cost || 0), 0), 0);
+  const grossProfit = total - cogs;
+  const grossMargin = total > 0 ? grossProfit / total * 100 : 0;
+  const soldUnits = sales.reduce((sum: number, sale: any) => sum + sale.items.reduce((lineSum: number, item: any) => lineSum + item.quantity, 0), 0);
+  const receipts = (data.receipts || []).filter(
       (r: any) =>
         r.status !== "cancelled" &&
         (!isPic || r.locationId === outletId) &&
-        new Date(r.createdAt).getTime() >= start &&
+        inPeriod(r.createdAt) &&
         (location === "all" || r.locationId === location) &&
         (product === "all" || r.variantId === product),
-    ),
-    totalReceipts = receipts.reduce((a: number, r: any) => a + (r.quantity * (r.unitCost || 0)), 0),
-    sold: Record<string, number> = {};
+    );
+  const totalReceipts = receipts.reduce((a: number, r: any) => a + (r.quantity * (r.unitCost || 0)), 0);
+  const sold: Record<string, number> = {};
   sales.forEach((s: any) =>
     s.items.forEach(
       (i: any) => (sold[i.variantId] = (sold[i.variantId] || 0) + i.quantity),
     ),
   );
-  const top = Object.entries(sold).sort((a, b) => b[1] - a[1])[0],
-    stockout = Object.entries(variants)
+  const topVariants = Object.entries(sold).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  const averageTransaction = sales.length ? total / sales.length : 0;
+  const receiptDocuments = new Set(receipts.map((item: any) => item.receiptCode || item.id)).size;
+  const salesAudit = sales.map((sale: any) => {
+    const original = data.sales.find((item: any) => item.id === sale.id) || sale;
+    const lineSubtotal = original.items.reduce((sum: number, item: any) => sum + Number(item.subtotal || 0), 0);
+    const missingCostLines = original.items.filter((item: any) => !Number.isFinite(Number(item.unitCost)) || Number(item.unitCost) < 0).length;
+    const subtotalDifference = Math.abs(Number(original.total || 0) - lineSubtotal);
+    return { id: sale.id, createdAt: sale.createdAt, subtotalDifference, missingCostLines, reconciled: subtotalDifference <= 1, hppComplete: missingCostLines === 0 };
+  });
+  const unreconciledSales = salesAudit.filter((item: any) => !item.reconciled);
+  const incompleteHppSales = salesAudit.filter((item: any) => !item.hppComplete);
+  const revenueQuality = product !== "all" && unreconciledSales.length ? "estimate" : "verified";
+  const hppQuality = incompleteHppSales.length || (total > 0 && cogs > total * 2) ? "review" : "verified";
+  const profitQuality = revenueQuality === "verified" && hppQuality === "verified" ? "verified" : "review";
+  const receiptQuality = receipts.every((item: any) => Number.isFinite(Number(item.quantity)) && Number.isFinite(Number(item.unitCost)) && item.quantity > 0 && item.unitCost >= 0) ? "verified" : "review";
+  const qualityLabel = (quality: "verified" | "estimate" | "review") => quality === "verified" ? "Terverifikasi" : quality === "estimate" ? "Estimasi" : "Perlu diperiksa";
+  const relevantBalances = visibleBalances.filter((balance: any) => (location === "all" || balance.locationId === location) && (product === "all" || balance.variantId === product));
+  const stockValue = relevantBalances.reduce((sum: number, balance: any) => sum + balance.quantity * Number(variants[balance.variantId]?.cost || 0), 0);
+  const retailValue = relevantBalances.reduce((sum: number, balance: any) => sum + balance.quantity * Number(variants[balance.variantId]?.price || 0), 0);
+  const emptyCount = relevantBalances.filter((balance: any) => balance.quantity === 0).length;
+  const lowCount = relevantBalances.filter((balance: any) => balance.quantity > 0 && balance.quantity < minimumFor(variants[balance.variantId], balance.locationId)).length;
+  const returns = (data.returns || []).filter((item: any) => item.status !== "cancelled" && inPeriod(item.createdAt) && (!isPic || item.locationId === outletId) && (location === "all" || item.locationId === location) && (product === "all" || item.variantId === product));
+  const returnQuantity = returns.reduce((sum: number, item: any) => sum + item.quantity, 0);
+  const transfers = (data.transfers || []).filter((item: any) => item.status !== "cancelled" && inPeriod(item.createdAt) && (location === "all" || item.fromId === location || item.toId === location) && (product === "all" || item.variantId === product));
+  const pendingTransfers = transfers.filter((item: any) => item.status === "sent").length;
+  const transferDocuments = new Set(transfers.map((item: any) => item.transferCode || item.id)).size;
+  const stockCounts = (data.stockCounts || []).filter((item: any) => item.status !== "cancelled" && inPeriod(item.createdAt) && (!isPic || item.locationId === outletId) && (location === "all" || item.locationId === location) && (product === "all" || item.variantId === product));
+  const stockDifference = stockCounts.reduce((sum: number, item: any) => sum + item.difference, 0);
+  const oldestReceipt = [...receipts].sort((a: any, b: any) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())[0];
+  const stockout = Object.entries(variants)
+      .filter(([id]) => product === "all" || id === product)
       .map(([id, v]: any) => {
-        const balance = visibleBalances
+        const balance = relevantBalances
             .filter((b: any) => b.variantId === id)
             .reduce((a: number, b: any) => a + b.quantity, 0),
           daily =
             (sold[id] || 0) /
             Math.max(
               1,
-              period === "day"
-                ? 1
-                : period === "week"
-                  ? 7
-                  : period === "month"
-                    ? 30
-                    : 90,
+              periodDays || 90,
             );
         return {
           ...v,
@@ -3395,6 +3469,19 @@ function Reports({ data, variants, locations, notify, role, outletId }: any) {
       .filter((x: any) => x.balance > 0)
       .sort((a: any, b: any) => (a.days ?? 99999) - (b.days ?? 99999))
       .slice(0, 5);
+  const trendDays = periodDays || 30;
+  const trendStartKey = periodDays ? dateFrom : shiftDateKey(todayKey, -(trendDays - 1));
+  const trend = Array.from({ length: trendDays }, (_, index) => {
+    const key = shiftDateKey(trendStartKey, index);
+    return { key, label: new Date(`${key}T12:00:00`).toLocaleDateString("id-ID", { day: "numeric", month: "short" }), Omzet: 0, HPP: 0 };
+  });
+  const trendMap = Object.fromEntries(trend.map((item, index) => [item.key, index]));
+  sales.forEach((sale: any) => {
+    const index = trendMap[jakartaDateKey(sale.createdAt)];
+    if (index === undefined) return;
+    trend[index].Omzet += sale.reportTotal;
+    trend[index].HPP += sale.items.reduce((sum: number, item: any) => sum + item.quantity * Number(item.unitCost || variants[item.variantId]?.cost || 0), 0);
+  });
   const download = async () => {
     // Prepare Sales Data - Detailed per item
     const salesData: any[] = [];
@@ -3409,8 +3496,8 @@ function Reports({ data, variants, locations, notify, role, outletId }: any) {
           variants[item.variantId]?.productName || '-',
           variants[item.variantId]?.name || '-',
           item.quantity,
-          item.price || (s.total / s.items.reduce((a:number, i:any)=>a+i.quantity,0)), // fallback
-          item.quantity * (item.price || (s.total / s.items.reduce((a:number, i:any)=>a+i.quantity,0))), // subtotal
+          item.price || (item.quantity ? item.subtotal / item.quantity : 0),
+          item.subtotal || 0,
           s.payment || '-',
           "Selesai"
         ]);
@@ -3434,7 +3521,48 @@ function Reports({ data, variants, locations, notify, role, outletId }: any) {
       ]);
     });
 
-    await downloadExcel(`Laporan_Menengs_${period}_${new Date().toISOString().slice(0, 10)}`, [
+    const summaryData = [
+      ["Periode", reportRangeLabel],
+      ["Lokasi", location === "all" ? "Semua lokasi" : locations[location]?.name || "-"],
+      ["Produk / varian", product === "all" ? "Semua produk" : `${variants[product]?.productName || "-"} · ${variants[product]?.name || "-"}`],
+      ["Kanal penjualan", channel === "all" ? "Semua kanal" : channel],
+      ["Omzet", total], ["HPP", cogs], ["Estimasi laba kotor", grossProfit], ["Margin kotor", `${grossMargin.toFixed(1)}%`],
+      ["Jumlah transaksi", sales.length], ["Barang terjual", soldUnits], ["Rata-rata transaksi", averageTransaction],
+      ["Nilai pembelian stok", totalReceipts], ["Nilai stok saat ini", stockValue], ["Potensi nilai jual stok", retailValue],
+      ["Varian menipis", lowCount], ["Varian habis", emptyCount], ["Jumlah retur", returns.length], ["Barang diretur", returnQuantity],
+      ["Dokumen transfer", transferDocuments], ["Transfer dalam perjalanan", pendingTransfers], ["Selisih opname", stockDifference],
+    ];
+    await downloadExcel(`Laporan_Menengs_${dateFrom || "awal"}_${dateTo || "sekarang"}`, [
+      {
+        name: "Ringkasan",
+        columns: [{ header: "Metrik", key: "metrik", width: 30 }, { header: "Nilai", key: "nilai", width: 24 }],
+        data: summaryData,
+      },
+      {
+        name: "Audit Metrik",
+        columns: [
+          { header: "Metrik", key: "metrik", width: 24 }, { header: "Sumber Data", key: "sumber", width: 34 },
+          { header: "Rumus", key: "rumus", width: 44 }, { header: "Status", key: "status", width: 20 },
+          { header: "Catatan", key: "catatan", width: 48 },
+        ],
+        data: [
+          ["Omzet", "Transaksi penjualan selesai", "Total transaksi / alokasi subtotal saat varian difilter", qualityLabel(revenueQuality), `${unreconciledSales.length} transaksi tidak rekonsiliasi`],
+          ["HPP", "Snapshot modal baris penjualan", "Jumlah × unitCost saat transaksi", qualityLabel(hppQuality), `${incompleteHppSales.length} transaksi tanpa HPP lengkap`],
+          ["Laba kotor", "Omzet dan HPP", "Omzet − HPP", qualityLabel(profitQuality), "Belum termasuk biaya operasional"],
+          ["Nilai pembelian", "Dokumen stok masuk", "Jumlah × modal penerimaan", qualityLabel(receiptQuality), `${receipts.length} baris penerimaan`],
+          ["Nilai stok", "Saldo dan modal master", "Saldo × modal terbaru", "Estimasi", "Belum menggunakan FIFO/batch"],
+          ["Perkiraan stok habis", "Saldo dan penjualan", "Saldo ÷ rata-rata harian", "Estimasi", "Bukan prediksi kedaluwarsa"],
+        ],
+      },
+      {
+        name: "Anomali Penjualan",
+        columns: [
+          { header: "Tanggal", key: "tanggal", width: 20 }, { header: "ID Transaksi", key: "id", width: 24 },
+          { header: "Selisih Total", key: "selisih", width: 18 }, { header: "Baris HPP Kosong", key: "hpp", width: 18 },
+          { header: "Status Rekonsiliasi", key: "status", width: 22 },
+        ],
+        data: salesAudit.filter((item: any) => !item.reconciled || !item.hppComplete).map((item: any) => [new Date(item.createdAt).toLocaleString("id-ID"), item.id, item.subtotalDifference, item.missingCostLines, item.reconciled && item.hppComplete ? "Sesuai" : "Perlu diperiksa"]),
+      },
       {
         name: "Penjualan Detail",
         columns: [
@@ -3468,6 +3596,30 @@ function Reports({ data, variants, locations, notify, role, outletId }: any) {
           { header: "Status", key: "status", width: 12 }
         ],
         data: receiptsData
+      },
+      {
+        name: "Kondisi Stok",
+        columns: [
+          { header: "Lokasi", key: "lokasi", width: 22 }, { header: "Produk", key: "produk", width: 24 },
+          { header: "Varian", key: "varian", width: 18 }, { header: "Saldo", key: "saldo", width: 12 },
+          { header: "Satuan", key: "satuan", width: 12 }, { header: "Minimum", key: "minimum", width: 12 },
+          { header: "Nilai Modal", key: "modal", width: 18 }, { header: "Potensi Jual", key: "jual", width: 18 },
+          { header: "Status", key: "status", width: 12 },
+        ],
+        data: relevantBalances.map((balance: any) => {
+          const variant = variants[balance.variantId], minimum = minimumFor(variant, balance.locationId);
+          return [locations[balance.locationId]?.name || "-", variant?.productName || "-", variant?.name || "-", balance.quantity, variant?.unit || "unit", minimum, balance.quantity * Number(variant?.cost || 0), balance.quantity * Number(variant?.price || 0), balance.quantity === 0 ? "Habis" : balance.quantity < minimum ? "Menipis" : "Aman"];
+        }),
+      },
+      {
+        name: "Retur",
+        columns: [
+          { header: "Tanggal", key: "tanggal", width: 20 }, { header: "Jenis", key: "jenis", width: 20 },
+          { header: "Lokasi", key: "lokasi", width: 22 }, { header: "Produk", key: "produk", width: 24 },
+          { header: "Varian", key: "varian", width: 18 }, { header: "Jumlah", key: "jumlah", width: 12 },
+          { header: "Alasan", key: "alasan", width: 30 }, { header: "Bukti", key: "bukti", width: 28 },
+        ],
+        data: returns.map((item: any) => [new Date(item.createdAt).toLocaleString("id-ID"), item.type === "customer" ? "Dari pelanggan" : "Ke supplier", locations[item.locationId]?.name || "-", variants[item.variantId]?.productName || "-", variants[item.variantId]?.name || "-", item.quantity, item.reason, item.proofUrl || "-"]),
       }
     ]);
     
@@ -3483,27 +3635,66 @@ function Reports({ data, variants, locations, notify, role, outletId }: any) {
       const { default: html2canvas } = await import("html2canvas");
       const { default: jsPDF } = await import("jspdf");
       
-      const canvas = await html2canvas(element, { scale: 2, useCORS: true, backgroundColor: "#ffffff" });
-      const imgData = canvas.toDataURL("image/png");
-      const pdf = new jsPDF("p", "mm", "a4");
-      const pdfWidth = pdf.internal.pageSize.getWidth();
-      const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
-      
-      // Calculate how many pages we need
-      let heightLeft = pdfHeight;
-      let position = 0;
-      
-      pdf.addImage(imgData, "PNG", 0, position, pdfWidth, pdfHeight);
-      heightLeft -= pdf.internal.pageSize.getHeight();
-      
-      while (heightLeft >= 0) {
-        position = heightLeft - pdfHeight;
-        pdf.addPage();
-        pdf.addImage(imgData, "PNG", 0, position, pdfWidth, pdfHeight);
-        heightLeft -= pdf.internal.pageSize.getHeight();
+      await document.fonts?.ready;
+      const sections = Array.from(element.querySelectorAll<HTMLElement>("[data-pdf-section]"));
+      if (!sections.length) return notify("Bagian laporan tidak ditemukan");
+
+      const pdf = new jsPDF("l", "mm", "a4");
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const marginX = 12;
+      const contentTop = 25;
+      const contentBottom = 13;
+      const contentWidth = pageWidth - marginX * 2;
+      const contentHeight = pageHeight - contentTop - contentBottom;
+      let cursorY = contentTop;
+      let pageNumber = 1;
+
+      const drawPageFrame = () => {
+        pdf.setFillColor(7, 88, 117);
+        pdf.rect(0, 0, pageWidth, 16, "F");
+        pdf.setTextColor(255, 255, 255);
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(12);
+        pdf.text("MENENGS · LAPORAN USAHA", marginX, 10.5);
+        pdf.setFont("helvetica", "normal");
+        pdf.setFontSize(8);
+        pdf.text(reportRangeLabel, pageWidth - marginX, 10.5, { align: "right" });
+        pdf.setTextColor(94, 117, 135);
+        pdf.text(`Halaman ${pageNumber}`, pageWidth - marginX, pageHeight - 5, { align: "right" });
+      };
+
+      drawPageFrame();
+      for (const section of sections) {
+        const canvas = await html2canvas(section, {
+          scale: 1.7,
+          useCORS: true,
+          backgroundColor: "#ffffff",
+          logging: false,
+          windowWidth: Math.max(document.documentElement.clientWidth, 1440),
+          onclone: (clonedDocument) => {
+            clonedDocument.querySelectorAll(".period-popover").forEach((node) => node.remove());
+          },
+        });
+        const naturalHeight = (canvas.height * contentWidth) / canvas.width;
+        const renderHeight = Math.min(naturalHeight, contentHeight);
+        const renderWidth = naturalHeight > contentHeight
+          ? (canvas.width * renderHeight) / canvas.height
+          : contentWidth;
+
+        if (cursorY > contentTop && cursorY + renderHeight > pageHeight - contentBottom) {
+          pdf.addPage();
+          pageNumber += 1;
+          cursorY = contentTop;
+          drawPageFrame();
+        }
+
+        const x = marginX + (contentWidth - renderWidth) / 2;
+        pdf.addImage(canvas.toDataURL("image/jpeg", 0.92), "JPEG", x, cursorY, renderWidth, renderHeight, undefined, "FAST");
+        cursorY += renderHeight + 4;
       }
       
-      pdf.save(`Laporan_Menengs_${period}_${new Date().toISOString().slice(0, 10)}.pdf`);
+      pdf.save(`Laporan_Menengs_${dateFrom || "awal"}_${dateTo || "sekarang"}.pdf`);
       notify("Laporan PDF berhasil diunduh.");
     } catch (err) {
       console.error(err);
@@ -3522,131 +3713,89 @@ function Reports({ data, variants, locations, notify, role, outletId }: any) {
     >
       <div id="report-content" style={{ padding: '16px', backgroundColor: '#fff', borderRadius: '8px' }}>
 
+      <div data-pdf-section><DateRangePicker from={dateFrom} to={dateTo} setFrom={setDateFrom} setTo={setDateTo} initialMode="last30" className="report-period-picker" />
       <div className="filters report-filters">
-        <select value={period} onChange={(e) => setPeriod(e.target.value)}>
-          <option value="day">Hari ini</option>
-          <option value="week">7 hari</option>
-          <option value="month">30 hari</option>
-          <option value="all">Semua waktu</option>
-        </select>
-        <select value={location} onChange={(e) => setLocation(e.target.value)}>
+        <label className="report-filter-field"><span>LOKASI</span><select aria-label="Lokasi laporan" value={location} onChange={(e) => setLocation(e.target.value)}>
           <option value="all">Semua outlet</option>
           {visibleLocations.map((l: any) => (
             <option value={l.id} key={l.id}>
               {l.name}
             </option>
           ))}
-        </select>
-        <select value={product} onChange={(e) => setProduct(e.target.value)}>
+        </select></label>
+        <label className="report-filter-field"><span>PRODUK / VARIAN</span><select aria-label="Produk atau varian laporan" value={product} onChange={(e) => setProduct(e.target.value)}>
           <option value="all">Semua produk</option>
           {Object.entries(variants).map(([id, v]: any) => (
             <option value={id} key={id}>
               {v.productName} · {v.name}
             </option>
           ))}
-        </select>
-        <select value={channel} onChange={(e) => setChannel(e.target.value)}>
+        </select></label>
+        <label className="report-filter-field"><span>KANAL PENJUALAN</span><select aria-label="Kanal penjualan laporan" value={channel} onChange={(e) => setChannel(e.target.value)}>
           <option value="all">Semua kanal</option>
           <option>offline</option>
           <option>online</option>
           <option>reseller</option>
-        </select>
-      </div>
-      <div className="report-hero" style={{display: 'flex', gap: 16}}>
-        <div style={{flex: 1}}>
-          <small>TOTAL PENJUALAN</small>
-          <h2>{money(total)}</h2>
-          <p>{sales.length} transaksi sesuai filter.</p>
+        </select></label>
+      </div></div>
+      <section className="report-overview" data-pdf-section>
+        <div className="report-section-heading"><div><small>RINGKASAN USAHA</small><h3>Kinerja sesuai filter</h3></div><span>{reportRangeLabel}</span></div>
+        <div className="report-kpi-grid">
+          <article className="report-kpi highlight"><span>Omzet penjualan</span><i className={`metric-quality ${revenueQuality}`}>{qualityLabel(revenueQuality)}</i><b>{money(total)}</b><small>{sales.length} transaksi · rata-rata {money(averageTransaction)}</small>{periodDays > 0 && <em className={revenueChange !== null && revenueChange < 0 ? "down" : "up"}>{revenueChange === null ? "Belum ada pembanding" : `${revenueChange >= 0 ? "+" : ""}${revenueChange.toFixed(1)}% dari periode sebelumnya`}</em>}</article>
+          <article className="report-kpi"><span>HPP barang terjual</span><i className={`metric-quality ${hppQuality}`}>{qualityLabel(hppQuality)}</i><b>{money(cogs)}</b><small>Snapshot modal pada {soldUnits.toLocaleString("id-ID")} barang terjual</small></article>
+          <article className={`report-kpi profit ${grossProfit < 0 ? "loss" : ""}`}><span>Estimasi laba kotor</span><i className={`metric-quality ${profitQuality}`}>{qualityLabel(profitQuality)}</i><b>{money(grossProfit)}</b><small>Omzet dikurangi HPP</small><em>{grossMargin.toFixed(1)}% margin kotor</em></article>
+          <article className="report-kpi"><span>Nilai pembelian stok</span><i className={`metric-quality ${receiptQuality}`}>{qualityLabel(receiptQuality)}</i><b>{money(totalReceipts)}</b><small>{receiptDocuments} dokumen · {receipts.length} baris varian</small></article>
         </div>
-        <div style={{flex: 1}}>
-          <small>TOTAL STOK MASUK</small>
-          <h2>{money(totalReceipts)}</h2>
-          <p>{receipts.length} catatan penerimaan barang.</p>
+        <p className={`report-definition ${cogs > total * 2 && total > 0 ? "report-warning" : ""}`}><b>{cogs > total * 2 && total > 0 ? "Periksa data harga modal:" : "Catatan:"}</b> {cogs > total * 2 && total > 0 ? "HPP jauh lebih besar daripada omzet. Pastikan harga modal varian dan transaksi historis sudah benar." : "Laba kotor belum dikurangi gaji, sewa, listrik, biaya marketplace, dan biaya operasional lainnya."}</p>
+      </section>
+
+      <section className="report-panel report-audit-panel" data-pdf-section>
+        <div className="report-section-heading"><div><small>JEJAK AUDIT & KUALITAS DATA</small><h3>Dasar perhitungan laporan</h3></div><span>Diperbarui {new Date().toLocaleString("id-ID", { timeZone: "Asia/Jakarta", dateStyle: "medium", timeStyle: "short" })} WIB</span></div>
+        <div className="report-audit-summary">
+          <article><b>{sales.length - unreconciledSales.length}/{sales.length}</b><span>Transaksi penjualan cocok dengan detail baris</span></article>
+          <article><b>{sales.length - incompleteHppSales.length}/{sales.length}</b><span>Transaksi memiliki snapshot HPP lengkap</span></article>
+          <article><b>{receipts.length}</b><span>Baris penerimaan menjadi sumber nilai pembelian</span></article>
+          <article><b>{data.movements.length}</b><span>Jejak mutasi membentuk saldo stok sistem</span></article>
         </div>
-        <Download />
-      </div>
-      <div className="stats-grid compact">
-        <Stat
-          label="Produk terlaris"
-          value={top ? variants[top[0]]?.name : "Belum ada"}
-          sub={
-            top
-              ? qty(top[1] as number, variants[top[0]]?.unit)
-              : "Belum ada penjualan"
-          }
-        />
-        <Stat
-          label="Nilai stok masuk"
-          value={money(totalReceipts)}
-          sub="Estimasi nilai modal masuk"
-        />
-        <Stat
-          label="Stok tertua"
-          value={
-            data.movements.length
-              ? variants[data.movements[0]?.variantId]
-                  ?.name || "-"
-              : "Belum ada"
-          }
-          sub="Berdasarkan catatan masuk terlama"
-        />
-      </div>
-      <Card title="Perkiraan stok habis">
-        <div className="location-list">
-          {stockout.map((x: any) => (
-            <div key={x.id}>
-              <div>
-                <b>
-                  {x.productName} · {x.name}
-                </b>
-                <span>Saldo {qty(x.balance, x.unit)}</span>
-              </div>
-              <strong>
-                {x.days ? `± ${x.days} hari` : "Belum dapat dihitung"}
-              </strong>
-            </div>
-          ))}
+        <div className="table-wrap report-formula-table"><table><thead><tr><th>Metrik</th><th>Sumber</th><th>Rumus</th><th>Status</th></tr></thead><tbody>
+          <tr><td><b>Omzet</b></td><td>Transaksi penjualan selesai</td><td>Total transaksi; filter varian memakai proporsi subtotal baris</td><td><span className={`metric-quality ${revenueQuality}`}>{qualityLabel(revenueQuality)}</span></td></tr>
+          <tr><td><b>HPP</b></td><td>Snapshot unitCost pada baris penjualan</td><td>Jumlah terjual × modal per unit saat transaksi</td><td><span className={`metric-quality ${hppQuality}`}>{qualityLabel(hppQuality)}</span></td></tr>
+          <tr><td><b>Laba kotor</b></td><td>Omzet dan HPP</td><td>Omzet − HPP; belum termasuk biaya operasional</td><td><span className={`metric-quality ${profitQuality}`}>{qualityLabel(profitQuality)}</span></td></tr>
+          <tr><td><b>Nilai pembelian stok</b></td><td>Dokumen stok masuk</td><td>Jumlah diterima × harga modal penerimaan</td><td><span className={`metric-quality ${receiptQuality}`}>{qualityLabel(receiptQuality)}</span></td></tr>
+          <tr><td><b>Nilai stok saat ini</b></td><td>Saldo sistem dan modal master terbaru</td><td>Saldo saat ini × modal master; belum FIFO/batch</td><td><span className="metric-quality estimate">Estimasi</span></td></tr>
+          <tr><td><b>Perkiraan stok habis</b></td><td>Saldo dan rata-rata penjualan periode</td><td>Saldo ÷ rata-rata penjualan harian</td><td><span className="metric-quality estimate">Estimasi</span></td></tr>
+          <tr><td><b>Retur, transfer, opname</b></td><td>Dokumen operasional tersimpan</td><td>Jumlah dokumen/baris sesuai filter</td><td><span className="metric-quality verified">Terverifikasi sistem</span></td></tr>
+        </tbody></table></div>
+        {(unreconciledSales.length > 0 || incompleteHppSales.length > 0 || hppQuality === "review") && <div className="report-audit-alert"><AlertTriangle /><div><b>Data yang perlu ditindaklanjuti</b><p>{unreconciledSales.length} transaksi memiliki selisih antara total struk dan subtotal baris. {incompleteHppSales.length} transaksi tidak memiliki snapshot HPP lengkap.{hppQuality === "review" && total > 0 && cogs > total * 2 ? " Rasio HPP terhadap omzet juga berada di luar kewajaran dan memerlukan pemeriksaan harga modal." : ""}</p></div></div>}
+      </section>
+
+      <section className="report-panel" data-pdf-section>
+        <div className="report-section-heading"><div><small>TREN PENJUALAN</small><h3>Omzet dibandingkan HPP</h3></div><span>{trendDays} hari</span></div>
+        <div className="report-chart"><ResponsiveContainer width="100%" height={260}><LineChart data={trend}><CartesianGrid strokeDasharray="3 3" stroke="#e5edf1" /><XAxis dataKey="label" tick={{ fontSize: 10 }} /><YAxis tick={{ fontSize: 10 }} tickFormatter={(value) => `${Math.round(value / 1000)}k`} /><RechartsTooltip formatter={(value: any) => money(Number(value))} /><Legend /><Line type="monotone" dataKey="Omzet" stroke="#079bc3" strokeWidth={3} dot={false} /><Line type="monotone" dataKey="HPP" stroke="#f59e0b" strokeWidth={2} dot={false} /></LineChart></ResponsiveContainer></div>
+      </section>
+
+      <section className="report-two-columns" data-pdf-section>
+        <div className="report-panel">
+          <div className="report-section-heading"><div><small>PERFORMA PRODUK</small><h3>Varian terlaris</h3></div></div>
+          <div className="report-ranking">{topVariants.length ? topVariants.map(([id, amount], index) => <div key={id}><i>{index + 1}</i><span><b>{variants[id]?.productName} · {variants[id]?.name}</b><small>{qty(amount as number, variants[id]?.unit)}</small></span></div>) : <p className="report-empty">Belum ada penjualan sesuai filter.</p>}</div>
         </div>
-      </Card>
-      </div>
-    </PageBlock>
-  );
-}
-function UsersPage({ data, currentUser, businessLogo, open, edit }: any) {
-  return (
-    <PageBlock
-      title="Tim Menengs"
-      desc="Akses dibatasi sesuai tanggung jawab masing-masing."
-      action="Tambah Pengguna"
-      onAction={open}
-    >
-      <div className="user-grid">
-        {data.users.map((stored: any) => {
-          const u =
-            stored.id === currentUser.id
-              ? { ...stored, ...currentUser }
-              : stored;
-          return (
-            <article className="clickable-card" key={u.id} onClick={() => edit(u.id)}>
-              <div className={`avatar ${u.role}`}>
-                {u.avatarUrl||(u.role==='owner'&&businessLogo)?<img src={u.avatarUrl||businessLogo} alt={u.name}/>:u.name.slice(0, 2).toUpperCase()}
-              </div>
-              <div>
-                <h3>{u.name}</h3>
-                <p>{u.email}</p>
-                <span className={`status ${u.active ? "ok" : "danger"}`}>
-                  {u.active ? (u.role === "owner" ? "Owner" : u.role === "admin" ? "Admin Cabang" : u.role === "warehouse" ? "Staf Gudang" : u.role === "cashier" ? "Kasir" : u.role === "finance" ? "Keuangan" : u.role === "employee" ? "Karyawan" : "PIC Outlet") : "nonaktif"}
-                </span>
-              </div>
-              <button
-                className="icon-btn user-edit"
-                aria-label={`Edit ${u.name}`}
-              >
-                <Settings />
-              </button>
-            </article>
-          );
-        })}
+        <div className="report-panel">
+          <div className="report-section-heading"><div><small>KESEHATAN PERSEDIAAN</small><h3>Nilai stok saat ini</h3></div><i className="metric-quality estimate">Estimasi</i></div>
+          <div className="report-stock-values"><p><span>Nilai modal persediaan</span><b>{money(stockValue)}</b></p><p><span>Potensi nilai jual</span><b>{money(retailValue)}</b></p><p><span>Varian menipis</span><b className={lowCount ? "stock-low-value" : "positive"}>{lowCount}</b></p><p><span>Varian habis</span><b className={emptyCount ? "negative" : "positive"}>{emptyCount}</b></p></div>
+        </div>
+      </section>
+
+      <section className="report-two-columns" data-pdf-section>
+        <div className="report-panel">
+          <div className="report-section-heading"><div><small>PERKIRAAN PERSEDIAAN</small><h3>Stok yang paling cepat habis</h3></div><i className="metric-quality estimate">Estimasi</i></div>
+          <div className="location-list report-stockout">{stockout.length ? stockout.map((x: any) => <div key={x.id}><div><b>{x.productName} · {x.name}</b><span>Saldo {qty(x.balance, x.unit)}</span></div><strong>{x.days ? `± ${x.days} hari` : "Belum cukup data penjualan"}</strong></div>) : <p className="report-empty">Tidak ada saldo stok sesuai filter.</p>}</div>
+          <p className="report-definition">Estimasi menggunakan rata-rata penjualan pada periode yang dipilih, bukan tanggal kedaluwarsa barang.</p>
+        </div>
+        <div className="report-panel">
+          <div className="report-section-heading"><div><small>KONTROL OPERASIONAL</small><h3>Aktivitas yang perlu diperhatikan</h3></div><i className="metric-quality verified">Terverifikasi sistem</i></div>
+          <div className="report-operations"><p><span>Retur tercatat</span><b>{returns.length} catatan · {returnQuantity.toLocaleString("id-ID")} barang</b></p><p><span>Transfer stok</span><b>{transferDocuments} dokumen</b></p><p><span>Dalam perjalanan</span><b className={pendingTransfers ? "stock-low-value" : "positive"}>{pendingTransfers} baris varian</b></p><p><span>Selisih hasil opname</span><b className={stockDifference < 0 ? "negative" : stockDifference > 0 ? "stock-low-value" : "positive"}>{stockDifference > 0 ? "+" : ""}{stockDifference.toLocaleString("id-ID")}</b></p><p><span>Penerimaan paling lama di periode ini</span><b>{oldestReceipt ? `${variants[oldestReceipt.variantId]?.productName} · ${variants[oldestReceipt.variantId]?.name}` : "Tidak ada"}</b></p></div>
+        </div>
+      </section>
       </div>
     </PageBlock>
   );
@@ -4113,12 +4262,15 @@ function SupplierModal({ supplier, close, save }: any) {
   const submit = async (event:React.FormEvent) => { event.preventDefault(); if (loading || name.trim().length < 2) return; setLoading(true); setError(""); try { await save({ id: supplier?.id || newId("sup"), name: name.trim(), phone: phone.trim() || undefined, address: address.trim() || undefined, active }); } catch (err) { setError(err instanceof Error ? err.message : "Supplier tidak dapat disimpan."); setLoading(false); } };
   return <Modal title={editing ? "Atur supplier" : "Tambah supplier"} desc="Data supplier dipakai untuk menelusuri asal stok masuk dan histori pembelian." close={close}><form onSubmit={submit}><Field label="Nama supplier"><input required minLength={2} value={name} onChange={(event) => setName(event.target.value)} placeholder="Contoh: CV Snack Nusantara" /></Field><Field label="Nomor telepon"><input value={phone} onChange={(event) => setPhone(event.target.value)} placeholder="08xxxxxxxxxx" /></Field><Field label="Alamat"><textarea value={address} onChange={(event) => setAddress(event.target.value)} placeholder="Alamat supplier" /></Field>{editing && <label className="toggle-field"><input type="checkbox" checked={active} onChange={(event) => setActive(event.target.checked)} /><span>Supplier aktif dan dapat dipilih saat stok masuk</span></label>}{error && <p className="login-error">{error}</p>}<ModalActions close={close} disabled={loading} /></form></Modal>;
 }
-function EmployeeModal({ data, employee, close, save, createAccount }: any) {
-  const eligibleUsers = data.users.filter((user:any) => user.active && user.role === "employee" && !(data.employees || []).some((item:any) => item.userId === user.id));
+const accessRoleLabel = (role:string) => role === "admin" ? "Admin Cabang" : role === "warehouse" ? "Staf Gudang" : role === "cashier" ? "Kasir" : role === "finance" ? "Keuangan" : role === "employee" ? "Karyawan" : role === "pic" ? "PIC Outlet" : "Owner";
+function EmployeeModal({ data, employee, initialUserId, close, save, createAccount }: any) {
+  const eligibleUsers = data.users.filter((user:any) => user.active && user.role !== "owner" && !(data.employees || []).some((item:any) => item.userId === user.id));
   const editing = Boolean(employee);
-  const [useExisting, setUseExisting] = useState(editing || false), [userId, setUserId] = useState(employee?.userId || eligibleUsers[0]?.id || ""), [name, setName] = useState(""), [email, setEmail] = useState(""), [password, setPassword] = useState(""), [locationId, setLocationId] = useState(employee?.locationId || ""), [position, setPosition] = useState(employee?.position || "Staff Operasional"), [monthlySalary, setMonthlySalary] = useState(employee?.monthlySalary || 0), [loading, setLoading] = useState(false), [error, setError] = useState("");
-  const submit = async (event: React.FormEvent) => { event.preventDefault(); if (loading) return; setError(""); if (useExisting && !userId) return setError("Pilih akun pengguna."); if (!useExisting && (name.trim().length < 2 || !email.includes("@") || password.length < 8)) return setError("Isi nama, email, dan password minimal 8 karakter."); setLoading(true); try { const account = useExisting ? undefined : await createAccount({ name: name.trim(), email: email.trim(), password, role: "employee" }); await save({ id: employee?.id || newId("emp"), userId: useExisting ? userId : account.id, locationId: locationId || undefined, position, monthlySalary: Number(monthlySalary) || 0, active: employee?.active ?? true }, account); } catch (err) { setError(err instanceof Error ? err.message : "Karyawan tidak dapat disimpan."); setLoading(false); } };
-  return <Modal title={editing ? "Atur karyawan" : "Tambah karyawan"} desc={editing ? "Tetapkan atau ubah lokasi kerja agar akses absensi sesuai penugasan." : "Buat akses login karyawan. Lokasi kerja dapat ditetapkan sekarang atau nanti."} close={close}><form onSubmit={submit}>{!editing && <><label className="toggle-field"><input type="checkbox" checked={useExisting} onChange={(event) => setUseExisting(event.target.checked)} /><span>Gunakan akun pengguna yang sudah ada</span></label>{useExisting ? <Field label="Akun karyawan"><AppSelect required value={userId} onChange={(event:any) => setUserId(event.target.value)}><option value="" disabled>Pilih akun pengguna</option>{eligibleUsers.map((item:any) => <option key={item.id} value={item.id}>{item.name} · {item.email}</option>)}</AppSelect></Field> : <div className="form-grid"><Field label="Nama karyawan"><input required value={name} onChange={(event) => setName(event.target.value)} /></Field><Field label="Email login"><input type="email" required value={email} onChange={(event) => setEmail(event.target.value)} /></Field><Field label="Password awal"><input type="password" required minLength={8} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Minimal 8 karakter" /></Field></div>}</>}<Field label="Lokasi kerja"><AppSelect value={locationId} onChange={(event:any) => setLocationId(event.target.value)}><option value="">Belum ditetapkan</option>{data.locations.filter((location:any) => location.active).map((location:any) => <option key={location.id} value={location.id}>{location.name}</option>)}</AppSelect></Field><small className="upload-hint">Tanpa lokasi kerja, karyawan tetap dapat login untuk melihat status dan riwayat absensi, tetapi tidak dapat check-in/check-out.</small><div className="form-grid"><Field label="Jabatan"><input required value={position} onChange={(event) => setPosition(event.target.value)} /></Field><Field label="Gaji bulanan"><input type="number" min="0" value={monthlySalary} onChange={(event) => setMonthlySalary(Number(event.target.value))} /></Field></div>{error && <p className="login-error">{error}</p>}<ModalActions close={close} disabled={loading} /></form></Modal>;
+  const [useExisting, setUseExisting] = useState(editing || Boolean(initialUserId)), [userId, setUserId] = useState(employee?.userId || initialUserId || eligibleUsers[0]?.id || ""), [name, setName] = useState(""), [email, setEmail] = useState(""), [password, setPassword] = useState(""), [locationId, setLocationId] = useState(employee?.locationId || ""), [monthlySalary, setMonthlySalary] = useState(String(employee?.monthlySalary ?? 0)), [loading, setLoading] = useState(false), [error, setError] = useState("");
+  const linkedAccount = data.users.find((item:any) => item.id === (employee?.userId || userId));
+  const staffPosition = accessRoleLabel(linkedAccount?.role || "employee");
+  const submit = async (event: React.FormEvent) => { event.preventDefault(); if (loading) return; setError(""); if (useExisting && !userId) return setError("Pilih akun staf yang ingin dihubungkan."); if (!useExisting && (name.trim().length < 2 || !email.includes("@") || password.length < 8)) return setError("Isi nama, email, dan password minimal 8 karakter."); setLoading(true); try { const account = useExisting ? undefined : await createAccount({ name: name.trim(), email: email.trim(), password, role: "employee" }); await save({ id: employee?.id || newId("emp"), userId: useExisting ? userId : account.id, locationId: locationId || undefined, position: useExisting ? staffPosition : "Karyawan", monthlySalary: Number(monthlySalary) || 0, active: employee?.active ?? true }, account); } catch (err) { setError(err instanceof Error ? err.message : "Karyawan tidak dapat disimpan."); setLoading(false); } };
+  return <Modal title={editing ? "Atur data kerja" : "Lengkapi data kerja"} desc="Peran staf mengikuti pengaturan akses. Di sini Owner cukup mengatur lokasi kerja dan gaji." close={close}><form onSubmit={submit}>{!editing && <><label className="toggle-field"><input type="checkbox" checked={useExisting} onChange={(event) => setUseExisting(event.target.checked)} /><span>Hubungkan akun staf yang sudah ada</span></label>{useExisting ? <><Field label="Akun staf"><AppSelect required value={userId} onChange={(event:any) => setUserId(event.target.value)}><option value="" disabled>Pilih akun staf</option>{eligibleUsers.map((item:any) => <option key={item.id} value={item.id} data-meta={accessRoleLabel(item.role)}>{item.name} · {item.email}</option>)}</AppSelect></Field><small className="upload-hint">Peran staf ditentukan dari pengaturan akses dan otomatis digunakan pada data kerja serta penggajian.</small>{eligibleUsers.length === 0 && <small className="upload-hint">Semua akun staf aktif sudah terhubung. Hilangkan centang di atas untuk membuat akun Karyawan baru.</small>}</> : <div className="form-grid"><Field label="Nama karyawan"><input required value={name} onChange={(event) => setName(event.target.value)} /></Field><Field label="Email login"><input type="email" required value={email} onChange={(event) => setEmail(event.target.value)} /></Field><Field label="Password awal"><input type="password" required minLength={8} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Minimal 8 karakter" /></Field></div>}</>}<Field label="Lokasi kerja"><AppSelect value={locationId} onChange={(event:any) => setLocationId(event.target.value)}><option value="">Belum ditetapkan</option>{data.locations.filter((location:any) => location.active).map((location:any) => <option key={location.id} value={location.id}>{location.name}</option>)}</AppSelect></Field><small className="upload-hint">Tanpa lokasi kerja, staf tetap dapat login sesuai perannya, tetapi tidak dapat melakukan absensi.</small><div className="form-grid"><Field label="Peran staf"><input readOnly className="input-readonly" value={useExisting ? staffPosition : "Karyawan"} /></Field><Field label="Gaji bulanan"><input type="text" inputMode="numeric" pattern="[0-9]*" value={monthlySalary} onChange={(event) => setMonthlySalary(event.target.value.replace(/\D/g, "").replace(/^0+(?=\d)/, ""))} /></Field></div>{error && <p className="login-error">{error}</p>}<ModalActions close={close} disabled={loading} /></form></Modal>;
 }
 function LoanModal({ data, close, save }: any) {
   const [employeeId, setEmployeeId] = useState(data.employees?.find((item:any) => item.active)?.id || ""), [amount, setAmount] = useState(0), [installmentCount, setInstallmentCount] = useState(1), [loanDate, setLoanDate] = useState(jakartaDateKey()), [note, setNote] = useState("");
@@ -4321,8 +4473,11 @@ function UserModal({ data, close, save, user, uploadImage, onDelete }: any) {
     </Modal>
   );
 }
-function ReceiptModal({ data, receipt, close, save, prefillLocationId, prefillVariantId }: any) {
+function ReceiptModal({ data, receipt, close, save, uploadImage, prefillLocationId, prefillVariantId }: any) {
   const [isSaving, setIsSaving] = useState(false);
+  const [proofFile, setProofFile] = useState<File | null>(null);
+  const [uploadError, setUploadError] = useState("");
+  const availableSuppliers = (data.suppliers || []).filter((supplier:any) => supplier.active || supplier.id === receipt?.supplierId);
   const products = data.products
     .filter((product: any) => product.active && product.variants.some((variant: any) => variant.active !== false))
     .map((product: any) => ({ ...product, variants: product.variants.filter((variant: any) => variant.active !== false) }));
@@ -4335,6 +4490,7 @@ function ReceiptModal({ data, receipt, close, save, prefillLocationId, prefillVa
     ),
     [supplierId, setSupplierId] = useState(receipt?.supplierId || ""),
     [supplierName, setSupplierName] = useState(receipt?.supplierName || ""),
+    [manualSupplier, setManualSupplier] = useState(Boolean(receipt?.supplierName && !receipt?.supplierId) || availableSuppliers.length === 0),
     [locationId, setLocationId] = useState(
       receipt?.locationId || prefillLocationId || data.locations.find((l: any) => l.active)?.id || "",
     ),
@@ -4355,18 +4511,26 @@ function ReceiptModal({ data, receipt, close, save, prefillLocationId, prefillVa
       close={close}
     >
       <form
-        onSubmit={(e) => {
+        onSubmit={async (e) => {
           e.preventDefault();
           if (isSaving) return;
           setIsSaving(true);
-          save({
-            sourceType,
-            supplierId: sourceType === "supplier" ? supplierId || undefined : undefined,
-            supplierName: sourceType === "supplier" ? (data.suppliers?.find((supplier:any) => supplier.id === supplierId)?.name || supplierName) : undefined,
-            locationId,
-            items: Object.entries(selectedItems).map(([vid, val]) => ({ variantId: vid, quantity: val.quantity, unitCost: val.unitCost })),
-            note,
-          });
+          setUploadError("");
+          try {
+            const proofUrl = proofFile ? await uploadImage(proofFile) : receipt?.proofUrl;
+            await save({
+              sourceType,
+              supplierId: sourceType === "supplier" ? supplierId || undefined : undefined,
+              supplierName: sourceType === "supplier" ? (data.suppliers?.find((supplier:any) => supplier.id === supplierId)?.name || supplierName) : undefined,
+              locationId,
+              items: Object.entries(selectedItems).map(([vid, val]) => ({ variantId: vid, quantity: val.quantity, unitCost: val.unitCost })),
+              note,
+              proofUrl,
+            });
+          } catch (error) {
+            setUploadError(error instanceof Error ? error.message : "Bukti penerimaan tidak dapat diunggah.");
+            setIsSaving(false);
+          }
         }}
       >
         <Field label="Sumber stok">
@@ -4382,7 +4546,8 @@ function ReceiptModal({ data, receipt, close, save, prefillLocationId, prefillVa
         </Field>
         {sourceType === "supplier" && (
           <Field label="Supplier">
-            {(data.suppliers || []).filter((supplier:any) => supplier.active || supplier.id === supplierId).length ? <AppSelect required value={supplierId} onChange={(event:any) => setSupplierId(event.target.value)}><option value="" disabled>Pilih supplier</option>{(data.suppliers || []).filter((supplier:any) => supplier.active || supplier.id === supplierId).map((supplier:any) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}</AppSelect> : <input required value={supplierName} onChange={(e) => setSupplierName(e.target.value)} placeholder="Tambahkan master supplier terlebih dahulu" />}
+            <AppSelect required value={manualSupplier ? "__manual__" : supplierId} onChange={(event:any) => { const manual = event.target.value === "__manual__"; setManualSupplier(manual); setSupplierId(manual ? "" : event.target.value); }}><option value="" disabled>Pilih supplier</option>{availableSuppliers.map((supplier:any) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}<option value="__manual__">Input nama supplier manual</option></AppSelect>
+            {manualSupplier && <input required value={supplierName} onChange={(event) => setSupplierName(event.target.value)} placeholder="Masukkan nama supplier" />}
           </Field>
         )}
         <Field label="Lokasi penerima">
@@ -4494,13 +4659,20 @@ function ReceiptModal({ data, receipt, close, save, prefillLocationId, prefillVa
             placeholder="Nomor faktur, batch, atau catatan produksi"
           />
         </Field>
+        <div className="field"><span>Bukti penerimaan barang (opsional)</span>
+          <EvidencePhotoPicker file={proofFile} setFile={setProofFile} subject="penerimaan barang" />
+        </div>
+        <small className="upload-hint">Unggah foto barang diterima, surat jalan, atau faktur. JPG, PNG, WebP, HEIC, atau HEIF; maksimal 5 MB.{receipt?.proofUrl && !proofFile ? " Bukti yang tersimpan tetap digunakan jika tidak diganti." : ""}</small>
+        {uploadError && <p className="login-error">{uploadError}</p>}
         <ModalActions close={close} disabled={isSaving} />
       </form>
     </Modal>
   );
 }
-function ReturnModal({ data, close, save }: any) {
+function ReturnModal({ data, close, save, uploadImage }: any) {
   const [isSaving, setIsSaving] = useState(false);
+  const [proofFile, setProofFile] = useState<File | null>(null);
+  const [uploadError, setUploadError] = useState("");
   const variants = data.products
       .filter((p: any) => p.active)
       .flatMap((p: any) =>
@@ -4526,12 +4698,19 @@ function ReturnModal({ data, close, save }: any) {
       close={close}
     >
       <form
-        onSubmit={(e) => {
+        onSubmit={async (e) => {
           e.preventDefault();
           if (isSaving) return;
           setIsSaving(true);
           if (Object.keys(selectedItems).length === 0) { setIsSaving(false); return alert("Pilih minimal satu produk"); }
-          save({ type, locationId, items: Object.entries(selectedItems).map(([vid, val]) => ({ variantId: vid, quantity: val.quantity })), reason });
+          setUploadError("");
+          try {
+            const proofUrl = proofFile ? await uploadImage(proofFile) : undefined;
+            await save({ type, locationId, items: Object.entries(selectedItems).map(([vid, val]) => ({ variantId: vid, quantity: val.quantity })), reason, proofUrl });
+          } catch (error) {
+            setUploadError(error instanceof Error ? error.message : "Bukti retur tidak dapat diunggah.");
+            setIsSaving(false);
+          }
         }}
       >
         <Field label="Jenis retur">
@@ -4615,6 +4794,9 @@ function ReturnModal({ data, close, save }: any) {
             placeholder="Contoh: Barang rusak atau salah kirim"
           />
         </Field>
+        <div className="field"><span>Foto bukti retur (opsional)</span><EvidencePhotoPicker file={proofFile} setFile={setProofFile} subject="retur" /></div>
+        <small className="upload-hint">Foto kondisi barang, nota, atau surat jalan. Maksimal 5 MB.</small>
+        {uploadError && <p className="login-error">{uploadError}</p>}
         <ModalActions close={close} disabled={isSaving} />
       </form>
     </Modal>
@@ -4719,8 +4901,10 @@ function BusinessModal({ data, close, save, uploadImage }: any) {
     </Modal>
   );
 }
-function TransferModal({ data, close, save, fixedFrom, initialTo, initialVariantId }: any) {
+function TransferModal({ data, close, save, uploadImage, fixedFrom, initialTo, initialVariantId }: any) {
   const [isSaving, setIsSaving] = useState(false);
+  const [proofFile, setProofFile] = useState<File | null>(null);
+  const [uploadError, setUploadError] = useState("");
   const activeLocations=data.locations.filter((l:any)=>l.active),variants = data.products.filter((p:any)=>p.active).flatMap((p: any) =>
       p.variants.filter((item:any)=>item.active!==false).map((item: any) => ({
         ...item,
@@ -4754,13 +4938,20 @@ function TransferModal({ data, close, save, fixedFrom, initialTo, initialVariant
       close={close}
     >
       <form
-        onSubmit={(e) => {
+        onSubmit={async (e) => {
           e.preventDefault();
           if (isSaving) return;
           if (invalidTransferItems.length) return;
           setIsSaving(true);
           if (Object.keys(selectedItems).length === 0) { setIsSaving(false); return alert("Pilih minimal satu produk"); }
-          save(from, to, Object.entries(selectedItems).map(([vid, val]) => ({ variantId: vid, quantity: val.quantity })));
+          setUploadError("");
+          try {
+            const sendProofUrl = proofFile ? await uploadImage(proofFile) : undefined;
+            await save(from, to, Object.entries(selectedItems).map(([vid, val]) => ({ variantId: vid, quantity: val.quantity })), sendProofUrl);
+          } catch (error) {
+            setUploadError(error instanceof Error ? error.message : "Bukti pengiriman tidak dapat diunggah.");
+            setIsSaving(false);
+          }
         }}
       >
         <Field label="Lokasi asal">
@@ -4850,6 +5041,9 @@ function TransferModal({ data, close, save, fixedFrom, initialTo, initialVariant
             })}
           </div>
         )}
+        <div className="field"><span>Foto bukti pengiriman (opsional)</span><EvidencePhotoPicker file={proofFile} setFile={setProofFile} subject="pengiriman" /></div>
+        <small className="upload-hint">Foto barang saat dikirim atau surat jalan. Maksimal 5 MB.</small>
+        {uploadError && <p className="login-error">{uploadError}</p>}
         <ModalActions close={close} disabled={!canSaveTransfer} />
       </form>
     </Modal>
@@ -5440,6 +5634,7 @@ function ReceiptDetail({ items, variants, locations, close }: any) {
       <p><span>Varian diterima</span><b>{items.length} varian · {totalQuantity.toLocaleString("id-ID")} item</b></p>
       <div className="detail-transfer-items">{items.map((line: any) => <p key={line.id}><span>{variants[line.variantId]?.productName} · {variants[line.variantId]?.name}<small className="block">{qty(line.quantity, variants[line.variantId]?.unit)} × {money(line.unitCost)}</small></span><b>{money(line.quantity * line.unitCost)}</b></p>)}</div>
       {receipt.note && <p><span>Catatan</span><b>{receipt.note}</b></p>}
+      <p><span>Bukti penerimaan</span><b>{receipt.proofUrl ? <a className="proof-link" href={receipt.proofUrl} target="_blank" rel="noreferrer">Lihat gambar bukti</a> : "Tidak dilampirkan"}</b></p>
       <p><span>Total nilai</span><b>{money(totalValue)}</b></p>
       <p><span>Status</span><b>{isCancelled ? `Dibatalkan: ${receipt.cancelReason || "-"}` : "Selesai"}</b></p>
     </div>
@@ -5474,6 +5669,7 @@ function ReturnDetail({ item, variants, locations, close }: any) {
       <p><span>Produk</span><b>{variant?.productName} · {variant?.name}</b></p>
       <p><span>Jumlah</span><b>{qty(item.quantity, variant?.unit)}</b></p>
       <p><span>Alasan</span><b>{item.status === "cancelled" ? `Dibatalkan: ${item.cancelReason || item.reason}` : item.reason}</b></p>
+      <p><span>Bukti retur</span><b>{item.proofUrl ? <a className="proof-link" href={item.proofUrl} target="_blank" rel="noreferrer">Lihat foto bukti</a> : "Tidak dilampirkan"}</b></p>
       <p><span>Status</span><b>{item.status === "cancelled" ? "Dibatalkan" : "Selesai"}</b></p>
     </div>
     <footer className="modal-actions detail-modal-actions"><button type="button" className="secondary" onClick={close}>Tutup</button></footer>
@@ -5543,6 +5739,8 @@ function TransferDetail({
           <b>{items.length} varian</b>
         </p>
         <div className="detail-transfer-items">{items.map((line: any) => <p key={line.id}><span>{variants[line.variantId]?.productName} · {variants[line.variantId]?.name}</span><b>{qty(line.quantity, variants[line.variantId]?.unit)}</b></p>)}</div>
+        <p><span>Bukti saat dikirim</span><b>{item.sendProofUrl ? <a className="proof-link" href={item.sendProofUrl} target="_blank" rel="noreferrer">Lihat foto pengiriman</a> : "Tidak dilampirkan"}</b></p>
+        <p><span>Bukti saat diterima</span><b>{item.receiveProofUrl ? <a className="proof-link" href={item.receiveProofUrl} target="_blank" rel="noreferrer">Lihat foto penerimaan</a> : "Tidak dilampirkan"}</b></p>
         <p>
           <span>Status</span>
           <b>{item.status}</b>
@@ -5595,6 +5793,21 @@ function Notifications({ items, close, act }: { items: OperationalNotification[]
   );
 }
 const ListSearch=({value,setValue,placeholder}:any)=><label className="list-search"><Search/><input value={value} onChange={(e)=>setValue(e.target.value)} placeholder={placeholder}/></label>;
+function EvidencePhotoPicker({ file, setFile, subject = "bukti" }: { file: File | null; setFile: (file: File | null) => void; subject?: string }) {
+  const choose = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const selected = event.target.files?.[0] || null;
+    if (selected) setFile(selected);
+    event.target.value = "";
+  };
+  return <div className={`evidence-photo-picker ${file ? "selected" : ""}`}>
+    <div className="evidence-photo-actions">
+      <label><Camera size={18} /><span>Ambil foto</span><input type="file" accept="image/*" capture="environment" onChange={choose} /></label>
+      <label><PackagePlus size={18} /><span>Pilih dari galeri</span><input type="file" accept="image/*" onChange={choose} /></label>
+    </div>
+    <small>{file ? <><Check size={14} /> {file.name}</> : `Belum ada foto ${subject} dipilih.`}</small>
+  </div>;
+}
+
 const Field = ({ label, children }: any) => (
   <label className="field">
     <span>{label}</span>
@@ -5924,9 +6137,9 @@ function HppMarketplaceCalculator({ data, runCommand, notify }: { data: AppData;
     <div className="pricing-switch" role="tablist"><button className={workspace === "hpp" ? "active" : ""} onClick={() => setWorkspace("hpp")}>1. HPP Produksi</button><button className={workspace === "marketplace" ? "active" : ""} onClick={() => setWorkspace("marketplace")}>2. Biaya Marketplace</button></div>
     {workspace === "hpp" ? <div className="hpp-wizard">
       <div className="hpp-stepper" aria-label="Tahapan kalkulator HPP">{([{ id: 1, title: "Bahan Baku" }, { id: 2, title: "Biaya Tambahan" }, { id: 3, title: "Hasil & Harga" }] as const).map((item, index) => <div className={hppStep === item.id ? "active" : hppStep > item.id ? "done" : ""} key={item.id}><button onClick={() => setHppStep(item.id)}><b>{item.id}</b><span><small>Langkah {item.id}</small>{item.title}</span></button>{index < 2 && <i />}</div>)}</div>
-      <div className="card hpp-recipe-bar"><label><span>Bahan baku HPP tersimpan</span><select value={savedRecipes.some(item => item.id === recipe.id) ? recipe.id : ""} onChange={event => loadRecipe(event.target.value)}><option value="">+ Bahan baku HPP baru (kosong)</option>{savedRecipes.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><button className="secondary" onClick={() => { setRecipe(recipeBlank(recipe.variantId)); setHppStep(1); }}><Plus /> Buat bahan baku baru</button></div>
+      <div className="card hpp-recipe-bar"><label><span>Bahan baku HPP tersimpan</span><AppSelect value={savedRecipes.some(item => item.id === recipe.id) ? recipe.id : ""} onChange={(event:any) => loadRecipe(event.target.value)}><option value="">+ Bahan baku HPP baru (kosong)</option>{savedRecipes.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</AppSelect></label><button className="secondary" onClick={() => { setRecipe(recipeBlank(recipe.variantId)); setHppStep(1); }}><Plus /> Buat bahan baku baru</button></div>
       {hppStep === 1 && <section className="card hpp-step-card">
-        <div className="hpp-product-grid"><label className="field hpp-name-field"><span>Nama produk / resep</span><div className="money-input"><input value={recipe.name} onChange={event => setRecipe(current => ({ ...current, name: event.target.value }))} /></div></label>{numberInput("Yield (hasil jadi)", recipe.yieldQuantity, value => setRecipe(current => ({ ...current, yieldQuantity: value })), "")}<label className="field"><span>Satuan hasil</span><select value={recipe.yieldUnit} onChange={event => setRecipe(current => ({ ...current, yieldUnit: event.target.value }))}><option>Pcs</option><option>Pack</option><option>Box</option><option>Kg</option><option>Gram</option></select></label><label className="field hpp-variant-field"><span>Hubungkan ke varian Menengs</span><select value={recipe.variantId || ""} onChange={event => { const product = variants.find(item => item.id === event.target.value); setRecipe(current => ({ ...current, variantId: event.target.value, yieldUnit: product?.unit || current.yieldUnit })); setVariantId(event.target.value); setSellingPrice(Number(product?.price || 0)); }}><option value="">Belum dihubungkan</option>{variants.map(item => <option key={item.id} value={item.id}>{item.productName} · {item.name}</option>)}</select></label></div>
+        <div className="hpp-product-grid"><label className="field hpp-name-field"><span>Nama produk / resep</span><div className="money-input"><input value={recipe.name} onChange={event => setRecipe(current => ({ ...current, name: event.target.value }))} /></div></label>{numberInput("Yield (hasil jadi)", recipe.yieldQuantity, value => setRecipe(current => ({ ...current, yieldQuantity: value })), "")}<label className="field"><span>Satuan hasil</span><AppSelect value={recipe.yieldUnit} onChange={(event:any) => setRecipe(current => ({ ...current, yieldUnit: event.target.value }))}><option>Pcs</option><option>Pack</option><option>Box</option><option>Kg</option><option>Gram</option></AppSelect></label><label className="field hpp-variant-field"><span>Hubungkan ke varian Menengs</span><AppSelect value={recipe.variantId || ""} onChange={(event:any) => { const product = variants.find(item => item.id === event.target.value); setRecipe(current => ({ ...current, variantId: event.target.value, yieldUnit: product?.unit || current.yieldUnit })); setVariantId(event.target.value); setSellingPrice(Number(product?.price || 0)); }}><option value="">Belum dihubungkan</option>{variants.map(item => <option key={item.id} value={item.id}>{item.productName} · {item.name}</option>)}</AppSelect></label></div>
         <div className="pricing-section-head"><div><h3>Daftar bahan baku</h3><p>Masukkan bahan yang benar-benar dipakai untuk satu kali produksi {recipe.yieldQuantity || 0} {recipe.yieldUnit}.</p></div><button className="primary" onClick={() => setRecipe(current => ({ ...current, materials: [...current.materials, { id: newId("mat"), name: "", quantity: 1, unit: "Pcs", unitCost: 0 }] }))}><Plus /> Tambah bahan</button></div>
         <div className="pricing-table-wrap"><table className="pricing-table hpp-material-table"><thead><tr><th>Nama bahan baku</th><th>Jumlah dipakai</th><th>Satuan dipakai</th><th>Harga satuan</th><th>Harga per</th><th>Total biaya</th><th>Aksi</th></tr></thead><tbody>{recipe.materials.map(item => <tr key={item.id}><td><input aria-label="Nama bahan baku" value={item.name} onChange={event => updateMaterial(item.id, { name: event.target.value })} placeholder="Contoh: Makaroni" /></td><td><input aria-label="Jumlah bahan" type="number" min="0" value={item.quantity} onChange={event => updateMaterial(item.id, { quantity: Math.max(0, Number(event.target.value) || 0) })} /></td><td><select aria-label="Satuan bahan" value={item.unit} onChange={event => updateMaterial(item.id, { unit: event.target.value })}><option>Pcs</option><option>Gram</option><option>Kg</option><option>Liter</option><option>Pack</option><option>Box</option></select></td><td><input aria-label="Harga satuan bahan" type="number" min="0" value={item.unitCost} onChange={event => updateMaterial(item.id, { unitCost: Math.max(0, Number(event.target.value) || 0) })} /></td><td><span>{item.unit}</span></td><td><b>{money(item.quantity * item.unitCost)}</b></td><td><button className="icon-btn danger-icon" aria-label="Hapus bahan" disabled={recipe.materials.length === 1} onClick={() => setRecipe(current => ({ ...current, materials: current.materials.filter(material => material.id !== item.id) }))}><Trash2 /></button></td></tr>)}</tbody></table></div>
         <div className="subtotal-row"><span>Subtotal bahan baku</span><b>{money(rawMaterialCost)}</b></div><div className="hpp-nav"><span /><button className="primary" onClick={() => setHppStep(2)}>Lanjut ke Langkah 2: Biaya Tambahan <ArrowRight /></button></div>

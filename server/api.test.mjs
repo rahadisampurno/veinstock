@@ -200,18 +200,22 @@ describe('multi-tenant API', () => {
     initial.body.data.balances.push({ locationId: 'loc-owner', variantId: 'variant-command', quantity: 20 });
     expect((await request('/api/state', { method: 'PUT', headers: { 'content-type': 'application/json', authorization: `Bearer ${owner.body.token}` }, body: JSON.stringify({ data: initial.body.data, version: initial.body.version }) })).status).toBe(200);
 
-    const sent = await post('/api/commands/transfers', { fromId: 'loc-owner', toId: 'outlet-command', items: [{ variantId: 'variant-command', quantity: 10 }] }, owner.body.token);
+    const sendProofUrl = `https://example.test/transfers/${suffix}-sent.webp`;
+    const receiveProofUrl = `https://example.test/transfers/${suffix}-received.webp`;
+    const sent = await post('/api/commands/transfers', { fromId: 'loc-owner', toId: 'outlet-command', sendProofUrl, items: [{ variantId: 'variant-command', quantity: 10 }] }, owner.body.token);
     expect(sent.status).toBe(201);
     const afterSend = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
     const transferCode = afterSend.body.data.transfers[0].transferCode;
+    expect(afterSend.body.data.transfers[0].sendProofUrl).toBe(sendProofUrl);
     expect(afterSend.body.data.balances.find(b => b.locationId === 'loc-owner' && b.variantId === 'variant-command').quantity).toBe(10);
 
     const picEmail = `pic-command-${suffix}@test.local`;
     expect((await post('/api/users', { name: 'PIC Command', email: picEmail, password: 'Password123!', role: 'pic', outletId: 'outlet-command' }, owner.body.token)).status).toBe(201);
     const pic = await post('/api/login', { email: picEmail, password: 'Password123!' });
-    expect((await post(`/api/commands/transfers/${encodeURIComponent(transferCode)}/receive`, {}, pic.body.token)).status).toBe(201);
+    expect((await post(`/api/commands/transfers/${encodeURIComponent(transferCode)}/receive`, { receiveProofUrl }, pic.body.token)).status).toBe(201);
     const afterReceive = await request('/api/state', { headers: { authorization: `Bearer ${pic.body.token}` } });
     expect(afterReceive.body.data.balances.find(b => b.locationId === 'outlet-command' && b.variantId === 'variant-command').quantity).toBe(10);
+    expect(afterReceive.body.data.transfers.find(item => item.transferCode === transferCode).receiveProofUrl).toBe(receiveProofUrl);
 
     const sale = await post('/api/commands/sales', { locationId: 'outlet-command', channel: 'offline', payment: 'Tunai', items: [{ variantId: 'variant-command', quantity: 3 }] }, pic.body.token);
     expect(sale.status).toBe(201);
@@ -226,7 +230,7 @@ describe('multi-tenant API', () => {
     const owner = await post('/api/register', { organizationName: 'SDM Command', name: 'Owner', email: `owner-${suffix}@test.local`, password: 'Password123!' });
     expect(owner.status).toBe(201);
     const employeeEmail = `employee-${suffix}@test.local`;
-    const createdUser = await post('/api/users', { name: 'Staf Outlet', email: employeeEmail, password: 'Password123!', role: 'employee' }, owner.body.token);
+    const createdUser = await post('/api/users', { name: 'Staf Gudang', email: employeeEmail, password: 'Password123!', role: 'warehouse', outletId: 'loc-owner' }, owner.body.token);
     expect(createdUser.status).toBe(201);
     const employee = { id: `emp-${suffix}`, userId: createdUser.body.user.id, locationId: 'loc-owner', position: 'Kasir', monthlySalary: 3000000, active: true };
     expect((await post('/api/commands/employees', { employee }, owner.body.token)).status).toBe(201);
@@ -254,9 +258,10 @@ describe('multi-tenant API', () => {
     const state = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
     state.body.data.products.push({ id: `prd-${suffix}`, name: 'Keripik', category: 'Snack', unit: 'Pcs', active: true, variants: [{ id: `var-${suffix}`, name: 'Original', sku: `SUP-${suffix}`, cost: 1000, price: 2000, resellerPrice: 1500, minStock: 1 }] });
     expect((await request('/api/state', { method: 'PUT', headers: { 'content-type': 'application/json', authorization: `Bearer ${owner.body.token}` }, body: JSON.stringify({ data: state.body.data, version: state.body.version }) })).status).toBe(200);
-    expect((await post('/api/commands/receipts', { locationId: 'loc-owner', sourceType: 'supplier', supplierId: supplier.id, supplierName: supplier.name, items: [{ variantId: `var-${suffix}`, quantity: 4, unitCost: 1000 }] }, owner.body.token)).status).toBe(201);
+    const proofUrl = `https://example.test/receipts/${suffix}.webp`;
+    expect((await post('/api/commands/receipts', { locationId: 'loc-owner', sourceType: 'supplier', supplierId: supplier.id, supplierName: supplier.name, proofUrl, items: [{ variantId: `var-${suffix}`, quantity: 4, unitCost: 1000 }] }, owner.body.token)).status).toBe(201);
     const refreshed = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
     expect(refreshed.body.data.suppliers).toContainEqual(expect.objectContaining({ id: supplier.id, name: supplier.name }));
-    expect(refreshed.body.data.receipts).toContainEqual(expect.objectContaining({ supplierId: supplier.id, variantId: `var-${suffix}` }));
+    expect(refreshed.body.data.receipts).toContainEqual(expect.objectContaining({ supplierId: supplier.id, variantId: `var-${suffix}`, proofUrl }));
   });
 });

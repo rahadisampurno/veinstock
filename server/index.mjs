@@ -1267,7 +1267,7 @@ app.post('/api/commands/employees', requireAuth, async (req, res) => {
     if (actor.role !== 'owner') throw forbiddenCommand('Hanya Owner yang dapat menambah karyawan.');
     const employee = req.body?.employee;
     if (!employee?.id || !employee?.userId || !String(employee.position || '').trim()) throw invalidCommand('Data karyawan tidak valid.');
-    if (!state.users.some(user => user.id === employee.userId && user.active)) throw invalidCommand('Akun karyawan tidak ditemukan atau tidak aktif.');
+    if (!state.users.some(user => user.id === employee.userId && user.active && user.role !== 'owner')) throw invalidCommand('Akun staf tidak ditemukan, tidak aktif, atau merupakan akun Owner.');
     if ((employee.locationId && !state.locations.some(location => location.id === employee.locationId && location.active !== false))) throw invalidCommand('Lokasi kerja karyawan tidak valid.');
     if (state.employees.some(item => item.id === employee.id || item.userId === employee.userId)) throw invalidCommand('Akun tersebut sudah terdaftar sebagai karyawan.');
     state.employees.push({ ...employee, position: String(employee.position).trim(), monthlySalary: Math.max(0, Number(employee.monthlySalary || 0)), active: employee.active !== false });
@@ -1388,7 +1388,7 @@ app.post('/api/commands/sales', requireAuth, async (req, res) => {
 
 app.post('/api/commands/transfers', requireAuth, async (req, res) => {
   await executeCommand(req, res, async (state, actor) => {
-    const { fromId, toId, items } = req.body || {};
+    const { fromId, toId, sendProofUrl, items } = req.body || {};
     const authorization = commandAuth(actor, 'transfer.create', fromId);
     const sendAuthorization = commandAuth(actor, 'transfer.send', fromId);
     if (!authorization.allowed) throw forbiddenCommand(authorization.reason);
@@ -1412,7 +1412,7 @@ app.post('/api/commands/transfers', requireAuth, async (req, res) => {
       const available = commandBalance(balances, fromId, variantId);
       if (policy === 'BLOCK' && available < quantity) throw invalidCommand(`Stok asal tidak mencukupi untuk transfer. Tersedia ${available}.`);
       balances = commandAdjustBalance(balances, fromId, variantId, -quantity);
-      state.transfers.unshift({ id: commandId('trf'), transferCode, fromId, toId, variantId, quantity, status: 'sent', createdAt: now, createdBy: actor.id });
+      state.transfers.unshift({ id: commandId('trf'), transferCode, fromId, toId, variantId, quantity, status: 'sent', createdAt: now, createdBy: actor.id, sendProofUrl: String(sendProofUrl || '') || undefined });
       state.movements.unshift(commandMovement(variantId, fromId, 'Transfer keluar', -quantity, `Dokumen ${transferCode}`, actor));
     }
     state.balances = balances;
@@ -1421,6 +1421,7 @@ app.post('/api/commands/transfers', requireAuth, async (req, res) => {
 
 app.post('/api/commands/transfers/:code/receive', requireAuth, async (req, res) => {
   await executeCommand(req, res, async (state, actor) => {
+    const receiveProofUrl = String(req.body?.receiveProofUrl || '') || undefined;
     const transferCode = String(req.params.code || '');
     const lines = state.transfers.filter(transfer => (transfer.transferCode === transferCode || transfer.id === transferCode) && transfer.status === 'sent');
     if (!lines.length) throw invalidCommand('Transfer tidak ditemukan atau sudah diproses.');
@@ -1435,6 +1436,7 @@ app.post('/api/commands/transfers/:code/receive', requireAuth, async (req, res) 
       balances = commandAdjustBalance(balances, line.toId, line.variantId, Number(line.quantity));
       line.status = 'received';
       line.receivedAt = receivedAt;
+      line.receiveProofUrl = receiveProofUrl;
       state.movements.unshift(commandMovement(line.variantId, line.toId, 'Transfer diterima', Number(line.quantity), `Dari ${locations.get(line.fromId) || 'lokasi asal'} · ${transferCode}`, actor));
     }
     state.balances = balances;
@@ -1443,7 +1445,7 @@ app.post('/api/commands/transfers/:code/receive', requireAuth, async (req, res) 
 
 app.post('/api/commands/receipts', requireAuth, async (req, res) => {
   await executeCommand(req, res, async (state, actor) => {
-    const { locationId, sourceType = 'supplier', supplierId, supplierName, note, items } = req.body || {};
+    const { locationId, sourceType = 'supplier', supplierId, supplierName, note, proofUrl, items } = req.body || {};
     const authorization = commandAuth(actor, 'stock.in', locationId);
     if (!authorization.allowed) throw forbiddenCommand(authorization.reason);
     if (!state.locations.some(location => location.id === locationId && location.active !== false)) throw invalidCommand('Lokasi stok masuk tidak ditemukan.');
@@ -1458,7 +1460,7 @@ app.post('/api/commands/receipts', requireAuth, async (req, res) => {
       const quantity = Number(item?.quantity), unitCost = Number(item?.unitCost);
       if (!variants.has(item?.variantId) || !Number.isInteger(quantity) || quantity <= 0 || !Number.isFinite(unitCost) || unitCost < 0) throw invalidCommand('Data stok masuk tidak valid.');
       balances = commandAdjustBalance(balances, locationId, item.variantId, quantity);
-      state.receipts.unshift({ id: commandId('rcv'), receiptCode, sourceType, supplierId, supplierName, locationId, variantId: item.variantId, quantity, unitCost, note: String(note || ''), status: 'completed', createdBy: actor.id, createdAt });
+      state.receipts.unshift({ id: commandId('rcv'), receiptCode, sourceType, supplierId, supplierName, locationId, variantId: item.variantId, quantity, unitCost, note: String(note || ''), proofUrl: String(proofUrl || '') || undefined, status: 'completed', createdBy: actor.id, createdAt });
       state.movements.unshift(commandMovement(item.variantId, locationId, sourceType === 'production' ? 'Hasil produksi' : (supplierName || 'Stok masuk'), quantity, String(note || ''), actor));
     }
     state.balances = balances;
@@ -1469,7 +1471,7 @@ app.patch('/api/commands/receipts/:id', requireAuth, async (req, res) => {
   await executeCommand(req, res, async (state, actor) => {
     const receipt = state.receipts.find(item => item.id === req.params.id);
     if (!receipt || receipt.status === 'cancelled') throw invalidCommand('Stok masuk tidak ditemukan atau sudah dibatalkan.');
-    const { locationId, sourceType, supplierId, supplierName, note, items } = req.body || {};
+    const { locationId, sourceType, supplierId, supplierName, note, proofUrl, items } = req.body || {};
     const authorization = commandAuth(actor, 'stock.in', receipt.locationId);
     if (!authorization.allowed) throw forbiddenCommand(authorization.reason);
     if (!Array.isArray(items) || items.length !== 1) throw invalidCommand('Revisi stok masuk harus berisi tepat satu varian.');
@@ -1479,7 +1481,7 @@ app.patch('/api/commands/receipts/:id', requireAuth, async (req, res) => {
     if (!variants.has(item?.variantId) || !Number.isInteger(quantity) || quantity <= 0 || !Number.isFinite(unitCost) || unitCost < 0) throw invalidCommand('Data revisi stok masuk tidak valid.');
     let balances = commandAdjustBalance(state.balances, receipt.locationId, receipt.variantId, -Number(receipt.quantity));
     balances = commandAdjustBalance(balances, locationId, item.variantId, quantity);
-    Object.assign(receipt, { locationId, sourceType, supplierId, supplierName, note, variantId: item.variantId, quantity, unitCost, updatedAt: new Date().toISOString() });
+    Object.assign(receipt, { locationId, sourceType, supplierId, supplierName, note, proofUrl: String(proofUrl || '') || undefined, variantId: item.variantId, quantity, unitCost, updatedAt: new Date().toISOString() });
     state.balances = balances;
     state.movements.unshift(commandMovement(receipt.variantId, locationId, 'Koreksi stok masuk', quantity, 'Revisi dokumen stok masuk', actor));
   });
@@ -1487,7 +1489,7 @@ app.patch('/api/commands/receipts/:id', requireAuth, async (req, res) => {
 
 app.post('/api/commands/returns', requireAuth, async (req, res) => {
   await executeCommand(req, res, async (state, actor) => {
-    const { locationId, type, reason, items } = req.body || {};
+    const { locationId, type, reason, items, proofUrl } = req.body || {};
     const authorization = commandAuth(actor, 'stock.out', locationId);
     if (!authorization.allowed) throw forbiddenCommand(authorization.reason);
     if (!['customer', 'supplier'].includes(type) || !String(reason || '').trim() || !Array.isArray(items) || !items.length) throw invalidCommand('Data retur tidak valid.');
@@ -1499,7 +1501,7 @@ app.post('/api/commands/returns', requireAuth, async (req, res) => {
       const delta = type === 'customer' ? quantity : -quantity;
       if (delta < 0 && commandBalance(balances, locationId, item.variantId) < quantity) throw invalidCommand('Stok tidak mencukupi untuk retur supplier.');
       balances = commandAdjustBalance(balances, locationId, item.variantId, delta);
-      state.returns.unshift({ id: commandId('ret'), type, locationId, variantId: item.variantId, quantity, reason: String(reason).trim(), status: 'completed', createdAt: new Date().toISOString() });
+      state.returns.unshift({ id: commandId('ret'), type, locationId, variantId: item.variantId, quantity, reason: String(reason).trim(), proofUrl: String(proofUrl || '') || undefined, status: 'completed', createdAt: new Date().toISOString() });
       state.movements.unshift(commandMovement(item.variantId, locationId, type === 'customer' ? 'Retur pelanggan' : 'Retur ke supplier', delta, String(reason).trim(), actor));
     }
     state.balances = balances;
