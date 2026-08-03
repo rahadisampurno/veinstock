@@ -48,17 +48,29 @@ describe("operational notifications", () => {
     data.balances = [{ locationId: "loc-owner", variantId: "v-balado", quantity: 0 }];
 
     const notifications = getOperationalNotifications(data, mapsFor(data).variants, mapsFor(data).locations, resolveUserScope(owner));
-    expect(notifications).toContainEqual(expect.objectContaining({ tone: "warning", action: "create-stock-receipt", actionLabel: "Catat stok masuk" }));
+    expect(notifications).toContainEqual(expect.objectContaining({ tone: "warning", action: "create-stock-receipt", actionLabel: "Tambah stok" }));
   });
 
-  it("routes a low-stock outlet to a transfer instead of recording external stock directly", () => {
+  it("routes a low-stock outlet to a transfer when another location has available stock", () => {
+    const data = structuredClone(seedData);
+    data.balances = [
+      { locationId: "loc-outlet-1", variantId: "v-balado", quantity: 0 },
+      { locationId: "loc-owner", variantId: "v-balado", quantity: 2000 },
+    ];
+
+    const notifications = getOperationalNotifications(data, mapsFor(data).variants, mapsFor(data).locations, resolveUserScope(owner));
+    expect(notifications).toContainEqual(expect.objectContaining({ tone: "warning", action: "create-restock-transfer", actionLabel: "Isi lewat transfer", locationId: "loc-outlet-1", variantId: "v-balado", sourceLocationId: "loc-owner" }));
+    expect(notifications.find((item) => item.locationName === "Outlet Meneng 1")?.detail).toContain("tersedia di Gudang Owner");
+  });
+
+  it("does not suggest a transfer when no other location has available stock", () => {
     const data = structuredClone(seedData);
     data.balances = [{ locationId: "loc-outlet-1", variantId: "v-balado", quantity: 0 }];
 
     const notifications = getOperationalNotifications(data, mapsFor(data).variants, mapsFor(data).locations, resolveUserScope(owner));
-    expect(notifications).toContainEqual(expect.objectContaining({
-      tone: "warning", action: "create-restock-transfer", actionLabel: "Buat transfer", locationId: "loc-outlet-1", variantId: "v-balado",
-    }));
+    const alert = notifications.find((item) => item.locationName === "Outlet Meneng 1");
+    expect(alert?.detail).not.toContain("tersedia di");
+    expect(alert).toMatchObject({ action: "create-stock-receipt", actionLabel: "Tambah stok" });
   });
 
   it("does not send a PIC to a reversed transfer route when their outlet stock is low", () => {
@@ -66,8 +78,6 @@ describe("operational notifications", () => {
     data.balances = [{ locationId: "loc-outlet-1", variantId: "v-balado", quantity: 0 }];
 
     const notifications = getOperationalNotifications(data, mapsFor(data).variants, mapsFor(data).locations, resolveUserScope(pic));
-    expect(notifications).toContainEqual(expect.objectContaining({
-      tone: "warning", action: "view-stock", actionLabel: "Lihat stok", locationId: "loc-outlet-1",
-    }));
+    expect(notifications).toContainEqual(expect.objectContaining({ tone: "warning", action: "view-stock", actionLabel: "Lihat stok", locationId: "loc-outlet-1" }));
   });
 });

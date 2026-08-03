@@ -9,7 +9,12 @@ export type OperationalNotification = {
   action?: "open-transfer-inbox" | "create-restock-transfer" | "create-stock-receipt" | "view-stock";
   actionLabel?: string;
   locationId?: string;
+  locationName?: string;
   variantId?: string;
+  sourceLocationId?: string;
+  sourceLocationName?: string;
+  currentQuantity?: number;
+  minimumQuantity?: number;
 };
 
 type NotificationVariant = Variant & { unit?: StockUnit; productName?: string };
@@ -80,10 +85,22 @@ export const getOperationalNotifications = (
       const minimum = minimumFor(variant, balance.locationId);
       if (!variant || balance.quantity >= minimum) return;
       const location = locations[balance.locationId];
-      // Hanya akun berscope seluruh lokasi yang boleh menyiapkan pengiriman
-      // dari gudang ke outlet. PIC outlet tidak boleh diarahkan ke form ini,
-      // karena lokasi asalnya terkunci pada outlet dan akan membalik rute.
-      const canCreateRestockTransfer = scope.scopeType === "all" && location && location.type === "outlet" &&
+      const sourceBalance = (data.balances || [])
+        .filter((candidate: any) => candidate.variantId === balance.variantId && candidate.locationId !== balance.locationId)
+        .map((candidate: any) => ({
+          ...candidate,
+          location: locations[candidate.locationId],
+          available: Math.max(0, Number(candidate.quantity || 0) - minimumFor(variant, candidate.locationId)),
+        }))
+        .filter((candidate: any) => candidate.location && candidate.available > 0)
+        .sort((a: any, b: any) => {
+          if (a.location.type === "warehouse" && b.location.type !== "warehouse") return -1;
+          if (a.location.type !== "warehouse" && b.location.type === "warehouse") return 1;
+          return b.available - a.available;
+        })[0];
+      // Transfer hanya disarankan bila lokasi lain benar-benar memiliki stok
+      // yang dapat dipindahkan tanpa melewati batas minimumnya sendiri.
+      const canCreateRestockTransfer = scope.scopeType === "all" && location && location.type === "outlet" && sourceBalance &&
         (scope.permissions.has("transfer.create") || scope.permissions.has("transfer.send"));
       const action = canCreateRestockTransfer
         ? "create-restock-transfer"
@@ -94,14 +111,30 @@ export const getOperationalNotifications = (
         id: `low-stock:${balance.locationId}:${balance.variantId}`,
         tone: "warning",
         title: `${variant.productName} · ${variant.name}`,
-        detail: `${location?.name || "Lokasi"}: tersisa ${quantity(balance.quantity, variant.unit)}, minimum ${quantity(minimum, variant.unit)}.`,
+        detail: balance.quantity <= 0
+          ? `Stok habis · minimum ${quantity(minimum, variant.unit)}${sourceBalance ? ` · tersedia di ${sourceBalance.location.name}` : ""}.`
+          : `Tersisa ${quantity(balance.quantity, variant.unit)} dari minimum ${quantity(minimum, variant.unit)}${sourceBalance ? ` · tersedia di ${sourceBalance.location.name}` : ""}.`,
         action,
-        actionLabel: action === "create-restock-transfer" ? "Buat transfer" : action === "create-stock-receipt" ? "Catat stok masuk" : "Lihat stok",
+        actionLabel: action === "create-restock-transfer" ? "Isi lewat transfer" : action === "create-stock-receipt" ? "Tambah stok" : "Lihat stok",
         locationId: balance.locationId,
+        locationName: location?.name || "Lokasi",
         variantId: balance.variantId,
+        sourceLocationId: sourceBalance?.locationId,
+        sourceLocationName: sourceBalance?.location?.name,
+        currentQuantity: Number(balance.quantity || 0),
+        minimumQuantity: minimum,
       });
     });
   }
 
-  return notifications;
+  return notifications.sort((a, b) => {
+    if (a.tone !== b.tone) return a.tone === "info" ? -1 : 1;
+    if (a.tone === "warning" && b.tone === "warning") {
+      const aRatio = (a.currentQuantity || 0) / Math.max(1, a.minimumQuantity || 1);
+      const bRatio = (b.currentQuantity || 0) / Math.max(1, b.minimumQuantity || 1);
+      if (aRatio !== bRatio) return aRatio - bRatio;
+      if (a.locationName !== b.locationName) return (a.locationName || "").localeCompare(b.locationName || "", "id");
+    }
+    return a.title.localeCompare(b.title, "id");
+  });
 };

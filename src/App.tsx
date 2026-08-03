@@ -156,6 +156,7 @@ type NotificationIntent = {
   modal: "receipt" | "transfer";
   locationId: string;
   variantId: string;
+  sourceLocationId?: string;
 };
 const eanLeft = ["0001101", "0011001", "0010011", "0111101", "0100011", "0110001", "0101111", "0111011", "0110111", "0001011"];
 const eanRight = ["1110010", "1100110", "1101100", "1000010", "1011100", "1001110", "1010000", "1000100", "1001000", "1110100"];
@@ -1375,6 +1376,7 @@ function App() {
           uploadImage={uploadImage}
           close={() => setModal(null)}
           fixedFrom={user.role === "pic" ? user.outletId : undefined}
+          initialFrom={notificationIntent?.modal === "transfer" ? notificationIntent.sourceLocationId : undefined}
           initialTo={notificationIntent?.modal === "transfer" ? notificationIntent.locationId : undefined}
           initialVariantId={notificationIntent?.modal === "transfer" ? notificationIntent.variantId : undefined}
           save={async (f: string, t: string, items: { variantId: string, quantity: number }[], sendProofUrl?: string) => {
@@ -1498,22 +1500,25 @@ function App() {
           items={operationalNotifications}
           close={() => setModal(null)}
           act={(item) => {
-            setModal(null);
             if (item.action === "open-transfer-inbox") {
-              setPage("transfers");
+              setModalState(null);
+              setPageState("transfers");
+              window.history.replaceState({ menengs: true, page: "transfers", modal: false }, "", historyUrlForPage("transfers"));
               return;
             }
             if (item.action === "create-restock-transfer" && item.locationId && item.variantId) {
-              setNotificationIntent({ modal: "transfer", locationId: item.locationId, variantId: item.variantId });
-              setModal("transfer");
+              setNotificationIntent({ modal: "transfer", locationId: item.locationId, variantId: item.variantId, sourceLocationId: item.sourceLocationId });
+              setModalState("transfer");
               return;
             }
             if (item.action === "create-stock-receipt" && item.locationId && item.variantId) {
               setNotificationIntent({ modal: "receipt", locationId: item.locationId, variantId: item.variantId });
-              setModal("receipt");
+              setModalState("receipt");
               return;
             }
-            setPage("stock");
+            setModalState(null);
+            setPageState("stock");
+            window.history.replaceState({ menengs: true, page: "stock", modal: false }, "", historyUrlForPage("stock"));
           }}
         />
       )}
@@ -4901,7 +4906,7 @@ function BusinessModal({ data, close, save, uploadImage }: any) {
     </Modal>
   );
 }
-function TransferModal({ data, close, save, uploadImage, fixedFrom, initialTo, initialVariantId }: any) {
+function TransferModal({ data, close, save, uploadImage, fixedFrom, initialFrom, initialTo, initialVariantId }: any) {
   const [isSaving, setIsSaving] = useState(false);
   const [proofFile, setProofFile] = useState<File | null>(null);
   const [uploadError, setUploadError] = useState("");
@@ -4914,7 +4919,7 @@ function TransferModal({ data, close, save, uploadImage, fixedFrom, initialTo, i
         productImageUrl: p.imageUrl || p.image || item.imageUrl,
       })),
     ),
-    defaultFrom = fixedFrom || activeLocations.find((l: any) => l.isCentralWarehouse)?.id || activeLocations[0]?.id || "",
+    defaultFrom = fixedFrom || activeLocations.find((l: any) => l.id === initialFrom)?.id || activeLocations.find((l: any) => l.isCentralWarehouse)?.id || activeLocations[0]?.id || "",
     [from, setFrom] = useState(defaultFrom),
     [to, setTo] = useState(initialTo && initialTo !== defaultFrom ? initialTo : activeLocations.find((l: any) => l.id !== defaultFrom)?.id || ""),
     [selectedItems, setSelectedItems] = useState<Record<string, { quantity: number }>>(initialVariantId ? { [initialVariantId]: { quantity: 1 } } : {}),
@@ -5761,30 +5766,34 @@ function TransferDetail({
   );
 }
 function Notifications({ items, close, act }: { items: OperationalNotification[]; close: () => void; act: (item: OperationalNotification) => void }) {
+  const transfers = items.filter((item) => item.tone === "info");
+  const stockGroups = Array.from(items.filter((item) => item.tone === "warning").reduce((groups, item) => {
+    const label = item.locationName || "Lokasi";
+    groups.set(label, [...(groups.get(label) || []), item]);
+    return groups;
+  }, new Map<string, OperationalNotification[]>()).entries());
+  const renderItem = (item: OperationalNotification) => (
+    <article key={item.id} className={`notification-${item.tone}`}>
+      <div className="notification-copy">
+        <span className="notification-icon" aria-hidden="true">
+          {item.tone === "warning" ? <AlertTriangle /> : <ArrowRightLeft />}
+        </span>
+        <div><b>{item.title}</b><span>{item.detail}</span></div>
+      </div>
+      {item.action && item.actionLabel && <button className="small-primary" onClick={() => act(item)}>{item.actionLabel}</button>}
+    </article>
+  );
   return (
     <Modal
       title="Notifikasi operasional"
-      desc="Alert ini dihitung dari data terbaru di server dan disesuaikan dengan akses akun Anda."
+      desc="Prioritas kerja berdasarkan transfer berjalan dan batas minimum stok di setiap lokasi."
       close={close}
     >
       {items.length ? (
         <div className="notification-list">
-          {items.map((item) => (
-            <article key={item.id} className={`notification-${item.tone}`}>
-              <div className="notification-copy">
-                <span className="notification-icon" aria-hidden="true">
-                  {item.tone === "warning" ? <AlertTriangle /> : <ArrowRightLeft />}
-                </span>
-                <div>
-                  <b>{item.title}</b>
-                  <span>{item.detail}</span>
-                </div>
-              </div>
-              {item.action && item.actionLabel && (
-                <button className="small-primary" onClick={() => act(item)}>{item.actionLabel}</button>
-              )}
-            </article>
-          ))}
+          <div className="notification-summary"><span><b>{transfers.length}</b> transfer perlu ditindaklanjuti</span><span><b>{items.length - transfers.length}</b> stok di bawah minimum</span></div>
+          {transfers.length > 0 && <section className="notification-group"><header><span>TRANSFER BERJALAN</span><b>{transfers.length}</b></header>{transfers.map(renderItem)}</section>}
+          {stockGroups.map(([locationName, group]) => <section className="notification-group" key={locationName}><header><span>{locationName.toUpperCase()}</span><b>{group.length} varian</b></header>{group.map(renderItem)}</section>)}
         </div>
       ) : (
         <div className="empty standalone"><Check/><b>Semua operasional aman</b><span>Tidak ada stok menipis atau transfer yang menunggu penerimaan.</span></div>
