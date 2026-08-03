@@ -38,6 +38,18 @@ describe('multi-tenant API', () => {
     expect(state.body.data.products.find(item => item.id === product.id).imageUrl).toBe(imageUrl);
   });
 
+  it('rejects products whose selling price is zero', async () => {
+    const suffix = `${Date.now()}-zero-price`;
+    const owner = await post('/api/register', { organizationName: 'Validasi Harga', name: 'Owner', email: `owner-${suffix}@test.local`, password: 'Password123!' });
+    const product = {
+      id: `product-${suffix}`, name: 'Produk Harga Nol', category: 'Uji', unit: 'Pcs', active: true,
+      variants: [{ id: `variant-${suffix}`, name: 'Reguler', sku: `ZERO-${suffix}`, cost: 1000, price: 0, resellerPrice: 0, minStock: 0 }],
+    };
+    const response = await post('/api/commands/products', { product }, owner.body.token);
+    expect(response.status).toBe(400);
+    expect(response.body.message).toMatch(/harga jual/i);
+  });
+
   it('accepts a valid operational state larger than the legacy 2 MB request limit', async () => {
     const suffix = `${Date.now()}-large-state`;
     const owner = await post('/api/register', { organizationName: 'State Besar', name: 'Owner', email: `owner-${suffix}@test.local`, password: 'Password123!' });
@@ -263,5 +275,23 @@ describe('multi-tenant API', () => {
     const refreshed = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
     expect(refreshed.body.data.suppliers).toContainEqual(expect.objectContaining({ id: supplier.id, name: supplier.name }));
     expect(refreshed.body.data.receipts).toContainEqual(expect.objectContaining({ supplierId: supplier.id, variantId: `var-${suffix}`, proofUrl }));
+  });
+
+  it('records packing scans and finalizes an expedition handover batch without duplicates', async () => {
+    const suffix = `${Date.now()}-shipping`;
+    const owner = await post('/api/register', { organizationName: 'Pengiriman Aman', name: 'Owner', email: `owner-${suffix}@test.local`, password: 'Password123!' });
+    const trackingNumber = `SPXID${Date.now()}`;
+    expect((await post('/api/commands/shipping/ready', { trackingNumber, locationId: 'loc-owner', marketplace: 'Shopee', carrier: 'auto' }, owner.body.token)).status).toBe(201);
+    expect((await post('/api/commands/shipping/ready', { trackingNumber, locationId: 'loc-owner', marketplace: 'Shopee', carrier: 'SPX Express' }, owner.body.token)).status).toBe(400);
+    const jneTrackingNumber = `JNE${Date.now()}AUTO`;
+    expect((await post('/api/commands/shipping/ready', { trackingNumber: jneTrackingNumber, locationId: 'loc-owner', marketplace: 'Tokopedia', carrier: 'auto' }, owner.body.token)).status).toBe(201);
+    expect((await post('/api/commands/shipping/ready', { trackingNumber: `UNKNOWN${Date.now()}`, locationId: 'loc-owner', marketplace: 'Website', carrier: 'auto' }, owner.body.token)).status).toBe(400);
+    const batchCode = `KRM-${Date.now()}`;
+    expect((await post('/api/commands/shipping/handover/scan', { trackingNumber, locationId: 'loc-owner', carrier: 'SPX Express', batchCode }, owner.body.token)).status).toBe(201);
+    expect((await post('/api/commands/shipping/handover/finalize', { batchCode, courierName: 'Kurir SPX', vehicleNumber: 'B 1234 XYZ' }, owner.body.token)).status).toBe(201);
+    const refreshed = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    expect(refreshed.body.data.shipments).toContainEqual(expect.objectContaining({ trackingNumber, carrier: 'SPX Express', status: 'handed_over', handoverBatchCode: batchCode }));
+    expect(refreshed.body.data.shipments).toContainEqual(expect.objectContaining({ trackingNumber: jneTrackingNumber, carrier: 'JNE', status: 'ready' }));
+    expect(refreshed.body.data.shipmentHandovers).toContainEqual(expect.objectContaining({ batchCode, status: 'completed', courierName: 'Kurir SPX' }));
   });
 });

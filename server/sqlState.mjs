@@ -186,6 +186,11 @@ export async function getStateFromSQL(conn, orgId) {
       attendances: rawState.attendances || [],
       loans: rawState.loans || [],
       payrolls: rawState.payrolls || [],
+      // Pengiriman belum memiliki tabel relasional tersendiri. Selama itu,
+      // snapshot app_state adalah sumber kebenaran agar hasil scan packing dan
+      // batch serah-terima tidak hilang ketika state dibaca ulang dari SQL.
+      shipments: rawState.shipments || [],
+      shipmentHandovers: rawState.shipmentHandovers || [],
       pricing: rawState.pricing || { hppRecipes: [], marketplaceConfigs: [] },
     }
   };

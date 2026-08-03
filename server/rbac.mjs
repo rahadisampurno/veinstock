@@ -22,7 +22,7 @@ export function resolveUserScope(user) {
      'user.view', 'user.create', 'user.update', 'user.assign_location',
      'stock.view', 'stock.initial_balance', 'stock.in', 'stock.out', 'stock.adjust', 'stock.opname',
      'transfer.create', 'transfer.send', 'transfer.receive', 'transfer.cancel',
-     'sale.view', 'sale.create', 'sale.void',
+     'sale.view', 'sale.create', 'sale.void', 'shipping.view', 'shipping.manage',
      'report.view', 'report.export', 'audit.view'].forEach(p => permissions.add(p));
   } else if (role === 'admin') {
     ['product.view', 'product.create', 'product.update',
@@ -30,16 +30,16 @@ export function resolveUserScope(user) {
      'user.view', 'user.create', 'user.assign_location',
      'stock.view', 'stock.initial_balance', 'stock.in', 'stock.out', 'stock.adjust', 'stock.opname',
      'transfer.create', 'transfer.send', 'transfer.receive', 'transfer.cancel',
-     'sale.view', 'sale.create', 'sale.void',
+     'sale.view', 'sale.create', 'sale.void', 'shipping.view', 'shipping.manage',
      'report.view', 'report.export'].forEach(p => permissions.add(p));
   } else if (role === 'finance') {
     ['stock.view', 'report.view', 'report.export'].forEach(p => permissions.add(p));
   } else if (role === 'warehouse') {
     ['product.view', 'location.view', 'stock.view', 'stock.in', 'stock.out', 'stock.opname',
-     'transfer.create', 'transfer.send', 'report.view', 'report.export'].forEach(p => permissions.add(p));
+     'transfer.create', 'transfer.send', 'shipping.view', 'shipping.manage', 'report.view', 'report.export'].forEach(p => permissions.add(p));
   } else if (role === 'pic') {
     ['product.view', 'location.view', 'stock.view', 'stock.opname',
-     'transfer.receive', 'transfer.create', 'transfer.send', 'sale.view', 'sale.create', 'sale.void', 'report.view', 'report.export'].forEach(p => permissions.add(p));
+     'transfer.receive', 'transfer.create', 'transfer.send', 'sale.view', 'sale.create', 'sale.void', 'shipping.view', 'shipping.manage', 'report.view', 'report.export'].forEach(p => permissions.add(p));
   } else if (role === 'cashier') {
     ['product.view', 'location.view', 'stock.view', 'sale.create', 'sale.view'].forEach(p => permissions.add(p));
   }

@@ -28,7 +28,7 @@ export const seedData: AppData = {
     ...['v-balado','v-jagung','v-keju','v-pedas','v-original'].map((variantId, i) => ({ locationId: ids.warehouse, variantId, quantity: 9000 - i * 400 })),
     ...['v-balado','v-jagung','v-keju','v-pedas','v-original'].map((variantId, i) => ({ locationId: ids.outlet, variantId, quantity: 2100 - i * 180 })),
   ],
-  transfers: [], stockCounts: [], suppliers: [], receipts: [], returns: [],
+  transfers: [], stockCounts: [], suppliers: [], receipts: [], returns: [], shipments: [], shipmentHandovers: [],
   sales: [
     { id: 'sale-1', locationId: ids.outlet, channel: 'offline', total: 1850000, payment: 'QRIS', createdAt: now(), items: [{ variantId: 'v-balado', quantity: 800, unit: 'gram', unitCost: 52, subtotal: 80000 }], status: 'completed' },
     { id: 'sale-2', locationId: ids.warehouse, channel: 'online', total: 975000, payment: 'Transfer', createdAt: now(), items: [{ variantId: 'v-original', quantity: 500, unit: 'gram', unitCost: 47, subtotal: 47500 }], status: 'completed' },
@@ -41,7 +41,7 @@ export const createEmptyData = (organizationName: string, owner: Pick<SessionUse
   business: { name: organizationName, ownerName: owner.name, email: owner.email },
   users: [{ id: owner.id, name: owner.name, email: owner.email, role: 'owner', active: true }],
   locations: [{ id: 'loc-owner', name: `Gudang ${organizationName}`, type: 'warehouse', active: true }],
-  products: [], balances: [], transfers: [], sales: [], movements: [], stockCounts: [], suppliers: [], receipts: [], returns: [], employees: [], attendanceSettings: [], attendances: [], loans: [], payrolls: [],
+  products: [], balances: [], transfers: [], sales: [], movements: [], stockCounts: [], suppliers: [], receipts: [], returns: [], employees: [], attendanceSettings: [], attendances: [], loans: [], payrolls: [], shipments: [], shipmentHandovers: [],
 });
 
 export const normalizeData = (data: AppData): AppData => {
@@ -65,7 +65,7 @@ export const normalizeData = (data: AppData): AppData => {
     stockCounts: data.stockCounts || [],
     suppliers: data.suppliers || [],
     receipts: data.receipts || [],
-    returns: data.returns || [], employees: data.employees || [], attendanceSettings: data.attendanceSettings || [], attendances: data.attendances || [], loans: data.loans || [], payrolls: data.payrolls || []
+    returns: data.returns || [], employees: data.employees || [], attendanceSettings: data.attendanceSettings || [], attendances: data.attendances || [], loans: data.loans || [], payrolls: data.payrolls || [], shipments: data.shipments || [], shipmentHandovers: data.shipmentHandovers || []
   };
 };
 

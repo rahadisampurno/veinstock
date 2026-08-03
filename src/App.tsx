@@ -1,4 +1,4 @@
-import { Children, isValidElement, type ReactElement, useEffect, useMemo, useRef, useState } from "react";
+import { Children, isValidElement, type ReactElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { resolveUserScope, authorizeAction, type ActionType } from "./utils/rbac";
 import { getOperationalNotifications, type OperationalNotification } from "./utils/operationalNotifications";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
@@ -43,7 +43,8 @@ import {
   TrendingUp,
   Clock3,
   MapPin,
-  WalletCards
+  WalletCards,
+  Truck
 } from "lucide-react";
 import { sections, popularArticles } from "./data/helpData";
 import { downloadExcel } from "./utils/exportExcel";
@@ -72,6 +73,7 @@ type Page =
   | "stock"
   | "transfers"
   | "sales"
+  | "shipping"
   | "returns"
   | "opname"
   | "history"
@@ -134,6 +136,16 @@ const jakartaDateKey = (value: Date | string | number = new Date()) => {
   const parts = new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Jakarta", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date(value));
   const part = (type: string) => parts.find(item => item.type === type)?.value || "";
   return `${part("year")}-${part("month")}-${part("day")}`;
+};
+const detectShippingCarrier = (trackingNumber:string) => {
+  const value = String(trackingNumber || "").trim().toUpperCase().replace(/[\s._-]/g, "");
+  if (/^SPX/.test(value)) return "SPX Express";
+  if (/^(JNT|JT|JP|EZ)[A-Z0-9]{6,}$/.test(value)) return "J&T Express";
+  if (/^JNE[A-Z0-9]{6,}$/.test(value)) return "JNE";
+  if (/^(SICEPAT|SCP|SC)[A-Z0-9]{6,}$/.test(value)) return "SiCepat";
+  if (/^(ANTERAJA|AJ)[A-Z0-9]{6,}$/.test(value)) return "AnterAja";
+  if (/^(NINJA|NV)[A-Z0-9]{6,}$/.test(value)) return "Ninja Xpress";
+  return null;
 };
 const shiftDateKey = (dateKey: string, days: number) => {
   const date = new Date(`${dateKey}T12:00:00Z`);
@@ -287,6 +299,55 @@ function BarcodeScanControl({ onDetected, label = "Scan", className = "" }: { on
     {open && <div className="pos-camera-scanner"><video ref={videoRef} muted playsInline aria-label="Pratinjau kamera pemindai barcode" /><div><span>Arahkan kamera ke barcode produk</span><button type="button" onClick={stop}><X size={16} /> Tutup</button></div></div>}
   </div>;
 }
+
+function ContinuousResiScanner({ onDetected }: { onDetected: (value: string) => Promise<{ ok: boolean; message: string }> }) {
+  const [open, setOpen] = useState(false), [feedback, setFeedback] = useState<{ tone: "success" | "error" | "info"; message: string }>({ tone: "info", message: "Tekan Mulai scan sekali, lalu arahkan resi secara bergantian." });
+  const [manual, setManual] = useState("");
+  const videoRef = useRef<HTMLVideoElement>(null), streamRef = useRef<MediaStream | null>(null), fallbackControlsRef = useRef<{ stop: () => void } | null>(null), busyRef = useRef(false), recentRef = useRef(new Map<string, number>());
+  const stop = useCallback(() => { fallbackControlsRef.current?.stop(); fallbackControlsRef.current = null; streamRef.current?.getTracks().forEach(track => track.stop()); streamRef.current = null; if (videoRef.current) videoRef.current.srcObject = null; setOpen(false); }, []);
+  const sound = useCallback((ok: boolean) => {
+    const Context = window.AudioContext || (window as any).webkitAudioContext; if (!Context) return;
+    const context = new Context(), oscillator = context.createOscillator(), gain = context.createGain();
+    oscillator.type = "square"; oscillator.frequency.value = ok ? 1650 : 280; gain.gain.value = .035; oscillator.connect(gain).connect(context.destination); oscillator.start(); oscillator.stop(context.currentTime + (ok ? .08 : .2));
+    if (context.state === "suspended") void context.resume();
+  }, []);
+  const record = useCallback(async (raw: string) => {
+    const value = raw.trim().toUpperCase(); if (!value || busyRef.current) return;
+    const last = recentRef.current.get(value) || 0; if (Date.now() - last < 2500) return;
+    recentRef.current.set(value, Date.now()); busyRef.current = true;
+    try { const result = await onDetected(value); sound(result.ok); navigator.vibrate?.(result.ok ? 80 : [120, 70, 120]); setFeedback({ tone: result.ok ? "success" : "error", message: result.message }); }
+    finally { busyRef.current = false; }
+  }, [onDetected, sound]);
+  const start = async () => {
+    if (!navigator.mediaDevices?.getUserMedia) return setFeedback({ tone: "error", message: "Kamera tidak tersedia. Gunakan input resi manual." });
+    try { streamRef.current = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false }); setOpen(true); }
+    catch { setFeedback({ tone: "error", message: "Kamera tidak dapat dibuka. Periksa izin kamera pada browser." }); }
+  };
+  useEffect(() => {
+    if (!open || !streamRef.current) return; let cancelled = false, timer: number | undefined;
+    void (async () => {
+      if (videoRef.current) { videoRef.current.srcObject = streamRef.current; await videoRef.current.play(); }
+      const Detector = (window as any).BarcodeDetector;
+      if (Detector) {
+        const supported = typeof Detector.getSupportedFormats === "function" ? await Detector.getSupportedFormats() : [];
+        const wanted = ["code_128", "code_39", "ean_13", "ean_8", "qr_code", "data_matrix"].filter(format => !supported.length || supported.includes(format));
+        const detector = wanted.length ? new Detector({ formats: wanted }) : new Detector();
+        timer = window.setInterval(async () => { if (cancelled || busyRef.current || !videoRef.current || videoRef.current.readyState < 2) return; try { const code = (await detector.detect(videoRef.current))[0]?.rawValue; if (code) await record(code); } catch { /* frame berikutnya */ } }, 220);
+      } else {
+        const { BrowserMultiFormatReader } = await import("@zxing/browser");
+        const reader = new BrowserMultiFormatReader();
+        fallbackControlsRef.current = await reader.decodeFromStream(streamRef.current!, videoRef.current || undefined, result => { const code = result?.getText(); if (code) void record(code); });
+      }
+    })().catch(() => setFeedback({ tone: "error", message: "Pemindai kamera gagal dijalankan." }));
+    return () => { cancelled = true; if (timer) window.clearInterval(timer); };
+  }, [open, record]);
+  useEffect(() => () => stop(), [stop]);
+  return <div className="continuous-resi-scanner">
+    <div className={`continuous-scan-status ${feedback.tone}`} role="status"><span className="scan-status-dot"/><b>{feedback.message}</b></div>
+    {open ? <div className="continuous-camera"><video ref={videoRef} muted playsInline/><div className="scan-reticle"><span>Arahkan barcode resi ke area ini</span></div><button type="button" onClick={stop}><X/> Selesai scan</button></div> : <button type="button" className="primary continuous-start" onClick={() => void start()}><Camera/> Mulai scan kontinu</button>}
+    <form className="manual-resi" onSubmit={event => { event.preventDefault(); void record(manual); setManual(""); }}><input value={manual} onChange={event => setManual(event.target.value)} placeholder="Atau masukkan nomor resi manual"/><button className="secondary" disabled={!manual.trim()}>Catat resi</button></form>
+  </div>;
+}
 // Transfer lama belum memiliki kode dokumen. Baris yang lahir dalam proses
 // batch yang sama memakai timestamp ID yang sama, sehingga tetap dapat
 // ditampilkan sebagai satu dokumen tanpa mengubah histori aslinya.
@@ -415,7 +476,7 @@ function App() {
     }
   };
   useEffect(() => {
-    const knownPages = new Set<Page>(["dashboard", "products", "locations", "receipts", "stock", "transfers", "sales", "returns", "opname", "history", "reports", "business", "users", "help", "analytics", "employees", "attendance", "loans", "pricing", "suppliers"]);
+    const knownPages = new Set<Page>(["dashboard", "products", "locations", "receipts", "stock", "transfers", "sales", "shipping", "returns", "opname", "history", "reports", "business", "users", "help", "analytics", "employees", "attendance", "loans", "pricing", "suppliers"]);
     const currentHash = window.location.hash.slice(1) as Page;
     const initialPage = knownPages.has(currentHash) ? currentHash : page;
     if (initialPage !== page) setPageState(initialPage);
@@ -769,6 +830,7 @@ function App() {
       group: "Transaksi",
       items: [
         ["sales", "Penjualan", ShoppingCart],
+        ["shipping", "Pengiriman Pesanan", Truck],
         ["returns", "Retur", RotateCcw]
       ]
     },
@@ -802,6 +864,7 @@ function App() {
     stock: "Stok per Lokasi",
     transfers: "Transfer Stok",
     sales: "Penjualan Multi-Kanal",
+    shipping: "Pengiriman Pesanan",
     returns: "Retur Barang",
     opname: "Stock Opname & Penyesuaian",
     history: "Histori Pergerakan Stok",
@@ -824,6 +887,7 @@ function App() {
     if (p === "locations" || p === "products" || p === "suppliers") return scope.permissions.has("location.view") || scope.permissions.has("product.view");
     if (p === "receipts" || p === "returns") return scope.permissions.has("stock.in") || scope.permissions.has("stock.out");
     if (p === "sales") return scope.permissions.has("sale.view");
+    if (p === "shipping") return scope.permissions.has("shipping.view");
     if (p === "stock" || p === "history") return scope.permissions.has("stock.view");
     if (p === "transfers") return scope.permissions.has("transfer.create") || scope.permissions.has("transfer.send") || scope.permissions.has("transfer.receive");
     if (p === "opname") return scope.permissions.has("stock.opname");
@@ -1066,6 +1130,15 @@ function App() {
               cancel={(id: string) => checkAuth('sale.void') && setModal(`cancel:sale:${id}`)}
               detail={(id: string) => setModal(`sale-detail:${id}`)}
               canCancel={true}
+            />
+          )}
+          {page === "shipping" && (
+            <ShippingPage
+              data={data}
+              user={user}
+              runCommand={runCommand}
+              uploadImage={uploadImage}
+              notify={notify}
             />
           )}
           {page === "returns" && (
@@ -3860,10 +3933,26 @@ const Modal = ({ title, desc, close, children, className = "" }: any) => (
 const AppSelect = ({ value, onChange, children, disabled = false, placeholder = "Pilih opsi", className = "" }: any) => {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const rootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const closeOutside = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) { setOpen(false); setQuery(""); }
+    };
+    const closeWithEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { setOpen(false); setQuery(""); }
+    };
+    document.addEventListener("pointerdown", closeOutside);
+    document.addEventListener("keydown", closeWithEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOutside);
+      document.removeEventListener("keydown", closeWithEscape);
+    };
+  }, [open]);
   const options = Children.toArray(children).filter(isValidElement).map((option: any) => ({ value: String(option.props.value ?? option.props.children), label: option.props.children, meta: option.props["data-meta"], disabled: option.props.disabled }));
   const current = options.find((option: any) => option.value === String(value));
   const visibleOptions = options.filter((option: any) => String(option.label).toLowerCase().includes(query.toLowerCase()));
-  return <div className={`app-select ${className}`}>
+  return <div ref={rootRef} className={`app-select ${className}`}>
     <button type="button" className="app-select-trigger" disabled={disabled} onClick={() => { setOpen((state) => !state); setQuery(""); }} aria-expanded={open}><span>{current?.label || placeholder}</span><ChevronDown size={18} /></button>
     {open && <div className="app-select-menu">{options.length > 5 && <label className="app-select-search"><Search size={16} /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Cari opsi" /></label>}{visibleOptions.length ? visibleOptions.map((option: any) => <button key={option.value} type="button" disabled={option.disabled} className={option.value === String(value) ? "selected" : ""} onClick={() => { onChange({ target: { value: option.value } }); setOpen(false); setQuery(""); }}><span>{option.label}</span>{option.meta && <small>{option.meta}</small>}{option.value === String(value) && <Check size={16} />}</button>) : <p className="app-select-empty">Opsi tidak ditemukan.</p>}</div>}
   </div>;
@@ -4009,7 +4098,9 @@ function ProductModal({
         onSubmit={async (e) => {
           e.preventDefault();
           if (variants.length === 0) return setError("Minimal harus ada 1 varian");
-          if (variants.some(v => !v.name)) return setError("Nama varian tidak boleh kosong");
+          if (variants.some(v => !v.name.trim())) return setError("Nama varian tidak boleh kosong");
+          if (variants.some(v => !Number.isFinite(Number(v.cost)) || Number(v.cost) < 0)) return setError("Harga modal varian tidak valid");
+          if (variants.some(v => !Number.isFinite(Number(v.price)) || Number(v.price) <= 0)) return setError("Harga jual setiap varian harus lebih dari nol");
           setError("");
           setLoading(true);
           try {
@@ -5765,6 +5856,108 @@ function TransferDetail({
     </Modal>
   );
 }
+function ShippingPage({ data, user, runCommand, uploadImage, notify }: any) {
+  const [tab, setTab] = useState<"packing" | "ready" | "handover" | "history">("packing");
+  const locations = data.locations.filter((location: any) => location.active && (!user.outletId || location.id === user.outletId));
+  const defaultLocationId = locations.find((location:any) => location.isCentralWarehouse)?.id || locations[0]?.id || "";
+  const [locationId, setLocationId] = useState(defaultLocationId), [marketplace, setMarketplace] = useState("Shopee"), [carrier, setCarrier] = useState("auto");
+  useEffect(() => {
+    // Owner/Admin memulai dari gudang pusat. Pengguna dengan cakupan lokasi
+    // terbatas tetap memakai lokasi penugasannya yang tersedia dalam daftar.
+    if (!locations.some((location:any) => location.id === locationId)) setLocationId(defaultLocationId);
+  }, [defaultLocationId, locationId, locations]);
+  const [handoverCarrier, setHandoverCarrier] = useState("SPX Express"), [courierName, setCourierName] = useState(""), [vehicleNumber, setVehicleNumber] = useState(""), [proofFile, setProofFile] = useState<File | null>(null), [finishing, setFinishing] = useState(false);
+  const [batchCode, setBatchCode] = useState(() => `KRM-${jakartaDateKey().replace(/-/g, "")}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`);
+  const shipments = data.shipments || [], handovers = data.shipmentHandovers || [];
+  const scoped = shipments.filter((item: any) => !locationId || item.locationId === locationId);
+  const ready = scoped.filter((item: any) => item.status === "ready"), allReady = shipments.filter((item: any) => item.status === "ready"), scanned = scoped.filter((item: any) => item.status === "handover_scanned" && item.handoverBatchCode === batchCode), completed = shipments.filter((item: any) => item.status === "handed_over");
+  const carriers = ["SPX Express", "J&T Express", "JNE", "SiCepat", "AnterAja", "Ninja Xpress", "Lainnya"], marketplaces = ["Shopee", "TikTok Shop", "Tokopedia", "Lazada", "Website", "Lainnya"];
+  const recordReady = async (trackingNumber: string) => { try { await runCommand("/api/commands/shipping/ready", { trackingNumber, locationId, marketplace, carrier }); const resolvedCarrier = detectShippingCarrier(trackingNumber) || carrier; return { ok: true, message: `${trackingNumber} tercatat sebagai ${resolvedCarrier} · siap diangkut.` }; } catch (error) { return { ok: false, message: error instanceof Error ? error.message : "Resi tidak dapat dicatat." }; } };
+  const recordHandover = async (trackingNumber: string) => { try { await runCommand("/api/commands/shipping/handover/scan", { trackingNumber, locationId, carrier: handoverCarrier, batchCode }); return { ok: true, message: `${trackingNumber} masuk batch ${batchCode}.` }; } catch (error) { return { ok: false, message: error instanceof Error ? error.message : "Resi tidak dapat dimasukkan ke batch." }; } };
+  const finalize = async () => { if (!scanned.length || finishing) return; setFinishing(true); try { const proofUrl = proofFile ? await uploadImage(proofFile) : undefined; await runCommand("/api/commands/shipping/handover/finalize", { batchCode, courierName, vehicleNumber, proofUrl }); notify(`${scanned.length} paket berhasil diserahkan ke ${handoverCarrier}.`); setBatchCode(`KRM-${jakartaDateKey().replace(/-/g, "")}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`); setCourierName(""); setVehicleNumber(""); setProofFile(null); setTab("history"); } catch (error) { notify(error instanceof Error ? error.message : "Serah terima tidak dapat diselesaikan."); } finally { setFinishing(false); } };
+  return <PageBlock title="Pengiriman Pesanan" desc="Pastikan paket selesai dipacking dan benar-benar diserahkan kepada ekspedisi.">
+    <div className="shipping-stats"><article><span>Siap diangkut</span><b>{allReady.length}</b><small>paket menunggu kurir</small></article><article><span>Batch aktif</span><b>{shipments.filter((item:any) => item.status === "handover_scanned").length}</b><small>resi sudah dipindai</small></article><article><span>Sudah diserahkan</span><b>{completed.length}</b><small>paket selesai</small></article></div>
+    <div className="shipping-tabs" role="tablist">{[["packing","Packing"],["ready","Siap Diangkut"],["handover","Serah Terima"],["history","Riwayat"]].map(([id,label]) => <button key={id} className={tab === id ? "active" : ""} onClick={() => setTab(id as any)}>{label}</button>)}</div>
+    {(tab === "packing" || tab === "handover") && <div className="shipping-config"><Field label="Lokasi"><AppSelect value={locationId} onChange={(event:any) => setLocationId(event.target.value)}>{locations.map((item:any) => <option key={item.id} value={item.id}>{item.name}</option>)}</AppSelect></Field>{tab === "packing" ? <><Field label="Marketplace"><AppSelect value={marketplace} onChange={(event:any) => setMarketplace(event.target.value)}>{marketplaces.map(item => <option key={item}>{item}</option>)}</AppSelect></Field><Field label="Identifikasi ekspedisi"><AppSelect value={carrier} onChange={(event:any) => setCarrier(event.target.value)}><option value="auto">Deteksi otomatis (disarankan)</option>{carriers.map(item => <option key={item}>{item}</option>)}</AppSelect></Field></> : <><Field label="Ekspedisi batch"><AppSelect value={handoverCarrier} onChange={(event:any) => setHandoverCarrier(event.target.value)}>{carriers.map(item => <option key={item}>{item}</option>)}</AppSelect></Field><Field label="Kode batch"><input readOnly className="input-readonly" value={batchCode}/></Field></>}</div>}
+    {tab === "packing" && <section className="shipping-workspace"><div className="shipping-heading"><div><small>CHECKPOINT 1</small><h3>Scan setelah packing selesai</h3><p>Setiap scan langsung menjadikan paket berstatus Siap Diangkut.</p></div><span>{ready.length} siap</span></div><ContinuousResiScanner onDetected={recordReady}/><RecentShipmentList items={scoped.filter((item:any) => item.status === "ready").slice(0, 8)} users={data.users}/></section>}
+    {tab === "ready" && <section className="shipping-workspace"><div className="shipping-heading"><div><small>MENUNGGU KURIR</small><h3>Paket siap diangkut</h3><p>Dikelompokkan per tanggal, lokasi, dan ekspedisi agar ratusan resi tetap mudah diperiksa.</p></div><span>{allReady.length} paket</span></div><GroupedShipmentList items={allReady} users={data.users} locations={data.locations}/></section>}
+    {tab === "handover" && <section className="shipping-workspace"><div className="shipping-heading"><div><small>CHECKPOINT 2</small><h3>Scan saat paket diberikan ke kurir</h3><p>Kamera tetap aktif dan setiap resi masuk ke batch {batchCode}.</p></div><span>{scanned.length} dipindai</span></div><ContinuousResiScanner onDetected={recordHandover}/><div className="handover-fields"><Field label="Nama kurir (opsional)"><input value={courierName} onChange={event => setCourierName(event.target.value)} placeholder="Nama petugas ekspedisi"/></Field><Field label="Nomor kendaraan (opsional)"><input value={vehicleNumber} onChange={event => setVehicleNumber(event.target.value)} placeholder="Contoh: B 1234 XYZ"/></Field></div><Field label="Foto bukti serah terima (opsional)"><EvidencePhotoPicker file={proofFile} setFile={setProofFile} subject="serah terima"/></Field><RecentShipmentList items={scanned} users={data.users} empty="Belum ada resi pada batch ini."/><footer className="shipping-finalize"><span><b>{scanned.length} paket</b> akan ditandai telah diserahkan ke {handoverCarrier}.</span><button className="primary" disabled={!scanned.length || finishing} onClick={() => void finalize()}><Check/>{finishing ? "Menyimpan…" : "Selesaikan serah terima"}</button></footer></section>}
+    {tab === "history" && <section className="shipping-workspace"><div className="shipping-heading"><div><small>JEJAK AUDIT</small><h3>Riwayat serah terima</h3><p>Buka folder batch untuk memeriksa seluruh resi yang diserahkan kepada kurir.</p></div><span>{handovers.filter((item:any) => item.status === "completed").length} batch</span></div><ShipmentBatchHistory handovers={handovers} shipments={shipments} locations={data.locations} users={data.users}/></section>}
+  </PageBlock>;
+}
+function RecentShipmentList({ items, users, empty = "Belum ada resi tercatat." }: any) { return items.length ? <div className="shipment-list">{items.map((item:any) => <article key={item.id}><span className={`shipment-state ${item.status}`}><Check/></span><div><b>{item.trackingNumber}</b><small>{item.marketplace} · {item.carrier}</small></div><time>{new Date(item.handedOverAt || item.packedAt).toLocaleString("id-ID")} · {users.find((user:any) => user.id === (item.handedOverBy || item.packedBy))?.name || "Petugas"}</time></article>)}</div> : <div className="empty standalone"><Truck/><b>{empty}</b></div>; }
+
+function ShipmentBatchHistory({ handovers, shipments, locations, users }: any) {
+  const [query, setQuery] = useState("");
+  const userName = (id?:string) => users.find((item:any) => item.id === id)?.name || "Petugas";
+  const completed = handovers
+    .filter((item:any) => item.status === "completed")
+    .map((batch:any) => ({ ...batch, packages: shipments.filter((shipment:any) => shipment.handoverBatchCode === batch.batchCode) }))
+    .filter((batch:any) => !query.trim() || batch.batchCode.toLowerCase().includes(query.trim().toLowerCase()) || batch.packages.some((item:any) => item.trackingNumber.toLowerCase().includes(query.trim().toLowerCase())))
+    .sort((a:any,b:any) => new Date(b.completedAt || b.createdAt).getTime() - new Date(a.completedAt || a.createdAt).getTime());
+  return <div className="batch-history">
+    <label className="shipment-search batch-search"><Search/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Cari kode batch atau nomor resi"/></label>
+    <div className="batch-history-summary"><b>{completed.length.toLocaleString("id-ID")} batch ditemukan</b><span>Klik satu batch untuk membuka daftar resi.</span></div>
+    {completed.length ? completed.map((batch:any) => <details className="shipment-batch-folder" key={batch.id}>
+      <summary>
+        <span className="batch-folder-icon"><Archive/></span>
+        <span className="batch-folder-main"><b>{batch.batchCode}</b><small>{locations.find((location:any) => location.id === batch.locationId)?.name || "Lokasi"} · {batch.carrier}</small></span>
+        <span className="batch-folder-meta"><b>{batch.packages.length} paket</b><small>{batch.completedAt ? new Date(batch.completedAt).toLocaleString("id-ID") : "-"}</small></span>
+        <ChevronDown className="batch-folder-chevron"/>
+      </summary>
+      <div className="batch-folder-content">
+        <div className="batch-audit-grid">
+          <span><small>Kurir</small><b>{batch.courierName || "Tidak dicatat"}</b></span>
+          <span><small>Kendaraan</small><b>{batch.vehicleNumber || "Tidak dicatat"}</b></span>
+          <span><small>Petugas serah terima</small><b>{userName(batch.completedBy)}</b></span>
+          <span><small>Waktu selesai</small><b>{batch.completedAt ? new Date(batch.completedAt).toLocaleString("id-ID") : "-"}</b></span>
+        </div>
+        {batch.proofUrl && <a className="batch-proof" href={batch.proofUrl} target="_blank" rel="noreferrer"><img src={batch.proofUrl} alt={`Bukti serah terima ${batch.batchCode}`}/><span><Eye/> Lihat foto bukti</span></a>}
+        <div className="batch-package-title"><b>Daftar resi</b><span>{batch.packages.length} paket</span></div>
+        {batch.packages.length ? <div className="shipment-list">{batch.packages.map((item:any) => <article key={item.id}><span className="shipment-state handed_over"><Check/></span><div><b>{item.trackingNumber}</b><small>{item.marketplace} · {item.carrier}</small></div><time>Packing {new Date(item.packedAt).toLocaleString("id-ID")} · {userName(item.packedBy)}</time></article>)}</div> : <div className="empty standalone"><Truck/><b>Detail resi batch ini tidak tersedia.</b></div>}
+      </div>
+    </details>) : <div className="empty standalone"><Archive/><b>{query ? "Batch atau nomor resi tidak ditemukan." : "Belum ada riwayat serah terima."}</b></div>}
+  </div>;
+}
+
+function GroupedShipmentList({ items, users, locations }: any) {
+  const [query, setQuery] = useState(""), [carrier, setCarrier] = useState("all"), [marketplace, setMarketplace] = useState("all"), [visible, setVisible] = useState(50);
+  const today = jakartaDateKey();
+  const carriers = Array.from(new Set(items.map((item:any) => item.carrier))).sort() as string[];
+  const marketplaces = Array.from(new Set(items.map((item:any) => item.marketplace))).sort() as string[];
+  const filtered = items
+    .filter((item:any) => !query.trim() || item.trackingNumber.toLowerCase().includes(query.trim().toLowerCase()))
+    .filter((item:any) => carrier === "all" || item.carrier === carrier)
+    .filter((item:any) => marketplace === "all" || item.marketplace === marketplace)
+    .sort((a:any,b:any) => new Date(b.packedAt).getTime() - new Date(a.packedAt).getTime());
+  const shown = filtered.slice(0, visible);
+  const dateGroups = Array.from(shown.reduce((groups:Map<string,any[]>, item:any) => {
+    const key = jakartaDateKey(item.packedAt); groups.set(key, [...(groups.get(key) || []), item]); return groups;
+  }, new Map<string,any[]>()).entries()) as [string, any[]][];
+  const dateLabel = (key:string) => key === today ? `Hari ini · ${new Date(`${key}T12:00:00`).toLocaleDateString("id-ID", { day:"numeric", month:"long", year:"numeric" })}` : new Date(`${key}T12:00:00`).toLocaleDateString("id-ID", { weekday:"long", day:"numeric", month:"long", year:"numeric" });
+  return <div className="shipment-groups">
+    <div className="shipment-group-tools">
+      <label className="shipment-search"><Search/><input value={query} onChange={event => { setQuery(event.target.value); setVisible(50); }} placeholder="Cari nomor resi"/></label>
+      <select value={marketplace} onChange={event => { setMarketplace(event.target.value); setVisible(50); }} aria-label="Filter marketplace"><option value="all">Semua marketplace</option>{marketplaces.map(value => <option key={value}>{value}</option>)}</select>
+      <select value={carrier} onChange={event => { setCarrier(event.target.value); setVisible(50); }} aria-label="Filter ekspedisi"><option value="all">Semua ekspedisi</option>{carriers.map(value => <option key={value}>{value}</option>)}</select>
+    </div>
+    <div className="shipment-result-summary"><b>{filtered.length.toLocaleString("id-ID")} paket</b><span>{filtered.length > shown.length ? `${shown.length} ditampilkan` : "seluruh data ditampilkan"}</span></div>
+    {dateGroups.length ? dateGroups.map(([dateKey,dateItems]) => {
+      const subgroups = Array.from(dateItems.reduce((groups:Map<string,any>, item:any) => {
+        const key = `${item.locationId}::${item.carrier}`; const current = groups.get(key) || { locationId:item.locationId, carrier:item.carrier, items:[] }; current.items.push(item); groups.set(key,current); return groups;
+      }, new Map<string,any>()).values()) as any[];
+      return <details className="shipment-date-folder" key={dateKey} open={dateKey === today}>
+        <summary><span><CalendarDays/> <b>{dateLabel(dateKey)}</b></span><em>{dateItems.length} paket</em></summary>
+        <div className="shipment-date-content">{subgroups.map((group:any) => <details className="shipment-route-folder" key={`${dateKey}-${group.locationId}-${group.carrier}`} open={dateKey === today}>
+          <summary><span><MapPin/> <b>{locations.find((location:any) => location.id === group.locationId)?.name || "Lokasi"}</b><small>{group.carrier}</small></span><em>{group.items.length} paket</em></summary>
+          <RecentShipmentList items={group.items} users={users}/>
+        </details>)}</div>
+      </details>;
+    }) : <div className="empty standalone"><Truck/><b>{query ? "Nomor resi tidak ditemukan." : "Belum ada paket yang siap diangkut."}</b></div>}
+    {visible < filtered.length && <button type="button" className="secondary shipment-load-more" onClick={() => setVisible(current => current + 50)}>Tampilkan 50 berikutnya</button>}
+  </div>;
+}
+
 function Notifications({ items, close, act }: { items: OperationalNotification[]; close: () => void; act: (item: OperationalNotification) => void }) {
   const transfers = items.filter((item) => item.tone === "info");
   const stockGroups = Array.from(items.filter((item) => item.tone === "warning").reduce((groups, item) => {
