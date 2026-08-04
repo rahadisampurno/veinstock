@@ -1,4 +1,4 @@
-import type { AppData, Balance, Movement, SessionUser } from './types';
+import type { AppData, Balance, Movement, SessionUser, StockUnit } from './types';
 
 const now = () => new Date().toISOString();
 const ids = { warehouse: 'loc-owner', outlet: 'loc-outlet-1' };
@@ -15,7 +15,7 @@ export const seedData: AppData = {
     { id: ids.outlet, name: 'Outlet Meneng 1', type: 'outlet', active: true },
   ],
   products: [{
-    id: 'prod-cemilan', name: 'Cemilan Mix Meneng', category: 'Cemilan', unit: 'gram', active: true,
+    id: 'prod-cemilan', name: 'Cemilan Mix Meneng', category: 'Cemilan', unit: 'Gram', active: true,
     variants: [
       { id: 'v-balado', name: 'Balado', sku: 'MNG-BLD-001', cost: 52, price: 100, resellerPrice: 82, minStock: 1500 },
       { id: 'v-jagung', name: 'Jagung Bakar', sku: 'MNG-JGB-002', cost: 50, price: 100, resellerPrice: 80, minStock: 1500 },
@@ -44,6 +44,12 @@ export const createEmptyData = (organizationName: string, owner: Pick<SessionUse
   products: [], balances: [], transfers: [], sales: [], movements: [], stockCounts: [], suppliers: [], receipts: [], returns: [], employees: [], attendanceSettings: [], attendances: [], loans: [], payrolls: [], shipments: [], shipmentHandovers: [],
 });
 
+const stockUnitNames = ['Pcs', 'Botol', 'Cup', 'Pack', 'Box', 'Dus', 'Kg', 'Gram', 'Liter', 'Ml'] as const;
+export const normalizeStockUnit = (unit?: StockUnit): StockUnit => {
+  const value = String(unit || '').trim();
+  return stockUnitNames.find((known) => known.toLowerCase() === value.toLowerCase()) || value || 'Pcs';
+};
+
 export const normalizeData = (data: AppData): AppData => {
   const locations = data.locations || [];
   return {
@@ -51,7 +57,7 @@ export const normalizeData = (data: AppData): AppData => {
     business: data.business || { name: 'Usaha Saya', ownerName: data.users?.find(item=>item.role==='owner')?.name || 'Owner' },
     users: data.users || [],
     locations,
-    products: data.products || [],
+    products: (data.products || []).map((product) => ({ ...product, unit: normalizeStockUnit(product.unit) })),
     balances: data.balances || [],
     transfers: data.transfers || [],
     // Data sebelum kanal penjualan tersedia tetap harus muncul di analitik.

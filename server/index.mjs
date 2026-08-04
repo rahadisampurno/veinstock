@@ -1328,7 +1328,7 @@ app.post('/api/commands/pricing', requireAuth, async (req, res) => {
     if (hppRecipes.some(item => !item?.id || !String(item.name || '').trim() || !Number.isFinite(Number(item.yieldQuantity)) || Number(item.yieldQuantity) <= 0)) {
       throw invalidCommand('Data resep HPP tidak valid.');
     }
-    if (marketplaceConfigs.some(item => !item?.platform || ['adminFee', 'paymentFee', 'shippingFee', 'fixedFee', 'discount'].some(key => !Number.isFinite(Number(item[key])) || Number(item[key]) < 0))) {
+    if (marketplaceConfigs.some(item => !item?.platform || ['adminFee', 'paymentFee', 'shippingFee', 'affiliateFee', 'fixedFee', 'discount'].some(key => item[key] != null && (!Number.isFinite(Number(item[key])) || Number(item[key]) < 0)))) {
       throw invalidCommand('Konfigurasi biaya marketplace tidak valid.');
     }
     state.pricing = { hppRecipes, marketplaceConfigs };

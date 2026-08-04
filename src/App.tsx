@@ -119,6 +119,42 @@ function DecimalInput({ value, onValue, label }: { value: number; onValue: (valu
   />;
 }
 
+const formatRupiahInput = (value: number) => Math.round(nonNegativeNumber(value)).toLocaleString("id-ID");
+
+function RupiahInput({ value, onValue, label, readOnly = false }: { value: number; onValue: (value: number) => void; label?: string; readOnly?: boolean }) {
+  const normalizedValue = Math.round(nonNegativeNumber(value));
+  const [draft, setDraft] = useState(String(normalizedValue));
+  const [focused, setFocused] = useState(false);
+  useEffect(() => {
+    if (!focused && Number(draft || 0) !== normalizedValue) setDraft(String(normalizedValue));
+  }, [normalizedValue, focused, draft]);
+  return <input
+    aria-label={label}
+    type="text"
+    inputMode="numeric"
+    readOnly={readOnly}
+    value={focused && !readOnly ? draft : formatRupiahInput(normalizedValue)}
+    onFocus={(event) => {
+      if (readOnly) return;
+      setDraft(String(normalizedValue));
+      setFocused(true);
+      requestAnimationFrame(() => event.currentTarget.select());
+    }}
+    onChange={(event) => {
+      const digits = event.currentTarget.value.replace(/\D/g, "").replace(/^0+(?=\d)/, "");
+      const next = digits === "" ? "" : digits;
+      setDraft(next);
+      onValue(Number(next || 0));
+    }}
+    onBlur={() => {
+      const next = Math.round(nonNegativeNumber(draft));
+      setDraft(String(next));
+      setFocused(false);
+      onValue(next);
+    }}
+  />;
+}
+
 /**
  * Ikon navigasi Menengs dibuat khusus sebagai SVG inline agar konsisten dengan
  * karakter brand dan tetap tajam pada rail kecil maupun menu desktop.
@@ -4050,7 +4086,7 @@ function ProductModal({
   const editing = Boolean(product),
     [name, setName] = useState(product?.name || ""),
     [category, setCategory] = useState(product?.category || "Umum"),
-    [unit, setUnit] = useState<StockUnit>(product?.unit || "pcs"),
+    [unit, setUnit] = useState<StockUnit>(product?.unit || "Pcs"),
     [active, setActive] = useState(product?.active ?? true),
     [file, setFile] = useState<File | null>(null),
     [imagePreview, setImagePreview] = useState(product?.imageUrl || product?.image || ""),
@@ -6278,27 +6314,40 @@ const ModalActions = ({ close, onDelete, disabled, label = 'Simpan' }: any) => (
 }
 
 function HppMarketplaceCalculator({ data, runCommand, notify }: { data: AppData; runCommand: (path: string, payload: object, method?: "POST" | "PATCH") => Promise<AppData>; notify: (message: string) => void }) {
-  const variants = useMemo(() => data.products.flatMap(product => product.variants.map(variant => ({ ...variant, productName: product.name, unit: product.unit }))), [data.products]);
+  const variants = useMemo(() => data.products.flatMap(product => product.variants.map(variant => ({ ...variant, productId: product.id, productName: product.name, unit: product.unit }))), [data.products]);
   const presets = {
-    Shopee: { adminFee: 6.5, paymentFee: 1.8, shippingFee: 4, fixedFee: 1000 },
-    Tokopedia: { adminFee: 6.5, paymentFee: 1.5, shippingFee: 4, fixedFee: 1000 },
-    TikTok: { adminFee: 4.3, paymentFee: 1, shippingFee: 3, fixedFee: 0 },
+    Shopee: { adminFee: 6.5, paymentFee: 1.8, shippingFee: 4, affiliateFee: 0, fixedFee: 1000 },
+    Tokopedia: { adminFee: 6.5, paymentFee: 1.5, shippingFee: 4, affiliateFee: 0, fixedFee: 1000 },
+    TikTok: { adminFee: 4.3, paymentFee: 1, shippingFee: 3, affiliateFee: 0, fixedFee: 0 },
+    Facebook: { adminFee: 0, paymentFee: 0, shippingFee: 0, affiliateFee: 0, fixedFee: 0 },
+    Outside: { adminFee: 0, paymentFee: 0, shippingFee: 0, affiliateFee: 0, fixedFee: 0 },
   } as const;
-  const recipeBlank = (variantId = variants[0]?.id || ""): HppRecipe => ({ id: newId("hpp"), variantId, name: variants.find(item => item.id === variantId)?.productName || "Resep HPP baru", yieldQuantity: 1, yieldUnit: variants.find(item => item.id === variantId)?.unit || "Pcs", materials: [{ id: newId("mat"), name: "", quantity: 1, unit: "Pcs", unitCost: 0 }], additionalCosts: [], targetMargin: 35, updatedAt: new Date().toISOString() });
+  const presetLabels: Record<keyof typeof presets, string> = {
+    Shopee: "Shopee (Star / Mall)",
+    Tokopedia: "Tokopedia (Power Merchant PRO)",
+    TikTok: "TikTok Shop (Official)",
+    Facebook: "Facebook Marketplace",
+    Outside: "Di luar Marketplace",
+  };
+  const recipeVariantIds = (item: HppRecipe) => item.variantIds?.length ? item.variantIds : item.variantId ? [item.variantId] : [];
+  const recipeBlank = (variantId = variants[0]?.id || ""): HppRecipe => ({ id: newId("hpp"), variantId, variantIds: variantId ? [variantId] : [], name: variants.find(item => item.id === variantId)?.productName || "Resep HPP baru", yieldQuantity: 1, yieldUnit: variants.find(item => item.id === variantId)?.unit || "Pcs", materials: [{ id: newId("mat"), name: "", quantity: 1, unit: "Pcs", unitCost: 0 }], additionalCosts: [], targetMargin: 35, updatedAt: new Date().toISOString() });
   const savedRecipes = useMemo(() => data.pricing?.hppRecipes || [], [data.pricing?.hppRecipes]);
   const savedConfigs = useMemo(() => data.pricing?.marketplaceConfigs || [], [data.pricing?.marketplaceConfigs]);
   const [workspace, setWorkspace] = useState<"hpp" | "marketplace">("hpp");
   const [hppStep, setHppStep] = useState<1 | 2 | 3>(1);
   const [recipe, setRecipe] = useState<HppRecipe>(() => savedRecipes[0] || recipeBlank());
   const [platform, setPlatform] = useState<keyof typeof presets>("Shopee");
-  const [variantId, setVariantId] = useState(() => savedRecipes[0]?.variantId || variants[0]?.id || "");
+  const [variantId, setVariantId] = useState(() => savedRecipes[0] ? recipeVariantIds(savedRecipes[0])[0] || variants[0]?.id || "" : variants[0]?.id || "");
   const [sellingPrice, setSellingPrice] = useState(() => Number(variants[0]?.price || 0));
   const [discount, setDiscount] = useState(0);
   const [adminFee, setAdminFee] = useState(6.5);
   const [paymentFee, setPaymentFee] = useState(1.8);
   const [shippingFee, setShippingFee] = useState(4);
+  const [affiliateFee, setAffiliateFee] = useState(0);
   const [fixedFee, setFixedFee] = useState(1000);
   const [saving, setSaving] = useState(false);
+  const [variantPickerOpen, setVariantPickerOpen] = useState(false);
+  const [pickerProductId, setPickerProductId] = useState<string | null>(null);
   const loadedConfigSignature = useRef("");
   useEffect(() => {
     const signature = JSON.stringify(savedConfigs);
@@ -6306,40 +6355,48 @@ function HppMarketplaceCalculator({ data, runCommand, notify }: { data: AppData;
     loadedConfigSignature.current = signature;
     const saved = savedConfigs.find(item => item.platform === platform);
     if (!saved) return;
-    setAdminFee(saved.adminFee); setPaymentFee(saved.paymentFee); setShippingFee(saved.shippingFee); setFixedFee(saved.fixedFee); setDiscount(saved.discount);
+    setAdminFee(saved.adminFee); setPaymentFee(saved.paymentFee); setShippingFee(saved.shippingFee); setAffiliateFee(Number(saved.affiliateFee || 0)); setFixedFee(saved.fixedFee); setDiscount(saved.discount);
   }, [platform, savedConfigs]);
   const selected = variants.find(variant => variant.id === variantId);
   const { materialCost: rawMaterialCost, additionalCost: extraCost, totalCost: recipeCost, unitHpp: recipeHpp } = calculateHppCosts(recipe.materials, recipe.additionalCosts, recipe.yieldQuantity);
   const recommendedPrice = recipe.targetMargin < 100 ? recipeHpp / (1 - Math.max(0, recipe.targetMargin) / 100) : 0;
-  const activeHpp = recipe.variantId === variantId && recipeHpp > 0 ? recipeHpp : Number(selected?.cost || 0);
+  const linkedRecipe = savedRecipes.find(item => recipeVariantIds(item).includes(variantId));
+  const linkedRecipeHpp = linkedRecipe ? calculateHppCosts(linkedRecipe.materials, linkedRecipe.additionalCosts, linkedRecipe.yieldQuantity).unitHpp : 0;
+  const activeHpp = linkedRecipeHpp > 0 ? linkedRecipeHpp : Number(selected?.cost || 0);
   const afterDiscount = Math.max(0, sellingPrice) * (1 - Math.min(100, Math.max(0, discount)) / 100);
   const adminAmount = afterDiscount * Math.max(0, adminFee) / 100;
   const paymentAmount = afterDiscount * Math.max(0, paymentFee) / 100;
   const shippingAmount = afterDiscount * Math.max(0, shippingFee) / 100;
-  const fees = adminAmount + paymentAmount + shippingAmount + Math.max(0, fixedFee);
+  const affiliateAmount = afterDiscount * Math.max(0, affiliateFee) / 100;
+  const fees = adminAmount + paymentAmount + shippingAmount + affiliateAmount + Math.max(0, fixedFee);
   const payout = afterDiscount - fees;
   const profit = payout - activeHpp;
   const margin = afterDiscount > 0 ? (profit / afterDiscount) * 100 : 0;
-  const targetPrice = activeHpp > 0 && adminFee + paymentFee + shippingFee < 100 ? activeHpp / (1 - (adminFee + paymentFee + shippingFee) / 100) : 0;
+  const targetPrice = activeHpp > 0 && adminFee + paymentFee + shippingFee + affiliateFee < 100 ? activeHpp / (1 - (adminFee + paymentFee + shippingFee + affiliateFee) / 100) : 0;
   const selectPreset = (next: keyof typeof presets) => {
     const saved = savedConfigs.find(item => item.platform === next);
     const base = saved || presets[next];
-    setPlatform(next); setAdminFee(base.adminFee); setPaymentFee(base.paymentFee); setShippingFee(base.shippingFee); setFixedFee(base.fixedFee); setDiscount(saved?.discount || 0);
+    setPlatform(next); setAdminFee(base.adminFee); setPaymentFee(base.paymentFee); setShippingFee(base.shippingFee); setAffiliateFee(Number(saved?.affiliateFee ?? base.affiliateFee)); setFixedFee(base.fixedFee); setDiscount(saved?.discount || 0);
   };
   const updateMaterial = (id: string, patch: Partial<HppMaterial>) => setRecipe(current => ({ ...current, materials: current.materials.map(item => item.id === id ? { ...item, ...patch } : item) }));
   const updateAdditional = (id: string, patch: Partial<HppAdditionalCost>) => setRecipe(current => ({ ...current, additionalCosts: current.additionalCosts.map(item => item.id === id ? { ...item, ...patch } : item) }));
   const loadRecipe = (id: string) => {
     const next = savedRecipes.find(item => item.id === id);
     if (!next) { const blank = recipeBlank(variantId); setRecipe(blank); return; }
-    setRecipe(next); setVariantId(next.variantId || variantId);
-    const product = variants.find(item => item.id === next.variantId);
+    const linkedIds = recipeVariantIds(next);
+    setRecipe({ ...next, variantIds: linkedIds }); setVariantId(linkedIds[0] || variantId);
+    const product = variants.find(item => item.id === linkedIds[0]);
     if (product) setSellingPrice(Number(next.sellingPrice || product.price || 0));
   };
   const savePricing = async (nextRecipe?: HppRecipe, configOnly = false) => {
     if (!configOnly && !(nextRecipe || recipe).name.trim()) { notify("Nama resep HPP wajib diisi"); return; }
-    const recipeToSave = { ...(nextRecipe || recipe), updatedAt: new Date().toISOString() };
+    const draftRecipe = nextRecipe || recipe;
+    const linkedIds = recipeVariantIds(draftRecipe);
+    const conflict = !configOnly && savedRecipes.find(item => item.id !== draftRecipe.id && recipeVariantIds(item).some(id => linkedIds.includes(id)));
+    if (conflict) { notify(`Ada varian yang sudah digunakan oleh resep ${conflict.name}. Lepaskan varian tersebut terlebih dahulu.`); return; }
+    const recipeToSave = { ...draftRecipe, variantIds: linkedIds, variantId: linkedIds[0], updatedAt: new Date().toISOString() };
     const recipes = configOnly ? savedRecipes : [recipeToSave, ...savedRecipes.filter(item => item.id !== recipeToSave.id)];
-    const config: MarketplaceConfig = { platform, adminFee, paymentFee, shippingFee, fixedFee, discount, updatedAt: new Date().toISOString() };
+    const config: MarketplaceConfig = { platform, adminFee, paymentFee, shippingFee, affiliateFee, fixedFee, discount, updatedAt: new Date().toISOString() };
     const configs = [config, ...savedConfigs.filter(item => item.platform !== platform)];
     setSaving(true);
     try {
@@ -6349,14 +6406,14 @@ function HppMarketplaceCalculator({ data, runCommand, notify }: { data: AppData;
     } catch (error) { notify(error instanceof Error ? error.message : "Gagal menyimpan konfigurasi"); }
     finally { setSaving(false); }
   };
-  const numberInput = (label: string, value: number, onChange: (value: number) => void, suffix = "Rp") => <label className="field"><span>{label}</span><div className="money-input">{suffix && <small>{suffix}</small>}<DecimalInput value={value} onValue={onChange} /></div></label>;
+  const numberInput = (label: string, value: number, onChange: (value: number) => void, suffix = "Rp", readOnly = false) => <label className="field"><span>{label}</span><div className="money-input">{suffix && <small>{suffix}</small>}{suffix === "Rp" ? <RupiahInput label={label} value={value} onValue={onChange} readOnly={readOnly} /> : <DecimalInput label={label} value={value} onValue={onChange} />}</div></label>;
   return <PageBlock title="HPP & Marketplace" desc="Hitung HPP produksi serta simulasi biaya marketplace dari satu menu yang terhubung ke produk Menengs.">
     <div className="pricing-switch" role="tablist"><button className={workspace === "hpp" ? "active" : ""} onClick={() => setWorkspace("hpp")}>1. HPP Produksi</button><button className={workspace === "marketplace" ? "active" : ""} onClick={() => setWorkspace("marketplace")}>2. Biaya Marketplace</button></div>
     {workspace === "hpp" ? <div className="hpp-wizard">
       <div className="hpp-stepper" aria-label="Tahapan kalkulator HPP">{([{ id: 1, title: "Bahan Baku" }, { id: 2, title: "Biaya Tambahan" }, { id: 3, title: "Hasil & Harga" }] as const).map((item, index) => <div className={hppStep === item.id ? "active" : hppStep > item.id ? "done" : ""} key={item.id}><button onClick={() => setHppStep(item.id)}><b>{item.id}</b><span><small>Langkah {item.id}</small>{item.title}</span></button>{index < 2 && <i />}</div>)}</div>
       <div className="card hpp-recipe-bar"><label><span>Bahan baku HPP tersimpan</span><AppSelect value={savedRecipes.some(item => item.id === recipe.id) ? recipe.id : ""} onChange={(event:any) => loadRecipe(event.target.value)}><option value="">+ Bahan baku HPP baru (kosong)</option>{savedRecipes.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</AppSelect></label><button className="secondary" onClick={() => { setRecipe(recipeBlank(recipe.variantId)); setHppStep(1); }}><Plus /> Buat bahan baku baru</button></div>
       {hppStep === 1 && <section className="card hpp-step-card">
-        <div className="hpp-product-grid"><label className="field hpp-name-field"><span>Nama produk / resep</span><div className="money-input"><input value={recipe.name} onChange={event => setRecipe(current => ({ ...current, name: event.target.value }))} /></div></label>{numberInput("Yield (hasil jadi)", recipe.yieldQuantity, value => setRecipe(current => ({ ...current, yieldQuantity: value })), "")}<label className="field"><span>Satuan hasil</span><AppSelect value={recipe.yieldUnit} onChange={(event:any) => setRecipe(current => ({ ...current, yieldUnit: event.target.value }))}><option>Pcs</option><option>Pack</option><option>Box</option><option>Kg</option><option>Gram</option></AppSelect></label><label className="field hpp-variant-field"><span>Hubungkan ke varian Menengs</span><AppSelect value={recipe.variantId || ""} onChange={(event:any) => { const product = variants.find(item => item.id === event.target.value); setRecipe(current => ({ ...current, variantId: event.target.value, yieldUnit: product?.unit || current.yieldUnit })); setVariantId(event.target.value); setSellingPrice(Number(product?.price || 0)); }}><option value="">Belum dihubungkan</option>{variants.map(item => <option key={item.id} value={item.id}>{item.productName} · {item.name}</option>)}</AppSelect></label></div>
+        <div className="hpp-product-grid"><label className="field hpp-name-field"><span>Nama produk / resep</span><div className="money-input"><input value={recipe.name} onChange={event => setRecipe(current => ({ ...current, name: event.target.value }))} /></div></label>{numberInput("Yield (hasil jadi)", recipe.yieldQuantity, value => setRecipe(current => ({ ...current, yieldQuantity: value })), "")}<label className="field"><span>Satuan hasil</span><AppSelect value={recipe.yieldUnit} onChange={(event:any) => setRecipe(current => ({ ...current, yieldUnit: event.target.value }))}><option>Pcs</option><option>Pack</option><option>Box</option><option>Kg</option><option>Gram</option></AppSelect></label><div className="field hpp-variant-field"><span>Terapkan HPP ke varian produk</span><button type="button" className="hpp-variant-open" onClick={() => { setPickerProductId(null); setVariantPickerOpen(true); }}><Boxes /><span><b>{recipeVariantIds(recipe).length ? `${recipeVariantIds(recipe).length} varian dipilih` : "Pilih produk & varian"}</b><small>Klik untuk mengatur varian penerima HPP</small></span><ChevronRight /></button></div></div>
         <div className="pricing-section-head"><div><h3>Daftar bahan baku</h3><p>Masukkan bahan yang benar-benar dipakai untuk satu kali produksi {recipe.yieldQuantity || 0} {recipe.yieldUnit}.</p></div><button className="primary" onClick={() => setRecipe(current => ({ ...current, materials: [...current.materials, { id: newId("mat"), name: "", quantity: 1, unit: "Pcs", unitCost: 0 }] }))}><Plus /> Tambah bahan</button></div>
         <div className="pricing-table-wrap"><table className="pricing-table hpp-material-table"><thead><tr><th>Nama bahan baku</th><th>Jumlah dipakai</th><th>Satuan dipakai</th><th>Harga satuan</th><th>Harga per</th><th>Total biaya</th><th>Aksi</th></tr></thead><tbody>{recipe.materials.map(item => <tr key={item.id}><td><input aria-label="Nama bahan baku" value={item.name} onChange={event => updateMaterial(item.id, { name: event.target.value })} placeholder="Contoh: Makaroni" /></td><td><DecimalInput label="Jumlah bahan" value={item.quantity} onValue={quantity => updateMaterial(item.id, { quantity })} /></td><td><select aria-label="Satuan bahan" value={item.unit} onChange={event => updateMaterial(item.id, { unit: event.target.value })}><option>Pcs</option><option>Gram</option><option>Kg</option><option>Liter</option><option>Pack</option><option>Box</option></select></td><td><DecimalInput label="Harga satuan bahan" value={item.unitCost} onValue={unitCost => updateMaterial(item.id, { unitCost })} /></td><td><span>{item.unit}</span></td><td><b>{money(materialLineCost(item))}</b></td><td><button className="icon-btn danger-icon" aria-label="Hapus bahan" disabled={recipe.materials.length === 1} onClick={() => setRecipe(current => ({ ...current, materials: current.materials.filter(material => material.id !== item.id) }))}><Trash2 /></button></td></tr>)}</tbody></table></div>
         <div className="subtotal-row"><span>Subtotal bahan baku</span><b>{money(rawMaterialCost)}</b></div><div className="hpp-nav"><span /><button className="primary" onClick={() => setHppStep(2)}>Lanjut ke Langkah 2: Biaya Tambahan <ArrowRight /></button></div>
@@ -6369,10 +6426,20 @@ function HppMarketplaceCalculator({ data, runCommand, notify }: { data: AppData;
       {hppStep === 3 && <section className="hpp-result-step"><div className="hpp-result-cards"><article><span>Total biaya produksi</span><b>{money(recipeCost)}</b><small>Bahan: {money(rawMaterialCost)} + biaya: {money(extraCost)}</small></article><article className="hpp-total-card"><span>HPP murni per {recipe.yieldUnit || "unit"}</span><b>{money(recipeHpp)}</b><small>Batas minimum absolut (harga modal)</small></article><article className="hpp-recommend-card"><span>Harga jual rekomendasi</span><b>{money(recommendedPrice)}</b><small>Berdasarkan target margin {recipe.targetMargin}%</small></article></div><div className="card hpp-final-card"><h3>Simulasi penentuan harga jual akhir</h3><div className="hpp-final-grid"><div><label className="field"><span>Target margin keuntungan</span><div className="range-control"><input type="range" min="0" max="90" value={recipe.targetMargin} onChange={event => setRecipe(current => ({ ...current, targetMargin: Number(event.target.value) }))} /><b>{recipe.targetMargin}%</b></div></label><p className="formula-note">Rumus HPP: Harga Jual = HPP / (1 − Margin/100)</p>{numberInput(`Harga jual ditetapkan toko (Rp / ${recipe.yieldUnit})`, sellingPrice, setSellingPrice)}</div><aside><div><span>Harga jual ditetapkan</span><b>{money(sellingPrice)}</b></div><div><span>Dikurangi HPP modal/unit</span><b className="negative">− {money(recipeHpp)}</b></div><hr /><strong>Laba bersih per {recipe.yieldUnit}: <b className={sellingPrice >= recipeHpp ? "positive" : "negative"}>{money(sellingPrice - recipeHpp)}</b></strong><p>Margin aktual: <b>{sellingPrice > 0 ? (((sellingPrice - recipeHpp) / sellingPrice) * 100).toFixed(1) : "0.0"}%</b></p><p>Persentase markup: <b>{recipeHpp > 0 ? (((sellingPrice - recipeHpp) / recipeHpp) * 100).toFixed(1) : "0.0"}%</b></p></aside></div><div className="hpp-nav"><button className="secondary" onClick={() => setHppStep(2)}><ChevronLeft /> Kembali ke biaya tambahan</button><button className="primary" disabled={saving} onClick={() => savePricing()}><Check /> {saving ? "Menyimpan…" : "Simpan resep HPP"}</button></div></div></section>}
     </div> : <div className="marketplace-workspace">
       <section className="card marketplace-intro"><h3>Kalkulator Diskon & Biaya Marketplace</h3><p>Simulasikan potongan Shopee, Tokopedia, atau TikTok Shop agar harga jual tetap menghasilkan laba bersih.</p></section>
-      <div className="pricing-presets"><span>Preset platform</span>{(Object.keys(presets) as Array<keyof typeof presets>).map(item => <button key={item} className={platform === item ? "active" : ""} onClick={() => selectPreset(item)}>{item === "Shopee" ? "Shopee (Star / Mall)" : item === "Tokopedia" ? "Tokopedia (Power Merchant PRO)" : "TikTok Shop (Official)"}</button>)}</div>
-      <div className="marketplace-grid"><section className="card pricing-form"><h3>Input harga & komisi platform</h3><div className="form-grid">{numberInput("Harga jual normal", sellingPrice, setSellingPrice)}{numberInput("Modal HPP produk", activeHpp, () => {}, "Rp")}</div>{numberInput("Diskon penjual / voucher", discount, value => setDiscount(Math.min(100, value)), "%")}<div className="pricing-divider"><span>Konfigurasi potongan platform</span></div><div className="form-grid">{numberInput("Komisi admin platform", adminFee, value => setAdminFee(Math.min(100, value)), "%")}{numberInput("Biaya pembayaran", paymentFee, value => setPaymentFee(Math.min(100, value)), "%")}{numberInput("Gratis ongkir / cashback", shippingFee, value => setShippingFee(Math.min(100, value)), "%")}{numberInput("Biaya tetap transaksi", fixedFee, setFixedFee)}</div><div className="pricing-actions"><button className="secondary" onClick={() => selectPreset(platform)}><RotateCcw /> Reset ke default</button><button className="primary" disabled={saving} onClick={() => savePricing(undefined, true)}><Check /> {saving ? "Menyimpan…" : "Simpan konfigurasi"}</button></div></section>
-      <aside className={`card marketplace-summary ${profit < 0 ? "loss" : ""}`}><h3>Rincian penerimaan (net payout)</h3><div className="calc-row"><span>Harga setelah diskon</span><b>{money(afterDiscount)}</b></div><div className="fee-row"><span>Komisi admin ({adminFee}%)</span><b>- {money(adminAmount)}</b></div><div className="fee-row"><span>Biaya pembayaran ({paymentFee}%)</span><b>- {money(paymentAmount)}</b></div><div className="fee-row"><span>Gratis ongkir / cashback ({shippingFee}%)</span><b>- {money(shippingAmount)}</b></div><div className="fee-row"><span>Biaya tetap per pesanan</span><b>- {money(fixedFee)}</b></div><hr /><div className="calc-row total"><span>Total potongan platform</span><b>{money(fees)}</b></div><div className="net-payout"><span>Cair ke rekening (net)</span><b>{money(payout)}</b></div><div className="profit-box"><span>{profit < 0 ? "Peringatan kerugian" : "Laba bersih / produk"}</span><b>{money(profit)}</b><small>Margin keuntungan bersih: {margin.toFixed(1)}%</small></div><p className="muted">Harga minimum impas: <b>{money(targetPrice)}</b> sebelum pembulatan.</p></aside></div>
+      <div className="pricing-presets"><span>Preset platform</span>{(Object.keys(presets) as Array<keyof typeof presets>).map(item => <button key={item} className={platform === item ? "active" : ""} onClick={() => selectPreset(item)}>{presetLabels[item]}</button>)}</div>
+      <div className="marketplace-grid"><section className="card pricing-form"><h3>Input harga & komisi platform</h3><label className="field"><span>Produk / varian yang dihitung</span><AppSelect value={variantId} onChange={(event:any) => { const nextId = event.target.value; const product = variants.find(item => item.id === nextId); setVariantId(nextId); setSellingPrice(Number(product?.price || 0)); }}><option value="">Pilih varian</option>{variants.map(item => <option key={item.id} value={item.id}>{item.productName} · {item.name}</option>)}</AppSelect><small>{linkedRecipe ? `Modal memakai resep HPP: ${linkedRecipe.name}` : "Modal memakai harga modal dari Produk & Varian"}</small></label><div className="form-grid">{numberInput("Harga jual normal", sellingPrice, setSellingPrice)}{numberInput("Modal HPP produk", activeHpp, () => {}, "Rp", true)}</div>{numberInput("Diskon penjual / voucher", discount, value => setDiscount(Math.min(100, value)), "%")}<div className="pricing-divider"><span>Konfigurasi potongan platform</span></div><div className="form-grid">{numberInput("Komisi admin platform", adminFee, value => setAdminFee(Math.min(100, value)), "%")}{numberInput("Biaya pembayaran", paymentFee, value => setPaymentFee(Math.min(100, value)), "%")}{numberInput("Gratis ongkir / cashback", shippingFee, value => setShippingFee(Math.min(100, value)), "%")}{(platform === "Shopee" || platform === "TikTok") && numberInput("Komisi affiliate", affiliateFee, value => setAffiliateFee(Math.min(100, value)), "%")}{numberInput("Biaya tetap transaksi", fixedFee, setFixedFee)}</div><div className="pricing-actions"><button className="secondary" onClick={() => selectPreset(platform)}><RotateCcw /> Reset ke default</button><button className="primary" disabled={saving} onClick={() => savePricing(undefined, true)}><Check /> {saving ? "Menyimpan…" : "Simpan konfigurasi"}</button></div></section>
+      <aside className={`card marketplace-summary ${profit < 0 ? "loss" : ""}`}><h3>Rincian penerimaan (net payout)</h3><div className="calc-row"><span>Harga setelah diskon</span><b>{money(afterDiscount)}</b></div><div className="fee-row"><span>Komisi admin ({adminFee}%)</span><b>- {money(adminAmount)}</b></div><div className="fee-row"><span>Biaya pembayaran ({paymentFee}%)</span><b>- {money(paymentAmount)}</b></div><div className="fee-row"><span>Gratis ongkir / cashback ({shippingFee}%)</span><b>- {money(shippingAmount)}</b></div>{(platform === "Shopee" || platform === "TikTok") && <div className="fee-row"><span>Komisi affiliate ({affiliateFee}%)</span><b>- {money(affiliateAmount)}</b></div>}<div className="fee-row"><span>Biaya tetap per pesanan</span><b>- {money(fixedFee)}</b></div><hr /><div className="calc-row total"><span>Total potongan platform</span><b>{money(fees)}</b></div><div className="net-payout"><span>Cair ke rekening (net)</span><b>{money(payout)}</b></div><div className="profit-box"><span>{profit < 0 ? "Peringatan kerugian" : "Laba bersih / produk"}</span><b>{money(profit)}</b><small>Margin keuntungan bersih: {margin.toFixed(1)}%</small></div><p className="muted">Harga minimum impas: <b>{money(targetPrice)}</b> sebelum pembulatan.</p></aside></div>
     </div>}
+    {variantPickerOpen && <Modal className="large hpp-variant-modal" title="Terapkan HPP ke varian produk" desc={pickerProductId ? "Pilih satu atau beberapa varian dari produk ini." : "Pilih produk terlebih dahulu untuk melihat daftar variannya."} close={() => { setVariantPickerOpen(false); setPickerProductId(null); }}>
+      <div className="hpp-picker-body">
+        {!pickerProductId ? <div className="hpp-product-list">{data.products.map(product => { const selectedCount = product.variants.filter(item => recipeVariantIds(recipe).includes(item.id)).length; return <button type="button" key={product.id} onClick={() => setPickerProductId(product.id)}><span className="hpp-product-icon">{product.name.slice(0, 2).toUpperCase()}</span><span><b>{product.name}</b><small>{product.variants.length} varian{selectedCount ? ` · ${selectedCount} dipilih` : ""}</small></span><ChevronRight /></button>; })}</div> : <>
+          <button type="button" className="hpp-picker-back" onClick={() => setPickerProductId(null)}><ChevronLeft /> Kembali ke daftar produk</button>
+          <div className="hpp-picker-heading"><div><b>{data.products.find(item => item.id === pickerProductId)?.name}</b><small>Pilih varian yang menggunakan resep HPP ini</small></div><button type="button" className="secondary" onClick={() => { const productVariantIds = variants.filter(item => item.productId === pickerProductId).map(item => item.id); const currentIds = recipeVariantIds(recipe); const allSelected = productVariantIds.every(id => currentIds.includes(id)); const variantIds = allSelected ? currentIds.filter(id => !productVariantIds.includes(id)) : [...new Set([...currentIds, ...productVariantIds])]; setRecipe(current => ({ ...current, variantIds, variantId: variantIds[0] })); }}>{variants.filter(item => item.productId === pickerProductId).every(item => recipeVariantIds(recipe).includes(item.id)) ? "Batalkan semua" : "Pilih semua"}</button></div>
+          <div className="hpp-modal-variant-list">{variants.filter(item => item.productId === pickerProductId).map(item => { const checked = recipeVariantIds(recipe).includes(item.id); return <label key={item.id}><input type="checkbox" checked={checked} onChange={() => { const currentIds = recipeVariantIds(recipe); const variantIds = checked ? currentIds.filter(id => id !== item.id) : [...currentIds, item.id]; setRecipe(current => ({ ...current, variantIds, variantId: variantIds[0] })); if (!checked) { setVariantId(item.id); setSellingPrice(Number(item.price || 0)); } }} /><span><b>{item.name}</b><small>SKU: {item.sku || "-"}</small></span>{checked && <Check />}</label>; })}</div>
+        </>}
+      </div>
+      <footer className="hpp-picker-footer"><span><b>{recipeVariantIds(recipe).length}</b> varian dipilih</span><button type="button" className="primary" onClick={() => { setVariantPickerOpen(false); setPickerProductId(null); }}><Check /> Selesai</button></footer>
+    </Modal>}
   </PageBlock>;
 }
 

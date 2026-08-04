@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { adjustBalance, getBalance, movement, normalizeData, seedData } from './store';
+import { adjustBalance, getBalance, movement, normalizeData, normalizeStockUnit, seedData } from './store';
 
 describe('inventory balance', () => {
+  it('normalizes legacy stock unit capitalization', () => {
+    expect(normalizeStockUnit('gram')).toBe('Gram');
+    expect(normalizeStockUnit('pcs')).toBe('Pcs');
+    expect(normalizeStockUnit('KG')).toBe('Kg');
+  });
   it('reduces source stock without changing another location', () => {
     const beforeOutlet = getBalance(seedData.balances, 'loc-outlet-1', 'v-balado');
     const next = adjustBalance(seedData.balances, 'loc-owner', 'v-balado', -1000);
