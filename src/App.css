@@ -1936,6 +1936,41 @@ body{font-size:16px;line-height:1.5}.brand small{font-size:12px}.workspace>span{
 }
 
 @media (max-width: 720px) {
+  /*
+   * Filter tanggal pada halaman daftar harus ikut alur dokumen. Sebelumnya
+   * popover mobile memakai position:fixed (bottom sheet), sehingga tinggi
+   * filter dan posisi daftar tidak saling mengikuti. Mode inline ini menjaga
+   * daftar rapat saat tertutup dan mendorongnya turun saat kalender dibuka.
+   */
+  .filters {
+    align-items: stretch;
+    margin-bottom: 12px;
+  }
+
+  .filters .list-period-picker {
+    flex: 0 0 auto;
+    width: 100%;
+    min-width: 0;
+    margin: 0;
+  }
+
+  .filters .list-period-picker .period-popover {
+    position: static;
+    inset: auto;
+    width: 100%;
+    max-height: none;
+    margin-top: 8px;
+    overflow: hidden;
+    border-radius: 14px;
+    box-shadow: 0 12px 26px #073b5a1f;
+  }
+
+  .record-card-list,
+  .transfer-document-list {
+    align-content: start;
+    margin-top: 0;
+  }
+
   .report-two-columns,
   .report-kpi-grid {
     grid-template-columns: 1fr;
