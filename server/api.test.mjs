@@ -250,15 +250,19 @@ describe('multi-tenant API', () => {
     const staff = await post('/api/login', { email: employeeEmail, password: 'Password123!' });
     expect((await post('/api/commands/attendance', { kind: 'in', latitude: -6.2, longitude: 106.8, capturedAt: '2026-07-31T01:10:00.000Z' }, staff.body.token)).status).toBe(201);
     expect((await post('/api/commands/attendance', { kind: 'out', latitude: -6.2, longitude: 106.8, capturedAt: '2026-07-31T09:10:00.000Z' }, staff.body.token)).status).toBe(201);
-    const loan = { id: `loan-${suffix}`, employeeId: employee.id, loanDate: '2026-07-31', amount: 500000, installmentCount: 5, installmentAmount: 100000, paidInstallments: 0, status: 'active' };
+    // Nilai cicilan dari browser tidak dipercaya. Server harus menghitung
+    // ulang Rp2.000 / 3 menjadi Rp667 dan mengabaikan nilai kiriman yang salah.
+    const loan = { id: `loan-${suffix}`, employeeId: employee.id, loanDate: '2026-07-31', amount: 2000, installmentCount: 3, installmentAmount: 1, paidInstallments: 0, status: 'active' };
+    expect((await post('/api/commands/loans', { loan: { ...loan, id: `${loan.id}-invalid`, installmentCount: 0 } }, owner.body.token)).status).toBe(400);
     expect((await post('/api/commands/loans', { loan }, owner.body.token)).status).toBe(201);
+    expect((await post('/api/commands/loans', { loan }, owner.body.token)).status).toBe(400);
     expect((await post(`/api/commands/loans/${loan.id}/installments`, {}, owner.body.token)).status).toBe(201);
     const payroll = { id: `payroll-${suffix}`, employeeId: employee.id, period: '2026-07', grossAmount: 3000000, status: 'paid' };
     expect((await post('/api/commands/payrolls', { payroll }, owner.body.token)).status).toBe(201);
     const refreshed = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
     expect(refreshed.body.data.employees).toContainEqual(expect.objectContaining({ id: employee.id }));
     expect(refreshed.body.data.attendances).toContainEqual(expect.objectContaining({ employeeId: employee.id, checkInAt: expect.any(String), checkOutAt: expect.any(String) }));
-    expect(refreshed.body.data.loans).toContainEqual(expect.objectContaining({ id: loan.id, paidInstallments: 1 }));
+    expect(refreshed.body.data.loans).toContainEqual(expect.objectContaining({ id: loan.id, amount: 2000, installmentCount: 3, installmentAmount: 667, paidInstallments: 1, status: 'active' }));
     expect(refreshed.body.data.payrolls).toContainEqual(expect.objectContaining({ id: payroll.id, period: '2026-07' }));
   });
 
@@ -298,5 +302,26 @@ describe('multi-tenant API', () => {
     expect(refreshed.body.data.shipments).toContainEqual(expect.objectContaining({ trackingNumber: jneTrackingNumber, carrier: 'JNE', status: 'ready' }));
     expect(refreshed.body.data.shipments).toContainEqual(expect.objectContaining({ trackingNumber: unknownTrackingNumber, carrier: 'SiCepat', status: 'handed_over', handoverBatchCode: sicepatBatchCode }));
     expect(refreshed.body.data.shipmentHandovers).toContainEqual(expect.objectContaining({ batchCode, status: 'completed', courierName: 'Kurir SPX' }));
+  });
+
+  it('synchronizes a saved HPP recipe to the selected variant master costs', async () => {
+    const suffix = `${Date.now()}-hpp-sync`;
+    const owner = await post('/api/register', { organizationName: 'HPP Sinkron', name: 'Owner', email: `owner-${suffix}@test.local`, password: 'Password123!' });
+    const variantIds = [`variant-a-${suffix}`, `variant-b-${suffix}`];
+    const product = {
+      id: `product-${suffix}`, name: 'Produk Resep Bersama', category: 'Uji', unit: 'Pcs', active: true,
+      variants: variantIds.map((id, index) => ({ id, name: `Varian ${index + 1}`, sku: `HPP-${index}-${suffix}`, cost: 100, price: 2000, resellerPrice: 1500, minStock: 1 })),
+    };
+    expect((await post('/api/commands/products', { product }, owner.body.token)).status).toBe(201);
+    const recipe = {
+      id: `recipe-${suffix}`, variantId: variantIds[0], variantIds, name: 'Resep Bersama', yieldQuantity: 5, yieldUnit: 'Pcs', targetMargin: 35, updatedAt: new Date().toISOString(),
+      materials: [{ id: 'material-1', name: 'Bahan', quantity: 2, unit: 'Pcs', unitCost: 1000 }],
+      additionalCosts: [{ id: 'cost-1', name: 'Kemasan', category: 'kemasan', amount: 500 }],
+    };
+    const saved = await post('/api/commands/pricing', { pricing: { hppRecipes: [recipe], marketplaceConfigs: [] }, syncVariantCosts: true, syncedRecipeId: recipe.id }, owner.body.token);
+    expect(saved.status).toBe(201);
+    const refreshed = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    const updatedProduct = refreshed.body.data.products.find(item => item.id === product.id);
+    expect(updatedProduct.variants.map(item => item.cost)).toEqual([500, 500]);
   });
 });

@@ -311,7 +311,8 @@ async function db() {
       active BOOLEAN NOT NULL DEFAULT TRUE,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       UNIQUE KEY uq_org_email (organization_id,email),
-      INDEX idx_users_email (email)
+      INDEX idx_users_email (email),
+      INDEX idx_users_org_created (organization_id, created_at)
     )`);
     const [orgColumn]=await pool.query("SHOW COLUMNS FROM users LIKE 'organization_id'");
     if(!orgColumn.length){
@@ -341,6 +342,14 @@ async function db() {
       await pool.execute("ALTER TABLE users ADD CONSTRAINT uq_global_email UNIQUE (email)");
     } catch (err) {
       // Ignore if constraint already exists
+    }
+
+    // Daftar staf dibatasi per organisasi lalu diurutkan berdasarkan waktu
+    // pembuatan. Indeks gabungan mencegah filesort saat jumlah akun membesar.
+    try {
+      await pool.execute("ALTER TABLE users ADD INDEX idx_users_org_created (organization_id, created_at)");
+    } catch (err) {
+      if (err?.code !== 'ER_DUP_KEYNAME') throw err;
     }
 
     // --- V2 REST API TABLES ---
@@ -1331,6 +1340,19 @@ app.post('/api/commands/pricing', requireAuth, async (req, res) => {
     if (marketplaceConfigs.some(item => !item?.platform || ['adminFee', 'paymentFee', 'shippingFee', 'affiliateFee', 'fixedFee', 'discount'].some(key => item[key] != null && (!Number.isFinite(Number(item[key])) || Number(item[key]) < 0)))) {
       throw invalidCommand('Konfigurasi biaya marketplace tidak valid.');
     }
+    if (req.body?.syncVariantCosts === true) {
+      const syncedRecipe = hppRecipes.find(item => item.id === req.body?.syncedRecipeId);
+      if (!syncedRecipe) throw invalidCommand('Resep HPP yang akan diterapkan tidak ditemukan.');
+      const variantIds = [...new Set(Array.isArray(syncedRecipe.variantIds) && syncedRecipe.variantIds.length ? syncedRecipe.variantIds : syncedRecipe.variantId ? [syncedRecipe.variantId] : [])];
+      if (!variantIds.length) throw invalidCommand('Pilih minimal satu varian penerima HPP.');
+      const materialCost = (Array.isArray(syncedRecipe.materials) ? syncedRecipe.materials : []).reduce((total, item) => total + Math.max(0, Number(item?.quantity) || 0) * Math.max(0, Number(item?.unitCost) || 0), 0);
+      const additionalCost = (Array.isArray(syncedRecipe.additionalCosts) ? syncedRecipe.additionalCosts : []).reduce((total, item) => total + Math.max(0, Number(item?.amount) || 0), 0);
+      const unitHpp = Math.round((materialCost + additionalCost) / Number(syncedRecipe.yieldQuantity));
+      if (!Number.isFinite(unitHpp) || unitHpp < 0) throw invalidCommand('HPP per unit tidak valid.');
+      const matchedVariants = state.products.flatMap(product => product.variants).filter(variant => variantIds.includes(variant.id));
+      if (new Set(matchedVariants.map(variant => variant.id)).size !== variantIds.length) throw invalidCommand('Satu atau beberapa varian penerima HPP tidak ditemukan.');
+      matchedVariants.forEach(variant => { variant.cost = unitHpp; });
+    }
     state.pricing = { hppRecipes, marketplaceConfigs };
   });
 });
@@ -1420,8 +1442,10 @@ app.post('/api/commands/loans', requireAuth, async (req, res) => {
   await executeCommand(req, res, async (state, actor) => {
     if (actor.role !== 'owner') throw forbiddenCommand('Hanya Owner yang dapat mencatat kasbon.');
     const loan = req.body?.loan;
-    if (!loan?.id || !state.employees.some(employee => employee.id === loan.employeeId && employee.active) || !Number.isFinite(Number(loan.amount)) || Number(loan.amount) <= 0 || !Number.isInteger(Number(loan.installmentCount)) || Number(loan.installmentCount) < 1) throw invalidCommand('Data kasbon tidak valid.');
-    state.loans.push({ ...loan, amount: Number(loan.amount), installmentCount: Number(loan.installmentCount), installmentAmount: Math.ceil(Number(loan.amount) / Number(loan.installmentCount)), paidInstallments: 0, status: 'active' });
+    const installmentCount = Number(loan?.installmentCount);
+    const loanDate = String(loan?.loanDate || '');
+    if (!loan?.id || state.loans.some(item => item.id === loan.id) || !state.employees.some(employee => employee.id === loan.employeeId && employee.active) || !Number.isFinite(Number(loan.amount)) || Number(loan.amount) <= 0 || !Number.isInteger(installmentCount) || installmentCount < 1 || installmentCount > 120 || !/^\d{4}-\d{2}-\d{2}$/.test(loanDate) || Number.isNaN(new Date(`${loanDate}T00:00:00Z`).getTime())) throw invalidCommand('Data kasbon tidak valid.');
+    state.loans.push({ ...loan, loanDate, note: String(loan.note || '').trim().slice(0, 500), amount: Number(loan.amount), installmentCount, installmentAmount: Math.ceil(Number(loan.amount) / installmentCount), paidInstallments: 0, status: 'active' });
   });
 });
 app.post('/api/commands/loans/:id/installments', requireAuth, async (req, res) => {
