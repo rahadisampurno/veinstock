@@ -1619,9 +1619,26 @@ app.post('/api/commands/payrolls', requireAuth, async (req, res) => {
   await executeCommand(req, res, async (state, actor) => {
     if (!commandAuth(actor, 'payroll.manage').allowed) throw forbiddenCommand('Akun Anda tidak memiliki izin mengelola penggajian.');
     const payroll = req.body?.payroll;
-    if (!payroll?.id || !payroll?.period || !state.employees.some(employee => employee.id === payroll.employeeId && employee.active) || !Number.isFinite(Number(payroll.grossAmount)) || Number(payroll.grossAmount) < 0) throw invalidCommand('Data penggajian tidak valid.');
+    const period = String(payroll?.period || '');
+    if (!payroll?.id || !/^\d{4}-(0[1-9]|1[0-2])$/.test(period) || !state.employees.some(employee => employee.id === payroll.employeeId && employee.active)) throw invalidCommand('Data penggajian tidak valid.');
     if (state.payrolls.some(item => item.employeeId === payroll.employeeId && item.period === payroll.period)) throw invalidCommand('Gaji karyawan untuk periode ini sudah dicatat.');
-    state.payrolls.push({ ...payroll, grossAmount: Number(payroll.grossAmount), status: 'paid', paidAt: payroll.paidAt || new Date().toISOString() });
+    const employee = state.employees.find(item => item.id === payroll.employeeId);
+    const account = state.users.find(item => item.id === employee.userId);
+    const location = state.locations.find(item => item.id === employee.locationId);
+    state.payrolls.push({
+      ...payroll,
+      period,
+      // Nominal gaji berasal dari data kerja server, bukan angka kiriman
+      // browser, agar slip dan rekap tidak dapat dimanipulasi dari request.
+      grossAmount: Number(employee.monthlySalary || 0),
+      status: 'paid',
+      paidAt: new Date().toISOString(),
+      note: String(payroll.note || '').trim().slice(0, 500) || undefined,
+      proofUrl: String(payroll.proofUrl || '').trim().slice(0, 2048) || undefined,
+      employeeName: account?.name || 'Karyawan',
+      positionSnapshot: employee.position || '-',
+      locationNameSnapshot: location?.name || '-',
+    });
   });
 });
 

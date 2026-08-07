@@ -272,13 +272,21 @@ describe('multi-tenant API', () => {
     expect((await post('/api/commands/loans', { loan }, owner.body.token)).status).toBe(201);
     expect((await post('/api/commands/loans', { loan }, owner.body.token)).status).toBe(400);
     expect((await post(`/api/commands/loans/${loan.id}/installments`, {}, owner.body.token)).status).toBe(201);
-    const payroll = { id: `payroll-${suffix}`, employeeId: employee.id, period: '2026-07', grossAmount: 3000000, status: 'paid' };
+    const payroll = { id: `payroll-${suffix}`, employeeId: employee.id, period: '2026-07', grossAmount: 1, status: 'paid' };
+    expect((await post('/api/commands/payrolls', { payroll: { ...payroll, id: `${payroll.id}-invalid`, period: '2026-13' } }, owner.body.token)).status).toBe(400);
     expect((await post('/api/commands/payrolls', { payroll }, owner.body.token)).status).toBe(201);
     const refreshed = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
     expect(refreshed.body.data.employees).toContainEqual(expect.objectContaining({ id: employee.id }));
     expect(refreshed.body.data.attendances).toContainEqual(expect.objectContaining({ employeeId: employee.id, checkInAt: expect.any(String), checkOutAt: expect.any(String) }));
     expect(refreshed.body.data.loans).toContainEqual(expect.objectContaining({ id: loan.id, amount: 2000, installmentCount: 3, installmentAmount: 667, paidInstallments: 1, status: 'active' }));
-    expect(refreshed.body.data.payrolls).toContainEqual(expect.objectContaining({ id: payroll.id, period: '2026-07' }));
+    expect(refreshed.body.data.payrolls).toContainEqual(expect.objectContaining({
+      id: payroll.id,
+      period: '2026-07',
+      grossAmount: 3000000,
+      employeeName: 'Staf Gudang',
+      positionSnapshot: 'Kasir',
+      locationNameSnapshot: 'Gudang SDM Command',
+    }));
   });
 
   it('keeps master supplier and its receipt reference after refresh', async () => {

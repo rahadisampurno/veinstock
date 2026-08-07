@@ -23,6 +23,9 @@ import {
   KeyRound,
   Menu,
   PackagePlus,
+  Printer,
+  Usb,
+  Bluetooth,
   Plus,
   RotateCcw,
   Search,
@@ -51,6 +54,22 @@ import { downloadExcel } from "./utils/exportExcel";
 import { downloadPDF } from "./utils/exportPdf";
 import { calculateLoanInstallment, loanInstallmentDue } from "./utils/loans";
 import { calculateHppCosts, isDecimalDraft, materialLineCost, nonNegativeNumber, normalizeDecimalDraft } from "./utils/hpp";
+import { printPayrollSlip } from "./utils/payrollSlip";
+import {
+  connectBluetoothPrinter,
+  connectUsbPrinter,
+  directPrintSale,
+  disconnectPrinter,
+  isPrinterConnected,
+  loadPrinterSettings,
+  printerCapabilities,
+  reconnectSavedPrinter,
+  savePrinterSettings,
+  systemPrintSale,
+  subscribePrinterStatus,
+  testDirectPrinter,
+  type PrinterSettings,
+} from "./utils/receiptPrinter";
 import type {
   AppData,
   Channel,
@@ -1366,7 +1385,7 @@ function App() {
           )}
           {(page === "employees" || page === "users") && <EmployeesPage data={data} locations={locationMap} open={() => checkAuth("user.create") && setModal("user")} editAccess={(id:string) => checkAuth("user.update") && setModal(`user:${id}`)} editEmployee={(id:string) => checkAuth("user.update") && setModal(`employee:${id}`)} completeEmployee={(userId:string) => checkAuth("user.update") && setModal(`employee-link:${userId}`)} canCreate={can("user.create")} canEdit={can("user.update")} />}
           {page === "attendance" && <AttendancePage data={data} user={user} runCommand={runCommand} notify={notify} canRecord={can('attendance.record')} canManage={can('attendance.manage')} />}
-          {page === "loans" && <LoansPage data={data} locations={locationMap} canManage={can('payroll.manage')} open={() => checkAuth('payroll.manage') && setModal("loan")} openPayrollPayment={(employeeId:string) => checkAuth('payroll.manage') && setModal(`payroll:${employeeId}`)} confirmInstallment={(loan:any, employeeName:string) => checkAuth('payroll.manage') && setConfirm({ message: `Tandai 1 cicilan kasbon ${employeeName} sebesar ${money(loanInstallmentDue(loan))} sebagai sudah dibayar? Tindakan ini akan memperbarui sisa cicilan.`, onConfirm: async () => { try { await runCommand(`/api/commands/loans/${loan.id}/installments`, {}); setConfirm(null); notify("Satu cicilan kasbon berhasil ditandai dibayar."); } catch (error:any) { notify(error.message || "Cicilan kasbon gagal diperbarui."); } } })} />}
+          {page === "loans" && <LoansPage data={data} locations={locationMap} notify={notify} canManage={can('payroll.manage')} open={() => checkAuth('payroll.manage') && setModal("loan")} openPayrollPayment={(employeeId:string, payrollPeriod:string) => checkAuth('payroll.manage') && setModal(`payroll:${employeeId}:${payrollPeriod}`)} confirmInstallment={(loan:any, employeeName:string) => checkAuth('payroll.manage') && setConfirm({ message: `Tandai 1 cicilan kasbon ${employeeName} sebesar ${money(loanInstallmentDue(loan))} sebagai sudah dibayar? Tindakan ini akan memperbarui sisa cicilan.`, onConfirm: async () => { try { await runCommand(`/api/commands/loans/${loan.id}/installments`, {}); setConfirm(null); notify("Satu cicilan kasbon berhasil ditandai dibayar."); } catch (error:any) { notify(error.message || "Cicilan kasbon gagal diperbarui."); } } })} />}
           {page === "help" && <HelpPage initialSection={helpSection} clearInitialSection={() => setHelpSection(null)} />}
           {page === "analytics" && <AnalyticsPage data={data} canExport={can('report.export')} />}
           {page === "role-access" && scope.role === "owner" && <RoleAccessPage data={data} runCommand={runCommand} notify={notify} />}
@@ -1379,10 +1398,14 @@ function App() {
       {modal === "supplier" && <SupplierModal close={() => setModal(null)} save={async (supplier:any) => { await runCommand("/api/commands/suppliers", { supplier }); setModal(null); notify("Supplier berhasil disimpan."); }} />}
       {modal?.startsWith("supplier:") && (() => { const supplier = (data.suppliers || []).find((item:any) => item.id === modal.slice("supplier:".length)); return supplier ? <SupplierModal supplier={supplier} close={() => setModal(null)} save={async (next:any) => { await runCommand(`/api/commands/suppliers/${next.id}`, { supplier: next }, "PATCH"); setModal(null); notify("Supplier berhasil diperbarui."); }} /> : null; })()}
       {modal?.startsWith("payroll:") && (() => {
-        const employee = (data.employees || []).find((item:any) => item.id === modal.slice("payroll:".length));
+        const payrollPayload = modal.slice("payroll:".length);
+        const periodSeparator = payrollPayload.lastIndexOf(":");
+        const payrollEmployeeId = periodSeparator > 0 ? payrollPayload.slice(0, periodSeparator) : payrollPayload;
+        const payrollPeriod = periodSeparator > 0 && /^\d{4}-(0[1-9]|1[0-2])$/.test(payrollPayload.slice(periodSeparator + 1)) ? payrollPayload.slice(periodSeparator + 1) : jakartaDateKey().slice(0, 7);
+        const employee = (data.employees || []).find((item:any) => item.id === payrollEmployeeId);
         const account = employee && data.users.find((item:any) => item.id === employee.userId);
-        return employee ? <PayrollPaymentModal employee={employee} employeeName={account?.name || "Karyawan"} close={() => setModal(null)} uploadImage={uploadImage} save={async (proofUrl?:string, note?:string) => {
-          await runCommand("/api/commands/payrolls", { payroll: { id: newId("payroll"), employeeId: employee.id, period: jakartaDateKey().slice(0, 7), grossAmount: employee.monthlySalary, status: "paid", paidAt: new Date().toISOString(), proofUrl, note } });
+        return employee ? <PayrollPaymentModal employee={employee} employeeName={account?.name || "Karyawan"} payrollPeriod={payrollPeriod} close={() => setModal(null)} uploadImage={uploadImage} save={async (proofUrl?:string, note?:string) => {
+          await runCommand("/api/commands/payrolls", { payroll: { id: newId("payroll"), employeeId: employee.id, period: payrollPeriod, grossAmount: employee.monthlySalary, status: "paid", paidAt: new Date().toISOString(), proofUrl, note } });
           setModal(null); notify("Pembayaran gaji berhasil dicatat.");
         }} /> : null;
       })()}
@@ -1633,6 +1656,7 @@ function App() {
       {modal === "sale" && (
         <SaleModal
           data={data}
+          notify={notify}
           fixedLocation={['pic', 'cashier'].includes(user.role) ? user.outletId : undefined}
           close={() => setModal(null)}
           save={async (
@@ -1642,13 +1666,12 @@ function App() {
             payment: string
           ) => {
             if (!cart.some(item => isPositiveNumber(item.quantity))) return notify("Tidak ada produk valid di keranjang");
-            try {
-              await runCommand("/api/commands/sales", { locationId: loc, channel, items: cart, payment });
-              setModal(null);
-              notify("Penjualan tersimpan dan stok otomatis berkurang");
-            } catch (error) {
-              notify(error instanceof Error ? error.message : "Penjualan tidak dapat disimpan");
-            }
+            const previousIds = new Set(data.sales.map((sale) => sale.id));
+            const updated = normalizeData(await runCommand("/api/commands/sales", { locationId: loc, channel, items: cart, payment }));
+            const sale = updated.sales.find((item) => !previousIds.has(item.id)) || [...updated.sales].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+            if (!sale) throw new Error("Penjualan tersimpan, tetapi struk transaksi belum dapat ditemukan.");
+            notify("Penjualan tersimpan dan stok otomatis berkurang");
+            return { sale, data: updated };
           }}
         />
       )}
@@ -1722,6 +1745,8 @@ function App() {
       {modal?.startsWith("sale-detail:") && (
         <SaleDetail
           item={data.sales.find((x) => x.id === modal.split(":")[1])}
+          data={data}
+          notify={notify}
           variants={variantMap}
           locations={locationMap}
           close={() => setModal(null)}
@@ -2174,7 +2199,7 @@ function DateRangePicker({ from, to, setFrom, setTo, initialMode = "all", onAppl
   const monthNames = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"];
   return <section ref={pickerRef} className={`period-picker ${className}`} aria-label="Filter periode">
     <button type="button" className="period-trigger" aria-expanded={open} onClick={() => setOpen(value => !value)}><span>Periode data</span><b>{modeTitle[mode]}</b><em>{rangeLabel}</em><CalendarDays aria-hidden="true" /><ChevronDown aria-hidden="true" className={open ? "open" : ""} /></button>
-    {open && <div className="period-popover"><div className="period-menu" role="menu" aria-label="Pilihan periode"><button type="button" className={mode === "all" ? "active" : ""} onClick={() => selectPeriod("all")}><span>Semua tanggal</span><small>Tampilkan seluruh riwayat</small></button>{options.map(([value, label, hint], index) => <button type="button" key={value} className={`${mode === value ? "active" : ""}${index === 4 ? " period-menu-divider" : ""}`} onClick={() => { if (value === "month") { setMode(value); setViewYear(Number(todayKey.slice(0, 4))); setPickerView("month"); } else if (value === "year") { setMode(value); setDecadeStart(Math.floor(Number(todayKey.slice(0, 4)) / 10) * 10); setPickerView("year"); } else selectPeriod(value); }}><span>{label}</span><small>{hint}</small>{["day", "week", "month", "year"].includes(value) && <ChevronRight aria-hidden="true" />}</button>)}</div><div className="period-range-panel">{pickerView === "month" ? <div className="period-calendar"><header><button type="button" aria-label="Tahun sebelumnya" onClick={() => setViewYear(year => year - 1)}>‹</button><b>{viewYear}</b><button type="button" aria-label="Tahun berikutnya" disabled={viewYear >= Number(todayKey.slice(0, 4))} onClick={() => setViewYear(year => year + 1)}>›</button></header><div className="period-calendar-grid">{monthNames.map((name, index) => { const disabled = viewYear === Number(todayKey.slice(0, 4)) && index > Number(todayKey.slice(5, 7)) - 1; const active = from.startsWith(`${viewYear}-${String(index + 1).padStart(2, "0")}`); return <button type="button" key={name} disabled={disabled} className={active ? "active" : ""} onClick={() => selectMonth(index)}>{name}</button>; })}</div></div> : pickerView === "year" ? <div className="period-calendar"><header><button type="button" aria-label="Dekade sebelumnya" onClick={() => setDecadeStart(year => year - 10)}>‹</button><b>{decadeStart} – {decadeStart + 9}</b><button type="button" aria-label="Dekade berikutnya" disabled={decadeStart + 10 > Number(todayKey.slice(0, 4))} onClick={() => setDecadeStart(year => year + 10)}>›</button></header><div className="period-calendar-grid">{Array.from({ length: 10 }, (_, index) => decadeStart + index).map(year => <button type="button" key={year} disabled={year > Number(todayKey.slice(0, 4))} className={from.startsWith(`${year}-`) ? "active" : ""} onClick={() => selectYear(year)}>{year}</button>)}</div></div> : <><small>PERIODE TERPILIH</small><h3>{modeTitle[mode]}</h3><p>{rangeLabel}</p><div className="period-date-inputs"><label><span>Tanggal mulai</span><input type="date" value={from} max={to || todayKey} onChange={event => { setFrom(event.target.value); setMode("day"); }} /></label><label><span>Tanggal akhir</span><input type="date" value={to} min={from} max={todayKey} onChange={event => { setTo(event.target.value); setMode("day"); }} /></label></div><button type="button" className="primary period-apply" onClick={() => { setOpen(false); onApplied?.(); }}>Terapkan periode <Check /></button></>}</div></div>}
+    {open && <div className="period-popover"><div className="period-menu" role="menu" aria-label="Pilihan periode"><button type="button" className={mode === "all" ? "active" : ""} onClick={() => selectPeriod("all")}><span>Semua tanggal</span><small>Tampilkan seluruh riwayat</small></button>{options.map(([value, label, hint], index) => <button type="button" key={value} className={`${mode === value ? "active" : ""}${index === 4 ? " period-menu-divider" : ""}`} onClick={() => { if (value === "month") { setMode(value); setViewYear(Number(todayKey.slice(0, 4))); setPickerView("month"); } else if (value === "year") { setMode(value); setDecadeStart(Math.floor(Number(todayKey.slice(0, 4)) / 10) * 10); setPickerView("year"); } else selectPeriod(value); }}><span>{label}</span><small>{hint}</small>{["day", "week", "month", "year"].includes(value) && <ChevronRight aria-hidden="true" />}</button>)}</div><div className="period-range-panel">{pickerView === "month" ? <div className="period-calendar"><header><button type="button" aria-label="Tahun sebelumnya" onClick={() => setViewYear(year => year - 1)}>‹</button><b>{viewYear}</b><button type="button" aria-label="Tahun berikutnya" disabled={viewYear >= Number(todayKey.slice(0, 4))} onClick={() => setViewYear(year => year + 1)}>›</button></header><div className="period-calendar-grid">{monthNames.map((name, index) => { const disabled = viewYear === Number(todayKey.slice(0, 4)) && index > Number(todayKey.slice(5, 7)) - 1; const active = from.startsWith(`${viewYear}-${String(index + 1).padStart(2, "0")}`); return <button type="button" key={name} disabled={disabled} className={active ? "active" : ""} onClick={() => selectMonth(index)}>{name}</button>; })}</div></div> : pickerView === "year" ? <div className="period-calendar"><header><button type="button" aria-label="Dekade sebelumnya" onClick={() => setDecadeStart(year => year - 10)}>‹</button><b>{decadeStart} – {decadeStart + 9}</b><button type="button" aria-label="Dekade berikutnya" disabled={decadeStart + 10 > Number(todayKey.slice(0, 4))} onClick={() => setDecadeStart(year => year + 10)}>›</button></header><div className="period-calendar-grid">{Array.from({ length: 10 }, (_, index) => decadeStart + index).map(year => <button type="button" key={year} disabled={year > Number(todayKey.slice(0, 4))} className={from.startsWith(`${year}-`) ? "active" : ""} onClick={() => selectYear(year)}>{year}</button>)}</div></div> : <><small>PERIODE TERPILIH</small><h3>{modeTitle[mode]}</h3><p>{rangeLabel}</p><div className="period-date-inputs"><label><span>Tanggal mulai</span><input type="date" onClick={(e) => { try { (e.target as any).showPicker(); } catch {} }} value={from} max={to || todayKey} onChange={event => { setFrom(event.target.value); setMode("day"); }} /></label><label><span>Tanggal akhir</span><input type="date" onClick={(e) => { try { (e.target as any).showPicker(); } catch {} }} value={to} min={from} max={todayKey} onChange={event => { setTo(event.target.value); setMode("day"); }} /></label></div><button type="button" className="primary period-apply" onClick={() => { setOpen(false); onApplied?.(); }}>Terapkan periode <Check /></button></>}</div></div>}
   </section>;
 }
 const Stat = ({ label, value, sub, tone = "green" }: any) => (
@@ -2787,19 +2812,64 @@ function AttendancePage({ data, user, runCommand, notify, canRecord, canManage }
   };
   return <PageBlock title="Kehadiran" desc="Check-in dan check-out menggunakan waktu perangkat serta titik GPS saat ini.">{!assigned && <section className="attendance-hero"><div><small>STATUS PENUGASAN</small><h3>Menunggu penugasan lokasi</h3><p>Owner perlu menetapkan lokasi kerja Anda sebelum absensi dapat dilakukan.</p></div></section>}<section className="attendance-hero"><div><small>ABSENSI HARI INI</small><h3>{assigned ? data.locations.find((location:any) => location.id === employee.locationId)?.name : "Lokasi belum ditetapkan"}</h3><p>{assigned ? `Jam masuk ${setting.checkInStart}–${setting.checkInEnd} · Pulang hingga ${setting.checkOutEnd}` : "Check-in dan check-out akan terbuka setelah lokasi kerja ditetapkan."}</p></div><div className="attendance-actions"><button className="primary" disabled={!assigned || !!attendance?.checkInAt} onClick={() => capture("in")}><MapPin size={17}/> {attendance?.checkInAt ? "Sudah check-in" : "Check-in"}</button><button className="secondary" disabled={!assigned || !attendance?.checkInAt || !!attendance?.checkOutAt} onClick={() => capture("out")}><Clock3 size={17}/> {attendance?.checkOutAt ? "Sudah check-out" : "Check-out"}</button></div></section><div className="detail-list"><p><span>Check-in</span><b>{attendance?.checkInAt ? new Date(attendance.checkInAt).toLocaleString("id-ID") : "Belum tercatat"}</b></p><p><span>Lokasi check-in</span><b>{attendance?.checkInGps || "-"}</b></p><p><span>Check-out</span><b>{attendance?.checkOutAt ? new Date(attendance.checkOutAt).toLocaleString("id-ID") : "Belum tercatat"}</b></p><p><span>Keterlambatan</span><b>{attendance?.lateMinutes ? `${attendance.lateMinutes} menit` : "-"}</b></p></div><section className="payroll-section"><div className="card-head"><h3>Riwayat absensi</h3><span>20 data terbaru</span></div><div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Check-in</th><th>Check-out</th><th>Status</th></tr></thead><tbody>{history.length ? history.map((item:any) => <tr key={item.id}><td>{new Date(`${item.date}T00:00:00`).toLocaleDateString("id-ID")}</td><td>{item.checkInAt ? new Date(item.checkInAt).toLocaleTimeString("id-ID") : "-"}</td><td>{item.checkOutAt ? new Date(item.checkOutAt).toLocaleTimeString("id-ID") : "-"}</td><td><span className={`status ${item.checkOutAt ? "ok" : "wait"}`}>{item.checkOutAt ? "Lengkap" : "Belum check-out"}</span></td></tr>) : <Empty text="Belum ada riwayat absensi." />}</tbody></table></div></section>{user.role === "owner" && <section className="attendance-settings"><div className="card-head"><h3>Pengaturan kehadiran per lokasi</h3><span>Disimpan otomatis</span></div>{data.locations.filter((location:any) => location.active).map((location:any) => { const value = (data.attendanceSettings || []).find((item:any) => item.locationId === location.id) || { checkInStart: "08:00", checkInEnd: "09:00", checkOutStart: "17:00", checkOutEnd: "23:59", lateToleranceMinutes: 10 }; return <div className="attendance-setting-row" key={location.id}><b>{location.name}</b><label>Masuk<input type="time" value={value.checkInStart} onChange={(event) => updateSetting(location.id, "checkInStart", event.target.value)} /></label><label>Batas masuk<input type="time" value={value.checkInEnd} onChange={(event) => updateSetting(location.id, "checkInEnd", event.target.value)} /></label><label>Pulang<input type="time" value={value.checkOutStart} onChange={(event) => updateSetting(location.id, "checkOutStart", event.target.value)} /></label><label>Toleransi<input type="number" min="0" value={value.lateToleranceMinutes} onChange={(event) => updateSetting(location.id, "lateToleranceMinutes", Number(event.target.value))} /></label></div>; })}</section>}</PageBlock>;
 }
+function AttendanceHistoryModal({ data, employee, account, close }: any) {
+  const history = (data.attendances || []).filter((item:any) => item.employeeId === employee.id).sort((a:any,b:any) => b.date.localeCompare(a.date)).slice(0, 30);
+  return <Modal title={`Riwayat Kehadiran`} desc={`Riwayat absensi untuk ${account?.name || "Karyawan"} (30 data terbaru)`} close={close} wide><div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Check-in</th><th>Check-out</th><th>Status</th></tr></thead><tbody>{history.length ? history.map((item:any) => <tr key={item.id}><td>{new Date(`${item.date}T00:00:00`).toLocaleDateString("id-ID", { weekday: 'short', day: 'numeric', month: 'long', year: 'numeric' })}</td><td>{item.checkInAt ? new Date(item.checkInAt).toLocaleTimeString("id-ID") : "-"}</td><td>{item.checkOutAt ? new Date(item.checkOutAt).toLocaleTimeString("id-ID") : "-"}</td><td><span className={`status ${item.checkOutAt ? "ok" : "wait"}`}>{item.checkOutAt ? "Lengkap" : "Belum check-out"}</span></td></tr>) : <Empty text="Belum ada riwayat absensi." />}</tbody></table></div></Modal>;
+}
+
 function OwnerAttendancePage({ data, runCommand, notify, today, canManage }: any) {
-  const [date, setDate] = useState(today);
+  const [dateFrom, setDateFrom] = useState(today);
+  const [dateTo, setDateTo] = useState(today);
   const [search, setSearch] = useState("");
   const [locationId, setLocationId] = useState("all");
+  const [employeeId, setEmployeeId] = useState("all");
+  const [viewHistoryFor, setViewHistoryFor] = useState<any>(null);
+  const [page, setPage] = useState(1);
+  const [sort, setSort] = useState("date");
+  const [desc, setDesc] = useState(true);
+  const pageSize = 10;
+  
+  useEffect(() => { setPage(1); }, [search, locationId, employeeId, dateFrom, dateTo]);
   const employees = (data.employees || []).filter((employee:any) => employee.active);
   const activeLocations = (data.locations || []).filter((location:any) => location.active);
-  const rows = employees.map((employee:any) => {
-    const account = (data.users || []).find((user:any) => user.id === employee.userId);
-    const record = (data.attendances || []).find((attendance:any) => attendance.employeeId === employee.id && attendance.date === date);
-    return { employee, account, record, location: (data.locations || []).find((location:any) => location.id === employee.locationId) };
-  }).filter((row:any) => `${row.account?.name || ""} ${row.employee.position || ""} ${row.location?.name || ""}`.toLowerCase().includes(search.toLowerCase()) && (locationId === "all" || row.employee.locationId === locationId));
-  const checkedIn = rows.filter((row:any) => row.record?.checkInAt).length;
-  const completed = rows.filter((row:any) => row.record?.checkOutAt).length;
+
+  const dates: string[] = [];
+  if (dateFrom && dateTo) {
+    let current = new Date(`${dateFrom}T12:00:00`);
+    const end = new Date(`${dateTo}T12:00:00`);
+    while (current <= end && dates.length < 31) {
+      dates.push(current.toISOString().slice(0, 10));
+      current.setDate(current.getDate() + 1);
+    }
+  } else if (dateFrom) dates.push(dateFrom);
+  else dates.push(today);
+  dates.reverse();
+
+  let rows: any[] = [];
+  dates.forEach(d => {
+    employees.forEach((employee:any) => {
+      const account = (data.users || []).find((user:any) => user.id === employee.userId);
+      const location = (data.locations || []).find((loc:any) => loc.id === employee.locationId);
+      if (`${account?.name || ""} ${employee.position || ""} ${location?.name || ""}`.toLowerCase().includes(search.toLowerCase()) && (locationId === "all" || employee.locationId === locationId) && (employeeId === "all" || employee.id === employeeId)) {
+        const record = (data.attendances || []).find((attendance:any) => attendance.employeeId === employee.id && attendance.date === d);
+        rows.push({ employee, account, record, location, date: d });
+      }
+    });
+  });
+
+  rows = rows.sort((a:any, b:any) => {
+    let av: any = a.date;
+    let bv: any = b.date;
+    if (sort === "employee") { av = a.account?.name || ""; bv = b.account?.name || ""; }
+    else if (sort === "location") { av = a.location?.name || ""; bv = b.location?.name || ""; }
+    else if (sort === "checkIn") { av = a.record?.checkInAt || ""; bv = b.record?.checkInAt || ""; }
+    else if (sort === "checkOut") { av = a.record?.checkOutAt || ""; bv = b.record?.checkOutAt || ""; }
+    return (av > bv ? 1 : av < bv ? -1 : 0) * (desc ? -1 : 1);
+  });
+  const toggleSort = (key:string) => { if (sort === key) setDesc(!desc); else { setSort(key); setDesc(false); } setPage(1); };
+
+  const todayCheckedIn = (data.attendances || []).filter((a:any) => a.date === today && a.checkInAt && employees.find((e:any) => e.id === a.employeeId)).length;
+  const todayCompleted = (data.attendances || []).filter((a:any) => a.date === today && a.checkOutAt && employees.find((e:any) => e.id === a.employeeId)).length;
   const updateSetting = (targetLocationId:string, field:string, value:string|number) => {
     if (!canManage) return notify("Peran Anda tidak memiliki izin mengatur kehadiran.");
     const fallback = { locationId: targetLocationId, checkInStart: "08:00", checkInEnd: "09:00", checkOutStart: "17:00", checkOutEnd: "23:59", lateToleranceMinutes: 10 };
@@ -2808,32 +2878,62 @@ function OwnerAttendancePage({ data, runCommand, notify, today, canManage }: any
     void runCommand(`/api/commands/attendance-settings/${targetLocationId}`, { setting: next }, "PATCH").catch((error:any) => notify(error.message || "Pengaturan kehadiran gagal disimpan."));
   };
   return <PageBlock title="Kehadiran karyawan" desc="Pantau kehadiran seluruh karyawan dan atur jam kerja per lokasi.">
-    <div className="stats-grid compact"><Stat label="Karyawan aktif" value={String(employees.length)} sub="Memiliki akses absensi" /><Stat label="Sudah check-in" value={String(checkedIn)} sub={`Pada ${new Date(`${date}T00:00:00`).toLocaleDateString("id-ID")}`} /><Stat label="Sudah check-out" value={String(completed)} sub="Absensi lengkap" tone="blue" /></div>
-    <section className="payroll-section"><div className="card-head"><h3>Rekap kehadiran</h3><span>{date === today ? "Data realtime hari ini" : "Riwayat berdasarkan tanggal"}</span></div><div className="table-controls"><ListSearch value={search} setValue={setSearch} placeholder="Cari karyawan, jabatan, atau lokasi" /><AppSelect value={locationId} onChange={(event:any) => setLocationId(event.target.value)}><option value="all">Semua lokasi</option>{activeLocations.map((location:any) => <option key={location.id} value={location.id}>{location.name}</option>)}</AppSelect><label className="date-filter">Tanggal<input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label></div><div className="table-wrap"><table><thead><tr><th>Karyawan</th><th>Lokasi</th><th>Check-in</th><th>GPS check-in</th><th>Check-out</th><th>Keterlambatan</th><th>Status</th></tr></thead><tbody>{rows.length ? rows.map((row:any) => <tr key={row.employee.id}><td><b>{row.account?.name || "Akun tidak ditemukan"}</b><small className="block">{row.employee.position}</small></td><td>{row.location?.name || <span className="status wait">Belum ditugaskan</span>}</td><td>{row.record?.checkInAt ? new Date(row.record.checkInAt).toLocaleString("id-ID", { dateStyle: "short", timeStyle: "medium" }) : "-"}</td><td>{row.record?.checkInGps || "-"}</td><td>{row.record?.checkOutAt ? new Date(row.record.checkOutAt).toLocaleString("id-ID", { dateStyle: "short", timeStyle: "medium" }) : "-"}</td><td>{row.record?.checkInAt ? row.record.lateMinutes ? `${row.record.lateMinutes} menit` : "Tepat waktu" : "-"}</td><td><span className={`status ${row.record?.checkOutAt ? "ok" : row.record?.checkInAt ? "wait" : "danger"}`}>{row.record?.checkOutAt ? "Lengkap" : row.record?.checkInAt ? "Belum check-out" : "Belum hadir"}</span></td></tr>) : <Empty text="Tidak ada karyawan yang sesuai filter." />}</tbody></table></div></section>
+    <div className="stats-grid compact"><Stat label="Karyawan aktif" value={String(employees.length)} sub="Memiliki akses absensi" /><Stat label="Sudah check-in" value={String(todayCheckedIn)} sub={`Hari ini (${new Date(`${today}T00:00:00`).toLocaleDateString("id-ID")})`} /><Stat label="Sudah check-out" value={String(todayCompleted)} sub="Hari ini (lengkap)" tone="blue" /></div>
+    <section className="payroll-section"><div className="card-head"><h3>Rekap kehadiran</h3><span>Data presensi karyawan berdasarkan rentang tanggal</span></div><div className="table-controls"><ListSearch value={search} setValue={setSearch} placeholder="Cari jabatan atau lokasi" /><AppSelect value={employeeId} onChange={(event:any) => setEmployeeId(event.target.value)}><option value="all">Semua karyawan</option>{employees.map((e:any) => { const account = (data.users || []).find((u:any) => u.id === e.userId); return <option key={e.id} value={e.id}>{account?.name || "Karyawan"}</option>; })}</AppSelect><AppSelect value={locationId} onChange={(event:any) => setLocationId(event.target.value)}><option value="all">Semua lokasi</option>{activeLocations.map((location:any) => <option key={location.id} value={location.id}>{location.name}</option>)}</AppSelect><DateRangePicker from={dateFrom} to={dateTo} setFrom={setDateFrom} setTo={setDateTo} className="list-period-picker" initialMode="realtime" /></div><div className="table-wrap"><table><thead><tr>{dates.length > 1 && <th onClick={() => toggleSort("date")}>Tanggal {sort === "date" && (desc ? "↓" : "↑")}</th>}<th onClick={() => toggleSort("employee")}>Karyawan {sort === "employee" && (desc ? "↓" : "↑")}</th><th onClick={() => toggleSort("location")}>Lokasi {sort === "location" && (desc ? "↓" : "↑")}</th><th onClick={() => toggleSort("checkIn")}>Check-in {sort === "checkIn" && (desc ? "↓" : "↑")}</th><th>GPS check-in</th><th onClick={() => toggleSort("checkOut")}>Check-out {sort === "checkOut" && (desc ? "↓" : "↑")}</th><th>Keterlambatan</th><th>Status</th></tr></thead><tbody>{rows.length ? rows.slice((page - 1) * pageSize, page * pageSize).map((row:any) => <tr key={`${row.employee.id}-${row.date}`} onClick={() => setViewHistoryFor(row)} style={{ cursor: "pointer" }} title={`Klik untuk melihat riwayat absen ${row.account?.name || ""}`}>{dates.length > 1 && <td><b>{new Date(`${row.date}T12:00:00`).toLocaleDateString("id-ID", { day: 'numeric', month: 'short', year: 'numeric' })}</b></td>}<td><b>{row.account?.name || "Akun tidak ditemukan"}</b><small className="block">{row.employee.position}</small></td><td>{row.location?.name || <span className="status wait">Belum ditugaskan</span>}</td><td>{row.record?.checkInAt ? new Date(row.record.checkInAt).toLocaleString("id-ID", { dateStyle: "short", timeStyle: "medium" }) : "-"}</td><td>{row.record?.checkInGps || "-"}</td><td>{row.record?.checkOutAt ? new Date(row.record.checkOutAt).toLocaleString("id-ID", { dateStyle: "short", timeStyle: "medium" }) : "-"}</td><td>{row.record?.checkInAt ? row.record.lateMinutes ? `${row.record.lateMinutes} menit` : "Tepat waktu" : "-"}</td><td><span className={`status ${row.record?.checkOutAt ? "ok" : row.record?.checkInAt ? "wait" : "danger"}`}>{row.record?.checkOutAt ? "Lengkap" : row.record?.checkInAt ? "Belum check-out" : "Belum hadir"}</span></td></tr>) : <Empty text="Tidak ada riwayat kehadiran di periode ini." />}</tbody></table></div><TablePagination page={page} total={rows.length} size={pageSize} setPage={setPage} /></section>
     <section className="attendance-settings"><div className="card-head"><h3>Pengaturan kehadiran per lokasi</h3><span>Perubahan disimpan otomatis</span></div>{activeLocations.map((location:any) => { const setting = (data.attendanceSettings || []).find((item:any) => item.locationId === location.id) || { checkInStart: "08:00", checkInEnd: "09:00", checkOutStart: "17:00", checkOutEnd: "23:59", lateToleranceMinutes: 10 }; return <div className="attendance-setting-row" key={location.id}><b>{location.name}</b><label>Masuk<input type="time" value={setting.checkInStart} onChange={(event) => updateSetting(location.id, "checkInStart", event.target.value)} /></label><label>Batas masuk<input type="time" value={setting.checkInEnd} onChange={(event) => updateSetting(location.id, "checkInEnd", event.target.value)} /></label><label>Pulang<input type="time" value={setting.checkOutStart} onChange={(event) => updateSetting(location.id, "checkOutStart", event.target.value)} /></label><label>Toleransi<input type="number" min="0" value={setting.lateToleranceMinutes} onChange={(event) => updateSetting(location.id, "lateToleranceMinutes", Number(event.target.value))} /></label></div>; })}</section>
+    {viewHistoryFor && <AttendanceHistoryModal data={data} employee={viewHistoryFor.employee} account={viewHistoryFor.account} close={() => setViewHistoryFor(null)} />}
   </PageBlock>;
 }
 
-function LoansPage({ data, locations, open, openPayrollPayment, confirmInstallment, canManage }: any) {
+function LoansPage({ data, locations, open, openPayrollPayment, confirmInstallment, canManage, notify }: any) {
+  type PayrollTab = "summary" | "payroll" | "loans";
+  const validTabs: PayrollTab[] = ["summary", "payroll", "loans"];
+  const initialTab = new URLSearchParams(window.location.search).get("payrollTab") as PayrollTab | null;
+  const [activeTab, setActiveTab] = useState<PayrollTab>(initialTab && validTabs.includes(initialTab) ? initialTab : "summary");
   const loans = data.loans || [];
-  const period = jakartaDateKey().slice(0, 7);
+  const currentPeriod = jakartaDateKey().slice(0, 7);
+  const initialPeriod = new URLSearchParams(window.location.search).get("payrollPeriod") || currentPeriod;
+  const [period, setPeriod] = useState(/^\d{4}-(0[1-9]|1[0-2])$/.test(initialPeriod) ? initialPeriod : currentPeriod);
   const payrolls = data.payrolls || [];
-  const activeEmployees = (data.employees || []).filter((employee:any) => employee.active);
+  const activeEmployees = (data.employees || []).filter((employee:any) => employee.active && (!employee.joinDate || employee.joinDate.slice(0, 7) <= period));
   const totalPayroll = activeEmployees.reduce((sum:number, employee:any) => sum + employee.monthlySalary, 0);
   const paidPayroll = payrolls.filter((payroll:any) => payroll.period === period).reduce((sum:number, payroll:any) => sum + payroll.grossAmount, 0);
-  const payEmployee = (employee:any) => openPayrollPayment(employee.id);
+  const payEmployee = (employee:any) => openPayrollPayment(employee.id, period);
   const [paySearch, setPaySearch] = useState(""), [payStatus, setPayStatus] = useState("all"), [payLocation, setPayLocation] = useState("all"), [paySort, setPaySort] = useState("employee"), [payDesc, setPayDesc] = useState(false), [payPage, setPayPage] = useState(1);
-  const [loanSearch, setLoanSearch] = useState(""), [loanStatus, setLoanStatus] = useState("all"), [loanFrom, setLoanFrom] = useState(""), [loanTo, setLoanTo] = useState(""), [loanSort, setLoanSort] = useState("date"), [loanDesc, setLoanDesc] = useState(true), [loanPage, setLoanPage] = useState(1);
+
+  const [loanSearch, setLoanSearch] = useState(""), [loanStatus, setLoanStatus] = useState("all"), [loanLocation, setLoanLocation] = useState("all"), [loanFrom, setLoanFrom] = useState(""), [loanTo, setLoanTo] = useState(""), [loanSort, setLoanSort] = useState("date"), [loanDesc, setLoanDesc] = useState(true), [loanPage, setLoanPage] = useState(1);
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (activeTab === "summary") url.searchParams.delete("payrollTab");
+    else url.searchParams.set("payrollTab", activeTab);
+    if (period === currentPeriod) url.searchParams.delete("payrollPeriod");
+    else url.searchParams.set("payrollPeriod", period);
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}#loans`);
+  }, [activeTab, currentPeriod, period]);
   const pageSize = 10;
   const dateMatches = (date:string, from:string, to:string) => (!from || date >= from) && (!to || date <= to);
   const payRows = activeEmployees.map((employee:any) => ({ employee, account: data.users.find((item:any) => item.id === employee.userId), payroll: payrolls.find((item:any) => item.employeeId === employee.id && item.period === period), loanReminder: loans.filter((loan:any) => loan.employeeId === employee.id && loan.status === "active").reduce((sum:number, loan:any) => sum + loanInstallmentDue(loan), 0) })).filter((row:any) => `${row.account?.name} ${row.employee.position} ${locations[row.employee.locationId]?.name}`.toLowerCase().includes(paySearch.toLowerCase()) && (payStatus === "all" || (payStatus === "paid" ? !!row.payroll : !row.payroll)) && (payLocation === "all" || row.employee.locationId === payLocation)).sort((a:any,b:any) => { const av = paySort === "salary" ? a.employee.monthlySalary : paySort === "location" ? locations[a.employee.locationId]?.name || "" : a.account?.name || ""; const bv = paySort === "salary" ? b.employee.monthlySalary : paySort === "location" ? locations[b.employee.locationId]?.name || "" : b.account?.name || ""; return (av > bv ? 1 : av < bv ? -1 : 0) * (payDesc ? -1 : 1); });
-  const loanRows = loans.map((loan:any) => ({ loan, employee: data.employees?.find((item:any) => item.id === loan.employeeId), account: data.users.find((item:any) => item.id === data.employees?.find((employee:any) => employee.id === loan.employeeId)?.userId) })).filter((row:any) => `${row.account?.name} ${row.employee?.position} ${row.loan.note || ""}`.toLowerCase().includes(loanSearch.toLowerCase()) && (loanStatus === "all" || row.loan.status === loanStatus) && dateMatches(row.loan.loanDate, loanFrom, loanTo)).sort((a:any,b:any) => { const av = loanSort === "amount" ? a.loan.amount : loanSort === "employee" ? a.account?.name || "" : a.loan.loanDate; const bv = loanSort === "amount" ? b.loan.amount : loanSort === "employee" ? b.account?.name || "" : b.loan.loanDate; return (av > bv ? 1 : av < bv ? -1 : 0) * (loanDesc ? -1 : 1); });
+  const loanRows = loans.map((loan:any) => ({ loan, employee: data.employees?.find((item:any) => item.id === loan.employeeId), account: data.users.find((item:any) => item.id === data.employees?.find((employee:any) => employee.id === loan.employeeId)?.userId) })).filter((row:any) => `${row.account?.name} ${row.employee?.position} ${row.loan.note || ""}`.toLowerCase().includes(loanSearch.toLowerCase()) && (loanStatus === "all" || row.loan.status === loanStatus) && (loanLocation === "all" || row.employee?.locationId === loanLocation) && dateMatches(row.loan.loanDate, loanFrom, loanTo)).sort((a:any,b:any) => { const av = loanSort === "amount" ? a.loan.amount : loanSort === "employee" ? a.account?.name || "" : a.loan.loanDate; const bv = loanSort === "amount" ? b.loan.amount : loanSort === "employee" ? b.account?.name || "" : b.loan.loanDate; return (av > bv ? 1 : av < bv ? -1 : 0) * (loanDesc ? -1 : 1); });
+
   const togglePaySort = (key:string) => { if (paySort === key) setPayDesc(!payDesc); else { setPaySort(key); setPayDesc(false); } setPayPage(1); };
   const toggleLoanSort = (key:string) => { if (loanSort === key) setLoanDesc(!loanDesc); else { setLoanSort(key); setLoanDesc(false); } setLoanPage(1); };
-  return <PageBlock title="Kasbon & penggajian" desc="Gaji dibayarkan dan dicatat per periode. Kasbon hanya tampil sebagai pengingat; tidak dipotong otomatis." action={canManage ? "Catat Kasbon" : undefined} onAction={canManage ? open : undefined}>
-    <div className="stats-grid compact"><Stat label="Gaji periode ini" value={money(totalPayroll)} sub={`Periode ${period}`} /><Stat label="Sudah dibayar" value={money(paidPayroll)} sub={`${payrolls.filter((payroll:any) => payroll.period === period).length} karyawan`} /><Stat label="Menunggu pembayaran" value={String(Math.max(0, activeEmployees.length - payrolls.filter((payroll:any) => payroll.period === period).length))} sub="Gaji pokok, tanpa potongan kasbon" tone="amber" /></div>
-    <section className="payroll-section"><div className="card-head"><h3>Penggajian periode {period}</h3><span>Owner saja · kasbon tidak mengurangi nominal</span></div><div className="table-controls"><ListSearch value={paySearch} setValue={(value:string) => { setPaySearch(value); setPayPage(1); }} placeholder="Cari karyawan atau lokasi" /><AppSelect value={payStatus} onChange={(event:any) => { setPayStatus(event.target.value); setPayPage(1); }}><option value="all">Semua status</option><option value="paid">Sudah dibayar</option><option value="waiting">Menunggu</option></AppSelect><AppSelect value={payLocation} onChange={(event:any) => { setPayLocation(event.target.value); setPayPage(1); }}><option value="all">Semua lokasi</option>{data.locations.map((location:any) => <option key={location.id} value={location.id}>{location.name}</option>)}</AppSelect></div><div className="table-wrap"><table><thead><tr><th onClick={() => togglePaySort("employee")}>Karyawan {paySort === "employee" && (payDesc ? "↓" : "↑")}</th><th onClick={() => togglePaySort("location")}>Lokasi {paySort === "location" && (payDesc ? "↓" : "↑")}</th><th onClick={() => togglePaySort("salary")}>Gaji pokok {paySort === "salary" && (payDesc ? "↓" : "↑")}</th><th>Pengingat kasbon</th><th>Tanggal dibayar</th><th>Status</th><th>Aksi</th></tr></thead><tbody>{payRows.length ? payRows.slice((payPage - 1) * pageSize, payPage * pageSize).map((row:any) => <tr key={row.employee.id}><td><b>{row.account?.name || "-"}</b><small className="block">{row.employee.position}</small></td><td>{locations[row.employee.locationId]?.name || "-"}</td><td><b>{money(row.employee.monthlySalary)}</b></td><td>{row.loanReminder ? <span className="status wait">Kasbon {money(row.loanReminder)}</span> : "-"}</td><td>{row.payroll ? new Date(row.payroll.paidAt).toLocaleString("id-ID", { dateStyle: "short", timeStyle: "medium" }) : "-"}{row.payroll?.proofUrl && <a className="proof-link" href={row.payroll.proofUrl} target="_blank" rel="noreferrer">Lihat bukti transfer</a>}</td><td><span className={`status ${row.payroll ? "ok" : "wait"}`}>{row.payroll ? "Dibayar" : "Menunggu"}</span></td><td>{!row.payroll && <button className="table-action" onClick={() => payEmployee(row.employee)}>Tandai dibayar</button>}</td></tr>) : <Empty text="Data penggajian tidak ditemukan." />}</tbody></table></div><TablePagination page={payPage} total={payRows.length} size={pageSize} setPage={setPayPage} /></section>
-    <section className="payroll-section"><div className="card-head"><h3>Kasbon aktif</h3><span>Pengingat cicilan, terpisah dari gaji</span></div><div className="table-controls"><ListSearch value={loanSearch} setValue={(value:string) => { setLoanSearch(value); setLoanPage(1); }} placeholder="Cari karyawan atau catatan" /><AppSelect value={loanStatus} onChange={(event:any) => { setLoanStatus(event.target.value); setLoanPage(1); }}><option value="all">Semua status</option><option value="active">Aktif</option><option value="paid">Lunas</option></AppSelect><label className="date-filter">Dari<input type="date" value={loanFrom} onChange={(event) => { setLoanFrom(event.target.value); setLoanPage(1); }} /></label><label className="date-filter">Hingga<input type="date" value={loanTo} onChange={(event) => { setLoanTo(event.target.value); setLoanPage(1); }} /></label></div><div className="table-wrap"><table><thead><tr><th onClick={() => toggleLoanSort("employee")}>Karyawan {loanSort === "employee" && (loanDesc ? "↓" : "↑")}</th><th onClick={() => toggleLoanSort("date")}>Tanggal pinjaman {loanSort === "date" && (loanDesc ? "↓" : "↑")}</th><th onClick={() => toggleLoanSort("amount")}>Kasbon {loanSort === "amount" && (loanDesc ? "↓" : "↑")}</th><th>Cicilan</th><th>Sisa</th><th>Aksi</th></tr></thead><tbody>{loanRows.length ? loanRows.slice((loanPage - 1) * pageSize, loanPage * pageSize).map((row:any) => { const remaining = Math.max(0, row.loan.installmentCount - row.loan.paidInstallments); return <tr key={row.loan.id}><td><b>{row.account?.name || "-"}</b><small className="block">{locations[row.employee?.locationId]?.name || "-"}</small></td><td>{new Date(row.loan.loanDate).toLocaleDateString("id-ID")}</td><td>{money(row.loan.amount)}</td><td>{money(row.loan.installmentAmount)} × {row.loan.installmentCount}</td><td><span className={`status ${remaining ? "wait" : "ok"}`}>{remaining ? `${remaining} cicilan` : "Lunas"}</span></td><td>{remaining > 0 && <button className="table-action" onClick={() => confirmInstallment(row.loan, row.account?.name || "karyawan")}>Tandai 1 cicilan</button>}</td></tr>; }) : <Empty text="Data kasbon tidak ditemukan." />}</tbody></table></div><TablePagination page={loanPage} total={loanRows.length} size={pageSize} setPage={setLoanPage} /></section>
+  const printSlip = (payroll:any) => {
+    try {
+      printPayrollSlip(payroll, data);
+      notify("Slip gaji dibuka dan siap dicetak.");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Slip gaji tidak dapat dicetak.", "error");
+    }
+  };
+  const activeLoanBalance = loans.filter((loan:any) => loan.status === "active").reduce((sum:number, loan:any) => sum + Math.max(0, loan.amount - (loan.installmentAmount * loan.paidInstallments)), 0);
+  return <PageBlock title="Kasbon & penggajian" desc="Gaji dibayarkan dan dicatat per periode. Kasbon hanya tampil sebagai pengingat; tidak dipotong otomatis." action={canManage && activeTab === "loans" ? "Catat Kasbon" : undefined} onAction={canManage && activeTab === "loans" ? open : undefined}>
+    <nav className="payroll-tabs" aria-label="Sub-menu kasbon dan penggajian">{([['summary','Ringkasan'],['payroll','Proses Penggajian'],['loans','Kasbon Karyawan']] as [PayrollTab,string][]).map(([id,label]) => <button key={id} type="button" className={activeTab === id ? "active" : ""} aria-current={activeTab === id ? "page" : undefined} onClick={() => setActiveTab(id)}>{label}</button>)}</nav>
+    {(activeTab === "summary" || activeTab === "payroll") && <div className="payroll-period-bar"><div><b>{activeTab === "summary" ? "Ringkasan periode" : "Periode penggajian"}</b><span>Pilih bulan dan tahun yang ingin ditampilkan.</span></div><label>Periode<input type="month" onClick={(e) => { try { (e.target as any).showPicker(); } catch {} }} value={period} max={currentPeriod} onChange={(event) => { setPeriod(event.target.value || currentPeriod); setPayPage(1); }} /></label>{period !== currentPeriod && <button type="button" className="table-action" onClick={() => { setPeriod(currentPeriod); setPayPage(1); }}>Kembali ke bulan ini</button>}</div>}
+    {activeTab === "loans" && <div className="payroll-filter-bar"><AppSelect value={loanLocation} onChange={(event:any) => { setLoanLocation(event.target.value); setLoanPage(1); }}><option value="all">Semua lokasi</option>{data.locations.map((location:any) => <option key={location.id} value={location.id}>{location.name}</option>)}</AppSelect>{loanLocation !== "all" && <button type="button" className="table-action" onClick={() => { setLoanLocation("all"); setLoanPage(1); }}>Reset lokasi</button>}</div>}
+    {activeTab === "summary" && <><div className="stats-grid compact"><Stat label="Gaji periode ini" value={money(totalPayroll)} sub={`Periode ${period}`} /><Stat label="Sudah dibayar" value={money(paidPayroll)} sub={`${payrolls.filter((payroll:any) => payroll.period === period).length} karyawan`} /><Stat label="Menunggu pembayaran" value={String(Math.max(0, activeEmployees.length - payrolls.filter((payroll:any) => payroll.period === period).length))} sub="Karyawan belum dibayar" tone="amber" /><Stat label="Sisa kasbon aktif" value={money(activeLoanBalance)} sub={`${loans.filter((loan:any) => loan.status === "active").length} kasbon aktif`} tone="amber" /></div><section className="payroll-overview"><article><span>PROGRES PENGGAJIAN</span><b>{activeEmployees.length ? Math.round((payrolls.filter((item:any) => item.period === period).length / activeEmployees.length) * 100) : 0}%</b><p>{Math.max(0, activeEmployees.length - payrolls.filter((item:any) => item.period === period).length)} dari {activeEmployees.length} karyawan masih menunggu pembayaran.</p><button type="button" className="table-action" onClick={() => setActiveTab("payroll")}>Buka proses penggajian</button></article><article><span>KASBON KARYAWAN</span><b>{money(activeLoanBalance)}</b><p>Kasbon menjadi pengingat terpisah dan tidak mengurangi gaji otomatis.</p><button type="button" className="table-action" onClick={() => setActiveTab("loans")}>Kelola kasbon</button></article></section></>}
+    {activeTab === "payroll" && <section className="payroll-section payroll-tab-section"><div className="card-head"><h3>Penggajian periode {period}</h3><span>Sesuai hak akses penggajian · kasbon tidak mengurangi nominal</span></div><div className="table-controls"><ListSearch value={paySearch} setValue={(value:string) => { setPaySearch(value); setPayPage(1); }} placeholder="Cari karyawan atau lokasi" /><AppSelect value={payStatus} onChange={(event:any) => { setPayStatus(event.target.value); setPayPage(1); }}><option value="all">Semua status</option><option value="paid">Sudah dibayar</option><option value="waiting">Menunggu</option></AppSelect><AppSelect value={payLocation} onChange={(event:any) => { setPayLocation(event.target.value); setPayPage(1); }}><option value="all">Semua lokasi</option>{data.locations.map((location:any) => <option key={location.id} value={location.id}>{location.name}</option>)}</AppSelect></div><div className="table-wrap"><table><thead><tr><th onClick={() => togglePaySort("employee")}>Karyawan {paySort === "employee" && (payDesc ? "↓" : "↑")}</th><th onClick={() => togglePaySort("location")}>Lokasi {paySort === "location" && (payDesc ? "↓" : "↑")}</th><th onClick={() => togglePaySort("salary")}>Gaji pokok {paySort === "salary" && (payDesc ? "↓" : "↑")}</th><th>Pengingat kasbon</th><th>Tanggal dibayar</th><th>Status</th><th>Aksi</th></tr></thead><tbody>{payRows.length ? payRows.slice((payPage - 1) * pageSize, payPage * pageSize).map((row:any) => <tr key={row.employee.id}><td><b>{row.account?.name || "-"}</b><small className="block">{row.employee.position}</small></td><td>{locations[row.employee.locationId]?.name || "-"}</td><td><b>{money(row.employee.monthlySalary)}</b></td><td>{row.loanReminder ? <span className="status wait">Kasbon {money(row.loanReminder)}</span> : "-"}</td><td>{row.payroll ? new Date(row.payroll.paidAt).toLocaleString("id-ID", { dateStyle: "short", timeStyle: "medium" }) : "-"}{row.payroll?.proofUrl && <a className="proof-link" href={row.payroll.proofUrl} target="_blank" rel="noreferrer">Lihat bukti transfer</a>}</td><td><span className={`status ${row.payroll ? "ok" : "wait"}`}>{row.payroll ? "Dibayar" : "Menunggu"}</span></td><td><div className="payroll-row-actions">{row.payroll ? <button className="table-action" onClick={() => printSlip(row.payroll)}><Printer size={15} /> Cetak slip</button> : <button className="table-action" onClick={() => payEmployee(row.employee)}>Tandai dibayar</button>}</div></td></tr>) : <Empty text="Data penggajian tidak ditemukan." />}</tbody></table></div><TablePagination page={payPage} total={payRows.length} size={pageSize} setPage={setPayPage} /></section>}
+
+    {activeTab === "loans" && <section className="payroll-section payroll-tab-section"><div className="card-head"><h3>Kasbon karyawan</h3><span>Pengingat cicilan, terpisah dari gaji</span></div><div className="table-controls"><ListSearch value={loanSearch} setValue={(value:string) => { setLoanSearch(value); setLoanPage(1); }} placeholder="Cari karyawan atau catatan" /><AppSelect value={loanStatus} onChange={(event:any) => { setLoanStatus(event.target.value); setLoanPage(1); }}><option value="all">Semua status</option><option value="active">Aktif</option><option value="paid">Lunas</option></AppSelect><label className="date-filter">Dari<input type="date" onClick={(e) => { try { (e.target as any).showPicker(); } catch {} }} value={loanFrom} onChange={(event) => { setLoanFrom(event.target.value); setLoanPage(1); }} /></label><label className="date-filter">Hingga<input type="date" onClick={(e) => { try { (e.target as any).showPicker(); } catch {} }} value={loanTo} onChange={(event) => { setLoanTo(event.target.value); setLoanPage(1); }} /></label></div><div className="table-wrap"><table><thead><tr><th onClick={() => toggleLoanSort("employee")}>Karyawan {loanSort === "employee" && (loanDesc ? "↓" : "↑")}</th><th onClick={() => toggleLoanSort("date")}>Tanggal pinjaman {loanSort === "date" && (loanDesc ? "↓" : "↑")}</th><th onClick={() => toggleLoanSort("amount")}>Kasbon {loanSort === "amount" && (loanDesc ? "↓" : "↑")}</th><th>Cicilan</th><th>Sisa</th><th>Aksi</th></tr></thead><tbody>{loanRows.length ? loanRows.slice((loanPage - 1) * pageSize, loanPage * pageSize).map((row:any) => { const remaining = Math.max(0, row.loan.installmentCount - row.loan.paidInstallments); return <tr key={row.loan.id}><td><b>{row.account?.name || "-"}</b><small className="block">{locations[row.employee?.locationId]?.name || "-"}</small></td><td>{new Date(row.loan.loanDate).toLocaleDateString("id-ID")}</td><td>{money(row.loan.amount)}</td><td>{money(row.loan.installmentAmount)} × {row.loan.installmentCount}</td><td><span className={`status ${remaining ? "wait" : "ok"}`}>{remaining ? `${remaining} cicilan` : "Lunas"}</span></td><td>{remaining > 0 && <button className="table-action" onClick={() => confirmInstallment(row.loan, row.account?.name || "karyawan")}>Tandai 1 cicilan</button>}</td></tr>; }) : <Empty text="Data kasbon tidak ditemukan." />}</tbody></table></div><TablePagination page={loanPage} total={loanRows.length} size={pageSize} setPage={setLoanPage} /></section>}
   </PageBlock>;
 }
 function Stock({ data, updateMinimum, variants, role, outletId }: any) {
@@ -4566,11 +4666,11 @@ const accessRoleLabel = (role:string) => role === "admin" ? "Admin Cabang" : rol
 function EmployeeModal({ data, employee, initialUserId, close, save, createAccount }: any) {
   const eligibleUsers = data.users.filter((user:any) => user.active && user.role !== "owner" && !(data.employees || []).some((item:any) => item.userId === user.id));
   const editing = Boolean(employee);
-  const [useExisting, setUseExisting] = useState(editing || Boolean(initialUserId)), [userId, setUserId] = useState(employee?.userId || initialUserId || eligibleUsers[0]?.id || ""), [name, setName] = useState(""), [email, setEmail] = useState(""), [password, setPassword] = useState(""), [locationId, setLocationId] = useState(employee?.locationId || ""), [monthlySalary, setMonthlySalary] = useState(String(employee?.monthlySalary ?? 0)), [loading, setLoading] = useState(false), [error, setError] = useState("");
+  const [useExisting, setUseExisting] = useState(editing || Boolean(initialUserId)), [userId, setUserId] = useState(employee?.userId || initialUserId || eligibleUsers[0]?.id || ""), [name, setName] = useState(""), [email, setEmail] = useState(""), [password, setPassword] = useState(""), [locationId, setLocationId] = useState(employee?.locationId || ""), [monthlySalary, setMonthlySalary] = useState(String(employee?.monthlySalary ?? 0)), [joinDate, setJoinDate] = useState(employee?.joinDate || new Date().toISOString().slice(0, 10)), [loading, setLoading] = useState(false), [error, setError] = useState("");
   const linkedAccount = data.users.find((item:any) => item.id === (employee?.userId || userId));
   const staffPosition = accessRoleLabel(linkedAccount?.role || "employee");
-  const submit = async (event: React.FormEvent) => { event.preventDefault(); if (loading) return; setError(""); if (useExisting && !userId) return setError("Pilih akun staf yang ingin dihubungkan."); if (!useExisting && (name.trim().length < 2 || !email.includes("@") || password.length < 8)) return setError("Isi nama, email, dan password minimal 8 karakter."); setLoading(true); try { const account = useExisting ? undefined : await createAccount({ name: name.trim(), email: email.trim(), password, role: "employee" }); await save({ id: employee?.id || newId("emp"), userId: useExisting ? userId : account.id, locationId: locationId || undefined, position: useExisting ? staffPosition : "Karyawan", monthlySalary: Number(monthlySalary) || 0, active: employee?.active ?? true }, account); } catch (err) { setError(err instanceof Error ? err.message : "Karyawan tidak dapat disimpan."); setLoading(false); } };
-  return <Modal title={editing ? "Atur data kerja" : "Lengkapi data kerja"} desc="Peran staf mengikuti pengaturan akses. Di sini Owner cukup mengatur lokasi kerja dan gaji." close={close}><form onSubmit={submit}>{!editing && <><label className="toggle-field"><input type="checkbox" checked={useExisting} onChange={(event) => setUseExisting(event.target.checked)} /><span>Hubungkan akun staf yang sudah ada</span></label>{useExisting ? <><Field label="Akun staf"><AppSelect required value={userId} onChange={(event:any) => setUserId(event.target.value)}><option value="" disabled>Pilih akun staf</option>{eligibleUsers.map((item:any) => <option key={item.id} value={item.id} data-meta={accessRoleLabel(item.role)}>{item.name} · {item.email}</option>)}</AppSelect></Field><small className="upload-hint">Peran staf ditentukan dari pengaturan akses dan otomatis digunakan pada data kerja serta penggajian.</small>{eligibleUsers.length === 0 && <small className="upload-hint">Semua akun staf aktif sudah terhubung. Hilangkan centang di atas untuk membuat akun Karyawan baru.</small>}</> : <div className="form-grid"><Field label="Nama karyawan"><input required value={name} onChange={(event) => setName(event.target.value)} /></Field><Field label="Email login"><input type="email" required value={email} onChange={(event) => setEmail(event.target.value)} /></Field><Field label="Password awal"><input type="password" required minLength={8} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Minimal 8 karakter" /></Field></div>}</>}<Field label="Lokasi kerja"><AppSelect value={locationId} onChange={(event:any) => setLocationId(event.target.value)}><option value="">Belum ditetapkan</option>{data.locations.filter((location:any) => location.active).map((location:any) => <option key={location.id} value={location.id}>{location.name}</option>)}</AppSelect></Field><small className="upload-hint">Tanpa lokasi kerja, staf tetap dapat login sesuai perannya, tetapi tidak dapat melakukan absensi.</small><div className="form-grid"><Field label="Peran staf"><input readOnly className="input-readonly" value={useExisting ? staffPosition : "Karyawan"} /></Field><Field label="Gaji bulanan"><RupiahInput label="Gaji bulanan" value={Number(monthlySalary || 0)} onValue={(value) => setMonthlySalary(String(value))} /></Field></div>{error && <p className="login-error">{error}</p>}<ModalActions close={close} disabled={loading} /></form></Modal>;
+  const submit = async (event: React.FormEvent) => { event.preventDefault(); if (loading) return; setError(""); if (useExisting && !userId) return setError("Pilih akun staf yang ingin dihubungkan."); if (!useExisting && (name.trim().length < 2 || !email.includes("@") || password.length < 8)) return setError("Isi nama, email, dan password minimal 8 karakter."); setLoading(true); try { const account = useExisting ? undefined : await createAccount({ name: name.trim(), email: email.trim(), password, role: "employee" }); await save({ id: employee?.id || newId("emp"), userId: useExisting ? userId : account.id, locationId: locationId || undefined, position: useExisting ? staffPosition : "Karyawan", monthlySalary: Number(monthlySalary) || 0, active: employee?.active ?? true, joinDate }, account); } catch (err) { setError(err instanceof Error ? err.message : "Karyawan tidak dapat disimpan."); setLoading(false); } };
+  return <Modal title={editing ? "Atur data kerja" : "Lengkapi data kerja"} desc="Peran staf mengikuti pengaturan akses. Di sini Owner cukup mengatur lokasi kerja dan gaji." close={close}><form onSubmit={submit}>{!editing && <><label className="toggle-field"><input type="checkbox" checked={useExisting} onChange={(event) => setUseExisting(event.target.checked)} /><span>Hubungkan akun staf yang sudah ada</span></label>{useExisting ? <><Field label="Akun staf"><AppSelect required value={userId} onChange={(event:any) => setUserId(event.target.value)}><option value="" disabled>Pilih akun staf</option>{eligibleUsers.map((item:any) => <option key={item.id} value={item.id} data-meta={accessRoleLabel(item.role)}>{item.name} · {item.email}</option>)}</AppSelect></Field><small className="upload-hint">Peran staf ditentukan dari pengaturan akses dan otomatis digunakan pada data kerja serta penggajian.</small>{eligibleUsers.length === 0 && <small className="upload-hint">Semua akun staf aktif sudah terhubung. Hilangkan centang di atas untuk membuat akun Karyawan baru.</small>}</> : <div className="form-grid"><Field label="Nama karyawan"><input required value={name} onChange={(event) => setName(event.target.value)} /></Field><Field label="Email login"><input type="email" required value={email} onChange={(event) => setEmail(event.target.value)} /></Field><Field label="Password awal"><input type="password" required minLength={8} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Minimal 8 karakter" /></Field></div>}</>}<Field label="Lokasi kerja"><AppSelect value={locationId} onChange={(event:any) => setLocationId(event.target.value)}><option value="">Belum ditetapkan</option>{data.locations.filter((location:any) => location.active).map((location:any) => <option key={location.id} value={location.id}>{location.name}</option>)}</AppSelect></Field><small className="upload-hint">Tanpa lokasi kerja, staf tetap dapat login sesuai perannya, tetapi tidak dapat melakukan absensi.</small><div className="form-grid"><Field label="Peran staf"><input readOnly className="input-readonly" value={useExisting ? staffPosition : "Karyawan"} /></Field><Field label="Gaji bulanan"><RupiahInput label="Gaji bulanan" value={Number(monthlySalary || 0)} onValue={(value) => setMonthlySalary(String(value))} /></Field><Field label="Tanggal masuk"><input type="date" required value={joinDate} onClick={(e) => { try { (e.target as any).showPicker(); } catch {} }} onChange={(event) => setJoinDate(event.target.value)} /></Field></div>{error && <p className="login-error">{error}</p>}<ModalActions close={close} disabled={loading} /></form></Modal>;
 }
 function LoanModal({ data, close, save }: any) {
   const [employeeId, setEmployeeId] = useState(data.employees?.find((item:any) => item.active)?.id || ""), [amount, setAmount] = useState(0), [installmentCount, setInstallmentCount] = useState<number | "">(1), [loanDate, setLoanDate] = useState(jakartaDateKey()), [note, setNote] = useState("");
@@ -4578,11 +4678,11 @@ function LoanModal({ data, close, save }: any) {
   const installmentInputRef = useRef<HTMLInputElement>(null);
   const installmentEstimate = calculateLoanInstallment(amount, Number(installmentCount) || 0);
   const submit = async (event:React.FormEvent) => { event.preventDefault(); const nominal = Number(amount), tenor = Number(installmentInputRef.current?.value ?? installmentCount); if (loading) return; setError(""); if (!employeeId) return setError("Pilih karyawan terlebih dahulu."); if (nominal <= 0) return setError("Nominal kasbon harus lebih dari Rp 0."); if (!Number.isInteger(tenor) || tenor < 1 || tenor > 120) return setError("Jumlah cicilan harus antara 1 sampai 120 kali."); setLoading(true); try { await save({ id: newId("loan"), employeeId, loanDate, amount: nominal, installmentCount: tenor, installmentAmount: calculateLoanInstallment(nominal, tenor), paidInstallments: 0, note, status: "active" }); } catch (err) { setError(err instanceof Error ? err.message : "Kasbon tidak dapat disimpan."); setLoading(false); } };
-  return <Modal title="Catat kasbon" desc="Kasbon dicatat sebagai pengingat owner dan tidak memotong gaji secara otomatis." close={close}><form onSubmit={submit}><Field label="Karyawan"><AppSelect required value={employeeId} onChange={(event:any) => setEmployeeId(event.target.value)}><option value="" disabled>Pilih karyawan</option>{(data.employees || []).filter((employee:any) => employee.active).map((employee:any) => <option key={employee.id} value={employee.id}>{data.users.find((user:any) => user.id === employee.userId)?.name || "Karyawan"}</option>)}</AppSelect></Field><div className="form-grid"><Field label="Tanggal pinjaman"><input type="date" required value={loanDate} onChange={(event) => setLoanDate(event.target.value)} /></Field><Field label="Nominal kasbon"><RupiahInput label="Nominal kasbon" value={amount} onValue={setAmount} /></Field><Field label="Jumlah cicilan"><input ref={installmentInputRef} type="number" inputMode="numeric" min="1" max="120" step="1" required value={installmentCount} onInput={(event) => setInstallmentCount(event.currentTarget.value === "" ? "" : Math.max(1, Math.min(120, Math.trunc(Number(event.currentTarget.value) || 0))))} /></Field><Field label="Estimasi per cicilan (otomatis)"><RupiahInput label="Estimasi per cicilan" readOnly value={installmentEstimate} onValue={() => undefined} /></Field></div><small className="upload-hint loan-estimate-hint">Estimasi dihitung otomatis dari nominal kasbon dibagi jumlah cicilan. Pembulatan dilakukan ke atas; cicilan terakhir otomatis disesuaikan agar total pembayaran tepat sama dengan nominal kasbon.</small><Field label="Catatan"><textarea maxLength={500} value={note} onChange={(event) => setNote(event.target.value)} placeholder="Contoh: kebutuhan pribadi" /></Field>{error && <p className="login-error">{error}</p>}<ModalActions close={close} disabled={loading} /></form></Modal>;
+  return <Modal title="Catat kasbon" desc="Kasbon dicatat sebagai pengingat owner dan tidak memotong gaji secara otomatis." close={close}><form onSubmit={submit}><Field label="Karyawan"><AppSelect required value={employeeId} onChange={(event:any) => setEmployeeId(event.target.value)}><option value="" disabled>Pilih karyawan</option>{(data.employees || []).filter((employee:any) => employee.active).map((employee:any) => <option key={employee.id} value={employee.id}>{data.users.find((user:any) => user.id === employee.userId)?.name || "Karyawan"}</option>)}</AppSelect></Field><div className="form-grid"><Field label="Tanggal pinjaman"><input type="date" onClick={(e) => { try { (e.target as any).showPicker(); } catch {} }} required value={loanDate} onChange={(event) => setLoanDate(event.target.value)} /></Field><Field label="Nominal kasbon"><RupiahInput label="Nominal kasbon" value={amount} onValue={setAmount} /></Field><Field label="Jumlah cicilan"><input ref={installmentInputRef} type="number" inputMode="numeric" min="1" max="120" step="1" required value={installmentCount} onInput={(event) => setInstallmentCount(event.currentTarget.value === "" ? "" : Math.max(1, Math.min(120, Math.trunc(Number(event.currentTarget.value) || 0))))} /></Field><Field label="Estimasi per cicilan (otomatis)"><RupiahInput label="Estimasi per cicilan" readOnly value={installmentEstimate} onValue={() => undefined} /></Field></div><small className="upload-hint loan-estimate-hint">Estimasi dihitung otomatis dari nominal kasbon dibagi jumlah cicilan. Pembulatan dilakukan ke atas; cicilan terakhir otomatis disesuaikan agar total pembayaran tepat sama dengan nominal kasbon.</small><Field label="Catatan"><textarea maxLength={500} value={note} onChange={(event) => setNote(event.target.value)} placeholder="Contoh: kebutuhan pribadi" /></Field>{error && <p className="login-error">{error}</p>}<ModalActions close={close} disabled={loading} /></form></Modal>;
 }
-function PayrollPaymentModal({ employee, employeeName, close, save, uploadImage }: any) {
+function PayrollPaymentModal({ employee, employeeName, payrollPeriod, close, save, uploadImage }: any) {
   const [file, setFile] = useState<File | null>(null), [note, setNote] = useState(""), [loading, setLoading] = useState(false), [error, setError] = useState("");
-  return <Modal title={`Tandai gaji dibayar`} desc="Unggah bukti transfer bila tersedia. Bukti bersifat opsional dan dapat dilihat kembali dari tabel penggajian." close={close}><form onSubmit={async (event) => { event.preventDefault(); if (loading) return; setLoading(true); setError(""); try { const proofUrl = file ? await uploadImage(file) : undefined; await save(proofUrl, note.trim() || undefined); } catch (err) { setError(err instanceof Error ? err.message : "Bukti transfer tidak dapat diunggah."); setLoading(false); } }}><div className="detail-list payroll-payment-summary"><p><span>Karyawan</span><b>{employeeName}</b></p><p><span>Gaji pokok</span><b>{money(employee.monthlySalary)}</b></p></div><Field label="Bukti transfer (opsional)"><input type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif" onChange={(event) => setFile(event.target.files?.[0] || null)} /></Field><small className="upload-hint">Unggah gambar JPG, PNG, WebP, HEIC, atau HEIF. Maksimal 5 MB.</small><Field label="Catatan (opsional)"><textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Contoh: transfer melalui BCA" /></Field>{error && <p className="login-error">{error}</p>}<footer className="modal-actions"><button type="button" className="secondary" onClick={close} disabled={loading}>Batal</button><button type="submit" className="primary" disabled={loading}>{loading ? "Mengunggah..." : "Simpan pembayaran"}</button></footer></form></Modal>;
+  return <Modal title={`Tandai gaji dibayar`} desc="Unggah bukti transfer bila tersedia. Bukti bersifat opsional dan dapat dilihat kembali dari tabel penggajian." close={close}><form onSubmit={async (event) => { event.preventDefault(); if (loading) return; setLoading(true); setError(""); try { const proofUrl = file ? await uploadImage(file) : undefined; await save(proofUrl, note.trim() || undefined); } catch (err) { setError(err instanceof Error ? err.message : "Bukti transfer tidak dapat diunggah."); setLoading(false); } }}><div className="detail-list payroll-payment-summary"><p><span>Karyawan</span><b>{employeeName}</b></p><p><span>Periode gaji</span><b>{new Date(`${payrollPeriod}-01T12:00:00`).toLocaleDateString("id-ID", { month: "long", year: "numeric" })}</b></p><p><span>Gaji pokok</span><b>{money(employee.monthlySalary)}</b></p></div><Field label="Bukti transfer (opsional)"><input type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif" onChange={(event) => setFile(event.target.files?.[0] || null)} /></Field><small className="upload-hint">Unggah gambar JPG, PNG, WebP, HEIC, atau HEIF. Maksimal 5 MB.</small><Field label="Catatan (opsional)"><textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Contoh: transfer melalui BCA" /></Field>{error && <p className="login-error">{error}</p>}<footer className="modal-actions"><button type="button" className="secondary" onClick={close} disabled={loading}>Batal</button><button type="submit" className="primary" disabled={loading}>{loading ? "Mengunggah..." : "Simpan pembayaran"}</button></footer></form></Modal>;
 }
 function UserModal({ data, close, save, user, uploadImage, onDelete }: any) {
   const availableRoles = configuredRolesFromData(data);
@@ -5382,7 +5482,78 @@ function TransferModal({ data, close, save, uploadImage, fixedFrom, initialFrom,
     </Modal>
   );
 }
-function SaleModal({ data, close, save, fixedLocation }: any) {
+function PrinterConnectionPanel({ settings, setSettings, notify }: { settings: PrinterSettings; setSettings: (settings: PrinterSettings) => void; notify: (message: string, tone?: ToastTone) => void }) {
+  const [, refreshStatus] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const reconnectAttemptRef = useRef("");
+  const capabilities = printerCapabilities();
+  const connected = isPrinterConnected(settings.mode);
+  useEffect(() => subscribePrinterStatus(() => refreshStatus((value) => value + 1)), []);
+  useEffect(() => {
+    const key = `${settings.mode}:${settings.deviceId || ""}:${settings.usbVendorId || ""}:${settings.usbProductId || ""}:${settings.usbSerialNumber || ""}`;
+    if (settings.mode === "system" || reconnectAttemptRef.current === key || isPrinterConnected(settings.mode)) return;
+    reconnectAttemptRef.current = key;
+    void reconnectSavedPrinter(settings).then((restored) => {
+      if (restored) refreshStatus((value) => value + 1);
+    });
+  }, [settings]);
+  const update = (patch: Partial<PrinterSettings>) => {
+    const next = { ...settings, ...patch };
+    savePrinterSettings(next);
+    setSettings(next);
+  };
+  const connect = async () => {
+    setBusy(true);
+    try {
+      const connection = settings.mode === "usb" ? await connectUsbPrinter() : await connectBluetoothPrinter();
+      update(connection);
+      refreshStatus((value) => value + 1);
+      notify(`${connection.deviceName} terhubung dan siap mencetak.`);
+      setExpanded(false);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Printer tidak dapat dihubungkan.", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const disconnect = () => {
+    disconnectPrinter(settings.mode);
+    update({ deviceName: undefined, deviceId: undefined, usbVendorId: undefined, usbProductId: undefined, usbSerialNumber: undefined });
+    refreshStatus((value) => value + 1);
+    notify("Koneksi printer diputuskan.");
+  };
+  if (!expanded) return <button type="button" className={`printer-status-link ${connected ? "connected" : settings.mode === "system" ? "system" : "disconnected"}`} onClick={() => setExpanded(true)} aria-label="Buka pengaturan printer struk">
+    <Printer size={15} />
+    <span>{connected ? `Printer terhubung${settings.deviceName ? ` · ${settings.deviceName}` : ""}` : settings.mode === "system" ? "Cetak melalui printer sistem" : "Printer belum terhubung"}</span>
+    <small>· Klik untuk mengatur</small>
+  </button>;
+  return <section className="printer-panel expanded" aria-label="Status printer struk">
+    <div className="printer-panel-head">
+      <div className={`printer-indicator ${connected ? "connected" : settings.mode === "system" ? "system" : "disconnected"}`}>
+        <Printer size={19} />
+        <span><b>{connected ? "Printer terhubung" : settings.mode === "system" ? "Cetak melalui sistem" : "Printer belum terhubung"}</b><small>{connected ? settings.deviceName || "ESC/POS siap" : settings.mode === "system" ? "Pilih printer saat dialog cetak terbuka" : "Hubungkan printer sebelum cetak langsung"}</small></span>
+      </div>
+      <div className="printer-head-actions"><span className={`status ${connected ? "ok" : settings.mode === "system" ? "wait" : "danger"}`}>{connected ? "SIAP" : settings.mode === "system" ? "DIALOG" : "PUTUS"}</span><button type="button" className="table-action" onClick={() => setExpanded(false)}>Tutup pengaturan</button></div>
+    </div>
+    <div className="printer-mode-options" role="group" aria-label="Mode koneksi printer">
+      <button type="button" className={settings.mode === "system" ? "active" : ""} onClick={() => update({ mode: "system" })}><Printer size={16} /> Sistem</button>
+      <button type="button" className={settings.mode === "bluetooth" ? "active" : ""} onClick={() => update({ mode: "bluetooth" })} disabled={!capabilities.bluetooth}><Bluetooth size={16} /> Bluetooth</button>
+      <button type="button" className={settings.mode === "usb" ? "active" : ""} onClick={() => update({ mode: "usb" })} disabled={!capabilities.usb}><Usb size={16} /> Kabel USB</button>
+    </div>
+    <div className="printer-controls">
+      <label>Ukuran kertas<select value={settings.paperWidth} onChange={(event) => update({ paperWidth: event.target.value as PrinterSettings["paperWidth"] })}><option value="58">58 mm</option><option value="80">80 mm</option></select></label>
+      {settings.mode === "system" ? <p className="printer-copy-hint">Jumlah salinan dipilih pada dialog cetak.</p> : <label>Salinan<select value={settings.copies} onChange={(event) => update({ copies: Number(event.target.value) })}><option value="1">1</option><option value="2">2</option><option value="3">3</option></select></label>}
+      {settings.mode !== "system" && <div className="printer-connect-actions">
+        {connected ? <><button type="button" className="secondary" onClick={async () => { setBusy(true); try { await testDirectPrinter(settings); notify("Tes cetak berhasil dikirim ke printer."); } catch (error) { notify(error instanceof Error ? error.message : "Tes cetak gagal.", "error"); } finally { setBusy(false); } }} disabled={busy}>Tes cetak</button><button type="button" className="table-action danger-text" onClick={disconnect}>Putuskan</button></> : <button type="button" className="secondary" onClick={() => void connect()} disabled={busy}>{busy ? "Menghubungkan..." : "Hubungkan printer"}</button>}
+      </div>}
+    </div>
+    {settings.mode === "bluetooth" && !capabilities.bluetooth && <p className="printer-help">Bluetooth langsung tidak tersedia di browser ini. Gunakan Chrome Android atau mode Sistem.</p>}
+    {settings.mode === "usb" && !capabilities.usb && <p className="printer-help">USB langsung tidak tersedia di browser ini. Gunakan Chrome/Edge desktop atau mode Sistem.</p>}
+  </section>;
+}
+
+function SaleModal({ data, close, save, fixedLocation, notify }: any) {
   const activeLocations=data.locations.filter((l:any)=>l.active),variants = data.products.filter((p:any)=>p.active).flatMap((p: any) =>
       p.variants.filter((item:any)=>item.active!==false).map((item: any) => ({
         ...item,
@@ -5398,6 +5569,8 @@ function SaleModal({ data, close, save, fixedLocation }: any) {
     [categoryFilter, setCategoryFilter] = useState("all"),
     [payment, setPayment] = useState("QRIS"),
     [cart, setCart] = useState<Array<{ variantId: string; quantity: number }>>([]),
+    [printerSettings, setPrinterSettings] = useState<PrinterSettings>(() => loadPrinterSettings()),
+    [saving, setSaving] = useState(false),
     [cameraOpen, setCameraOpen] = useState(false),
     [cameraError, setCameraError] = useState(""),
     categories = Array.from(new Set(variants.map((item: any) => item.category).filter(Boolean))).sort() as string[],
@@ -5414,6 +5587,7 @@ function SaleModal({ data, close, save, fixedLocation }: any) {
     return groups;
   }, {}));
   const scannerRef = useRef<HTMLInputElement>(null);
+  const submitIntentRef = useRef<"save" | "print">("save");
   const scannerVideoRef = useRef<HTMLVideoElement>(null);
   const scannerStreamRef = useRef<MediaStream | null>(null);
   const barcodePhotoRef = useRef<HTMLInputElement>(null);
@@ -5630,12 +5804,34 @@ function SaleModal({ data, close, save, fixedLocation }: any) {
       className={isOffline ? "large pos-modal" : "large"}
     >
       <form
-        onSubmit={(e) => {
+        onSubmit={async (e) => {
           e.preventDefault();
-          if (cart.length === 0) return alert("Keranjang masih kosong");
-          save(loc, channel, cart, payment);
+          if (cart.length === 0 || saving) return;
+          const shouldPrint = submitIntentRef.current === "print";
+          let reservedWindow: Window | null = null;
+          if (shouldPrint && printerSettings.mode === "system") reservedWindow = window.open("", "_blank");
+          setSaving(true);
+          try {
+            const result = await save(loc, channel, cart, payment);
+            if (shouldPrint) {
+              try {
+                if (printerSettings.mode === "system") systemPrintSale(result.sale, result.data, printerSettings, reservedWindow);
+                else await directPrintSale(result.sale, result.data, printerSettings);
+                notify("Struk penjualan dikirim ke printer.");
+              } catch (printError) {
+                reservedWindow?.close();
+                notify(`Penjualan sudah tersimpan, tetapi struk gagal dicetak: ${printError instanceof Error ? printError.message : "periksa koneksi printer"}`, "error");
+              }
+            } else reservedWindow?.close();
+            close();
+          } catch (error) {
+            reservedWindow?.close();
+            notify(error instanceof Error ? error.message : "Penjualan tidak dapat disimpan.", "error");
+            setSaving(false);
+          }
         }}
       >
+        <PrinterConnectionPanel settings={printerSettings} setSettings={setPrinterSettings} notify={notify} />
         <div className="form-grid">
           <Field label="Lokasi">
             <select
@@ -5773,7 +5969,11 @@ function SaleModal({ data, close, save, fixedLocation }: any) {
           </Field>
           <div></div>
         </div>
-        <ModalActions close={close} disabled={cart.length === 0} label={isOffline ? 'Bayar & Simpan' : 'Simpan'} />
+        <footer className="modal-actions sale-print-actions">
+          <button type="button" className="secondary" onClick={close} disabled={saving}>Batal</button>
+          <button type="submit" className="secondary" disabled={cart.length === 0 || saving} onClick={() => { submitIntentRef.current = "save"; }}><Check size={17} />{saving ? "Menyimpan..." : "Simpan tanpa cetak"}</button>
+          <button type="submit" className="primary" disabled={cart.length === 0 || saving || (printerSettings.mode !== "system" && !isPrinterConnected(printerSettings.mode))} onClick={() => { submitIntentRef.current = "print"; }}><Printer size={17} />{saving ? "Memproses..." : "Simpan & Cetak"}</button>
+        </footer>
       </form>
     </Modal>
   );
@@ -5902,8 +6102,22 @@ function OpnameModal({ data, item, close, save, fixedLocation }: any) {
   );
 }
 function CancelModal({close,save}:any){const [isSaving, setIsSaving] = useState(false);const[reason,setReason]=useState("");return <Modal title="Batalkan transaksi" desc="Stok akan dikoreksi otomatis. Transaksi asli dan alasan tetap ada dalam histori." close={close}><form onSubmit={(e)=>{e.preventDefault();if(isSaving)return;setIsSaving(true);save(reason)}}><Field label="Alasan pembatalan / koreksi"><textarea required minLength={5} value={reason} onChange={(e)=>setReason(e.target.value)} placeholder="Contoh: Salah memilih produk atau jumlah"/></Field><footer className="modal-actions"><button type="button" className="secondary" onClick={close}>Kembali</button><button className="danger-button" type="submit" disabled={isSaving}><RotateCcw/>Batalkan transaksi</button></footer></form></Modal>}
-function SaleDetail({ item, variants, locations, close }: any) {
+function SaleDetail({ item, data, variants, locations, close, notify }: any) {
+  const [printerSettings, setPrinterSettings] = useState<PrinterSettings>(() => loadPrinterSettings());
+  const [printing, setPrinting] = useState(false);
   if (!item) return null;
+  const printReceipt = async () => {
+    setPrinting(true);
+    try {
+      if (printerSettings.mode === "system") systemPrintSale(item, data, printerSettings);
+      else await directPrintSale(item, data, printerSettings);
+      notify("Cetak ulang struk berhasil dikirim.");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Struk tidak dapat dicetak.", "error");
+    } finally {
+      setPrinting(false);
+    }
+  };
   return (
     <Modal
       title={`Detail transaksi ${item.id}`}
@@ -5946,10 +6160,12 @@ function SaleDetail({ item, variants, locations, close }: any) {
           </b>
         </p>
       </div>
+      {item.status !== "voided" && <PrinterConnectionPanel settings={printerSettings} setSettings={setPrinterSettings} notify={notify} />}
       <footer className="modal-actions detail-modal-actions">
         <button type="button" className="secondary" onClick={close}>
           Tutup
         </button>
+        {item.status !== "voided" && <button type="button" className="primary" onClick={() => void printReceipt()} disabled={printing || (printerSettings.mode !== "system" && !isPrinterConnected(printerSettings.mode))}><Printer size={17} />{printing ? "Mencetak..." : "Cetak ulang struk"}</button>}
       </footer>
     </Modal>
   );
