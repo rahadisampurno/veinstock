@@ -1,15 +1,19 @@
-import type { SessionUser } from '../types';
+import type { RolePolicies, SessionUser } from '../types';
 
 export type ActionType = 
   | 'product.view' | 'product.create' | 'product.update' | 'product.delete'
   | 'location.view' | 'location.create' | 'location.update' | 'location.delete'
   | 'user.view' | 'user.create' | 'user.update' | 'user.assign_location'
   | 'stock.view' | 'stock.initial_balance' | 'stock.in' | 'stock.out' | 'stock.adjust' | 'stock.opname'
-  | 'transfer.create' | 'transfer.send' | 'transfer.receive' | 'transfer.cancel'
+  | 'transfer.view' | 'transfer.create' | 'transfer.send' | 'transfer.receive' | 'transfer.cancel'
   | 'sale.view' | 'sale.create' | 'sale.void'
   | 'shipping.view' | 'shipping.manage'
   | 'report.view' | 'report.export'
-  | 'audit.view';
+  | 'audit.view'
+  | 'supplier.view' | 'supplier.manage'
+  | 'pricing.view' | 'pricing.manage'
+  | 'attendance.view' | 'attendance.record' | 'attendance.manage'
+  | 'payroll.view' | 'payroll.manage';
 
 export interface Scope {
   organizationId: string | null;
@@ -19,7 +23,7 @@ export interface Scope {
   permissions: Set<ActionType>;
 }
 
-export function resolveUserScope(user?: SessionUser | null): Scope {
+export function resolveUserScope(user?: SessionUser | null, policies?: RolePolicies): Scope {
   const role = user?.role || 'guest';
   const outletId = user?.outletId || null;
   const organizationId = user?.organizationId || null;
@@ -41,27 +45,36 @@ export function resolveUserScope(user?: SessionUser | null): Scope {
      'location.view', 'location.create', 'location.update', 'location.delete',
      'user.view', 'user.create', 'user.update', 'user.assign_location',
      'stock.view', 'stock.initial_balance', 'stock.in', 'stock.out', 'stock.adjust', 'stock.opname',
-     'transfer.create', 'transfer.send', 'transfer.receive', 'transfer.cancel',
+     'transfer.view', 'transfer.create', 'transfer.send', 'transfer.receive', 'transfer.cancel',
      'sale.view', 'sale.create', 'sale.void', 'shipping.view', 'shipping.manage',
-     'report.view', 'report.export', 'audit.view'].forEach(p => permissions.add(p as ActionType));
+     'report.view', 'report.export', 'audit.view', 'supplier.view', 'supplier.manage',
+     'pricing.view', 'pricing.manage', 'attendance.view', 'attendance.record', 'attendance.manage', 'payroll.view', 'payroll.manage'].forEach(p => permissions.add(p as ActionType));
   } else if (role === 'admin') {
     ['product.view', 'product.create', 'product.update',
      'location.view', 'location.create', 'location.update',
      'user.view', 'user.create', 'user.assign_location',
      'stock.view', 'stock.initial_balance', 'stock.in', 'stock.out', 'stock.adjust', 'stock.opname',
-     'transfer.create', 'transfer.send', 'transfer.receive', 'transfer.cancel',
+     'transfer.view', 'transfer.create', 'transfer.send', 'transfer.receive', 'transfer.cancel',
      'sale.view', 'sale.create', 'sale.void', 'shipping.view', 'shipping.manage',
-     'report.view', 'report.export'].forEach(p => permissions.add(p as ActionType));
+     'report.view', 'report.export', 'audit.view', 'supplier.view', 'supplier.manage', 'pricing.view', 'pricing.manage', 'attendance.view', 'attendance.record'].forEach(p => permissions.add(p as ActionType));
   } else if (role === 'finance') {
-    ['stock.view', 'report.view', 'report.export'].forEach(p => permissions.add(p as ActionType));
+    ['stock.view', 'report.view', 'report.export', 'pricing.view'].forEach(p => permissions.add(p as ActionType));
   } else if (role === 'warehouse') {
     ['product.view', 'location.view', 'stock.view', 'stock.in', 'stock.out', 'stock.opname',
-     'transfer.create', 'transfer.send', 'shipping.view', 'shipping.manage', 'report.view', 'report.export'].forEach(p => permissions.add(p as ActionType));
+     'transfer.view', 'transfer.create', 'transfer.send', 'shipping.view', 'shipping.manage', 'report.view', 'report.export', 'audit.view', 'attendance.view', 'attendance.record'].forEach(p => permissions.add(p as ActionType));
   } else if (role === 'pic') {
     ['product.view', 'location.view', 'stock.view', 'stock.opname',
-     'transfer.receive', 'transfer.create', 'transfer.send', 'sale.view', 'sale.create', 'sale.void', 'shipping.view', 'shipping.manage', 'report.view', 'report.export'].forEach(p => permissions.add(p as ActionType));
+     'transfer.view', 'transfer.receive', 'transfer.create', 'transfer.send', 'sale.view', 'sale.create', 'sale.void', 'shipping.view', 'shipping.manage', 'report.view', 'report.export', 'audit.view', 'attendance.view', 'attendance.record'].forEach(p => permissions.add(p as ActionType));
   } else if (role === 'cashier') {
-    ['product.view', 'location.view', 'stock.view', 'sale.create', 'sale.view'].forEach(p => permissions.add(p as ActionType));
+    ['product.view', 'location.view', 'stock.view', 'sale.create', 'sale.view', 'attendance.view', 'attendance.record'].forEach(p => permissions.add(p as ActionType));
+  } else if (role === 'employee') {
+    ['attendance.view', 'attendance.record'].forEach(p => permissions.add(p as ActionType));
+  }
+
+  const configured = role !== 'owner' ? policies?.[role as keyof RolePolicies]?.permissions : undefined;
+  if (configured) {
+    permissions.clear();
+    configured.forEach(permission => permissions.add(permission as ActionType));
   }
 
   return {
@@ -76,9 +89,10 @@ export function resolveUserScope(user?: SessionUser | null): Scope {
 export function authorizeAction(
   user: SessionUser | null | undefined, 
   action: ActionType, 
-  locationId?: string
+  locationId?: string,
+  policies?: RolePolicies,
 ): { allowed: boolean; reason?: string } {
-  const scope = resolveUserScope(user);
+  const scope = resolveUserScope(user, policies);
 
   if (!scope.permissions.has(action)) {
     return { allowed: false, reason: `Akun Anda tidak memiliki izin untuk melakukan aksi ini.` };

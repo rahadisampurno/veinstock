@@ -88,7 +88,64 @@ type Page =
   | "attendance"
   | "loans"
   | "pricing"
-  | "suppliers";
+  | "suppliers"
+  | "role-access";
+
+const configurableRoleList = ["admin", "pic", "finance", "warehouse", "cashier", "employee"] as const;
+type ConfigurableRole = (typeof configurableRoleList)[number];
+const configuredRolesFromData = (data: Pick<AppData, "rolePolicies">): ConfigurableRole[] => {
+  const stored = configurableRoleList.filter(role => Boolean(data.rolePolicies?.[role]));
+  return stored.length ? stored : [...configurableRoleList];
+};
+const roleMenuOptions: Array<{ id: Page; label: string }> = [
+  {id:"dashboard",label:"Dashboard"},{id:"analytics",label:"Analitik Bisnis"},{id:"products",label:"Produk & Varian"},{id:"locations",label:"Lokasi Usaha"},
+  {id:"pricing",label:"HPP & Marketplace"},{id:"suppliers",label:"Supplier"},{id:"receipts",label:"Stok Masuk"},{id:"stock",label:"Stok per Lokasi"},
+  {id:"transfers",label:"Transfer Stok"},{id:"opname",label:"Stok Opname"},{id:"history",label:"Riwayat Stok"},{id:"sales",label:"Penjualan"},
+  {id:"shipping",label:"Pengiriman Pesanan"},{id:"returns",label:"Retur"},{id:"employees",label:"Tim & Akses"},{id:"attendance",label:"Kehadiran"},
+  {id:"loans",label:"Kasbon & Penggajian"},{id:"reports",label:"Laporan"},{id:"help",label:"Pusat Bantuan"},
+];
+const permissionOptions: Array<{ id: ActionType; label: string; group: string }> = [
+  {id:"product.view",label:"Lihat produk",group:"Produk"},{id:"product.create",label:"Tambah produk",group:"Produk"},{id:"product.update",label:"Ubah produk",group:"Produk"},{id:"product.delete",label:"Arsipkan produk",group:"Produk"},
+  {id:"location.view",label:"Lihat lokasi",group:"Lokasi"},{id:"location.create",label:"Tambah lokasi",group:"Lokasi"},{id:"location.update",label:"Ubah lokasi",group:"Lokasi"},{id:"location.delete",label:"Nonaktifkan lokasi",group:"Lokasi"},
+  {id:"user.view",label:"Lihat staf",group:"Staf"},{id:"user.create",label:"Tambah staf",group:"Staf"},{id:"user.update",label:"Ubah staf",group:"Staf"},{id:"user.assign_location",label:"Atur lokasi staf",group:"Staf"},
+  {id:"stock.view",label:"Lihat stok",group:"Stok"},{id:"stock.initial_balance",label:"Saldo awal",group:"Stok"},{id:"stock.in",label:"Stok masuk",group:"Stok"},{id:"stock.out",label:"Stok keluar/retur",group:"Stok"},{id:"stock.adjust",label:"Koreksi stok",group:"Stok"},{id:"stock.opname",label:"Stok opname",group:"Stok"},
+  {id:"transfer.view",label:"Lihat transfer",group:"Transfer"},{id:"transfer.create",label:"Buat transfer",group:"Transfer"},{id:"transfer.send",label:"Kirim transfer",group:"Transfer"},{id:"transfer.receive",label:"Terima transfer",group:"Transfer"},{id:"transfer.cancel",label:"Batalkan transfer",group:"Transfer"},
+  {id:"sale.view",label:"Lihat penjualan",group:"Penjualan"},{id:"sale.create",label:"Buat penjualan",group:"Penjualan"},{id:"sale.void",label:"Batalkan penjualan",group:"Penjualan"},
+  {id:"shipping.view",label:"Lihat pengiriman",group:"Pengiriman"},{id:"shipping.manage",label:"Kelola pengiriman",group:"Pengiriman"},{id:"report.view",label:"Lihat laporan",group:"Laporan"},{id:"report.export",label:"Ekspor laporan",group:"Laporan"},{id:"audit.view",label:"Lihat audit",group:"Audit"},
+  {id:"supplier.view",label:"Lihat supplier",group:"Supplier"},{id:"supplier.manage",label:"Kelola supplier",group:"Supplier"},{id:"pricing.view",label:"Lihat HPP",group:"HPP"},{id:"pricing.manage",label:"Kelola HPP",group:"HPP"},
+  {id:"attendance.view",label:"Lihat kehadiran",group:"Kehadiran"},{id:"attendance.record",label:"Catat absensi sendiri",group:"Kehadiran"},{id:"attendance.manage",label:"Atur jadwal kehadiran",group:"Kehadiran"},
+  {id:"payroll.view",label:"Lihat kasbon & gaji",group:"Penggajian"},{id:"payroll.manage",label:"Kelola kasbon & gaji",group:"Penggajian"},
+];
+const menuPermissionRequirement: Partial<Record<Page, ActionType>> = {
+  products:"product.view",locations:"location.view",pricing:"pricing.view",suppliers:"supplier.view",receipts:"stock.view",stock:"stock.view",transfers:"transfer.view",opname:"stock.view",history:"audit.view",sales:"sale.view",shipping:"shipping.view",returns:"stock.view",employees:"user.view",attendance:"attendance.view",loans:"payroll.view",reports:"report.view",analytics:"report.view",
+};
+const defaultRoleMenus: Record<ConfigurableRole, string[]> = {
+  admin: roleMenuOptions.filter(item => !["business","loans"].includes(item.id)).map(item => item.id),
+  pic: ["dashboard","products","locations","stock","transfers","opname","history","sales","shipping","reports","attendance","help"],
+  finance: ["dashboard","stock","reports","analytics","help"],
+  warehouse: ["dashboard","products","locations","receipts","stock","transfers","opname","history","shipping","reports","attendance","help"],
+  cashier: ["dashboard","products","locations","stock","sales","attendance","help"],
+  employee: ["attendance","help"],
+};
+const defaultRolePermissions = (role: ConfigurableRole) => Array.from(resolveUserScope({ id:"preview", name:"Preview", email:"preview@meneng.id", role, active:true, organizationId:"preview", organizationName:"Preview", outletId:"preview-location" }).permissions);
+
+const isPageAllowedForUser = (page: Page, user: SessionUser, data: AppData) => {
+  const scope = resolveUserScope(user, data.rolePolicies);
+  if (page === "role-access" || page === "business") return scope.role === "owner";
+  if (scope.role !== "owner") {
+    const configuredMenus = data.rolePolicies?.[scope.role as keyof typeof data.rolePolicies]?.menus;
+    if (configuredMenus) {
+      const required = menuPermissionRequirement[page];
+      return configuredMenus.includes(page) && (!required || scope.permissions.has(required));
+    }
+  }
+  if (scope.role === "employee") return page === "attendance" || page === "help";
+  if (page === "dashboard" || page === "help") return true;
+  const required = menuPermissionRequirement[page];
+  if (required) return scope.permissions.has(required);
+  if (page === "users" || page === "employees") return scope.permissions.has("user.view");
+  return false;
+};
 
 const normalizeNumberInput = (input: HTMLInputElement) => {
   input.value = normalizeDecimalDraft(input.value);
@@ -137,9 +194,12 @@ function RupiahInput({ value, onValue, label, readOnly = false }: { value: numbe
     value={focused && !readOnly ? (draft === "" ? "" : formatRupiahInput(Number(draft))) : formatRupiahInput(normalizedValue)}
     onFocus={(event) => {
       if (readOnly) return;
+      const input = event.currentTarget;
       setDraft(String(normalizedValue));
       setFocused(true);
-      requestAnimationFrame(() => event.currentTarget.select());
+      requestAnimationFrame(() => {
+        if (input.isConnected) input.select();
+      });
     }}
     onChange={(event) => {
       const digits = event.currentTarget.value.replace(/\D/g, "").replace(/^0+(?=\d)/, "");
@@ -163,7 +223,12 @@ function OptionalRupiahInput({ value, onValue, label }: { value: string; onValue
     inputMode="numeric"
     value={value === "" ? "" : formatRupiahInput(Number(value))}
     placeholder="Opsional"
-    onFocus={(event) => requestAnimationFrame(() => event.currentTarget.select())}
+    onFocus={(event) => {
+      const input = event.currentTarget;
+      requestAnimationFrame(() => {
+        if (input.isConnected) input.select();
+      });
+    }}
     onChange={(event) => onValue(event.currentTarget.value.replace(/\D/g, "").replace(/^0+(?=\d)/, ""))}
   />;
 }
@@ -541,7 +606,7 @@ function App() {
     }
   };
   useEffect(() => {
-    const knownPages = new Set<Page>(["dashboard", "products", "locations", "receipts", "stock", "transfers", "sales", "shipping", "returns", "opname", "history", "reports", "business", "users", "help", "analytics", "employees", "attendance", "loans", "pricing", "suppliers"]);
+    const knownPages = new Set<Page>(["dashboard", "products", "locations", "receipts", "stock", "transfers", "sales", "shipping", "returns", "opname", "history", "reports", "business", "users", "help", "analytics", "employees", "attendance", "loans", "pricing", "suppliers", "role-access"]);
     const currentHash = window.location.hash.slice(1) as Page;
     const initialPage = knownPages.has(currentHash) ? currentHash : page;
     if (initialPage !== page) setPageState(initialPage);
@@ -558,8 +623,22 @@ function App() {
       if (state?.menengs && knownPages.has(state.page)) setPageState(state.page);
       window.setTimeout(() => { restoringHistory.current = false; }, 0);
     };
+    const onHashChange = () => {
+      const requestedPage = window.location.hash.slice(1) as Page;
+      if (!knownPages.has(requestedPage)) return;
+      restoringHistory.current = true;
+      setModalState(null);
+      setSidebar(false);
+      setUserMenuOpen(false);
+      setPageState(requestedPage);
+      window.setTimeout(() => { restoringHistory.current = false; }, 0);
+    };
     window.addEventListener("popstate", onPopState);
-    return () => window.removeEventListener("popstate", onPopState);
+    window.addEventListener("hashchange", onHashChange);
+    return () => {
+      window.removeEventListener("popstate", onPopState);
+      window.removeEventListener("hashchange", onHashChange);
+    };
   // Riwayat UI cukup dipasang sekali; nilai halaman selanjutnya ditangani event popstate.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -713,9 +792,9 @@ function App() {
   // Gunakan can() ketika izin dibaca saat render. checkAuth() hanya untuk
   // interaksi pengguna karena ia menampilkan toast saat akses ditolak.
   const can = (action: ActionType, locationId?: string) =>
-    authorizeAction(user, action, locationId).allowed;
+    authorizeAction(user, action, locationId, data.rolePolicies).allowed;
   const checkAuth = (action: ActionType, locationId?: string) => {
-    const auth = authorizeAction(user, action, locationId);
+    const auth = authorizeAction(user, action, locationId, data.rolePolicies);
     if (!auth.allowed) notify(auth.reason || "Akses ditolak");
     return auth.allowed;
   };
@@ -745,23 +824,37 @@ function App() {
   const login = (email: string, password: string, remember: boolean) =>
     authenticate("/api/login", { email, password }, remember);
   const addUser = async (payload: any) => {
+    const { employment, ...accountPayload } = payload;
     const response = await fetch("/api/users", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(accountPayload),
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok)
       throw new Error(result.message || "Gagal menambah pengguna");
-    applyLocalData((current) => ({
-      ...current,
-      users: [...current.users, { ...result.user, avatarUrl: payload.avatarUrl }],
-    }));
+    if (employment) {
+      await runCommand("/api/commands/employees", {
+        employee: {
+          id: newId("emp"),
+          userId: result.user.id,
+          locationId: employment.locationId,
+          position: accessRoleLabel(accountPayload.role),
+          monthlySalary: employment.monthlySalary,
+          active: true,
+        },
+      });
+    } else {
+      applyLocalData((current) => ({
+        ...current,
+        users: [...current.users, { ...result.user, avatarUrl: accountPayload.avatarUrl }],
+      }));
+    }
     setModal(null);
-    notify("Pengguna berhasil ditambahkan dan sudah dapat masuk");
+    notify(employment ? "Staf, peran, lokasi kerja, dan gaji berhasil disimpan." : "Pengguna berhasil ditambahkan dan sudah dapat masuk");
   };
   const createEmployeeAccount = async (payload: any) => {
     const response = await fetch("/api/users", {
@@ -849,7 +942,14 @@ function App() {
     }
   };
 
-  const scope = useMemo(() => resolveUserScope(user), [user]);
+  const scope = useMemo(() => resolveUserScope(user, data.rolePolicies), [user, data.rolePolicies]);
+  useEffect(() => {
+    if (!hydrated || !user || isPageAllowedForUser(page, user, data)) return;
+    const safePage: Page = user.role === "employee" ? "attendance" : "dashboard";
+    setPageState(safePage);
+    window.history.replaceState({ menengs: true, page: safePage, modal: false }, "", historyUrlForPage(safePage));
+    showToast("Halaman tersebut tidak tersedia untuk peran Anda.", "error");
+  }, [page, hydrated, user, data]);
   const operationalNotifications = useMemo(
     () => getOperationalNotifications(data, variantMap, locationMap, scope),
     [data, variantMap, locationMap, scope],
@@ -917,6 +1017,7 @@ function App() {
       group: "Pengaturan",
       items: [
         ["business", "Profil Usaha", Settings],
+        ["role-access", "Peran & Hak Akses", KeyRound],
         ["help", "Pusat Bantuan", LifeBuoy]
       ]
     }
@@ -942,25 +1043,10 @@ function App() {
     loans: "Kasbon & Penggajian",
     pricing: "Kalkulator HPP & Marketplace",
     suppliers: "Master Supplier",
+    "role-access": "Peran & Hak Akses",
     help: "Pusat Bantuan Menengs",
   };
-  const allowed = (p: Page) => {
-    if (scope.role === "employee") return p === "attendance" || p === "help";
-    if (p === "dashboard" || p === "help") return true;
-    if (p === "business") return scope.role === "owner";
-    if (p === "users") return scope.permissions.has("user.view");
-    if (p === "locations" || p === "products" || p === "suppliers") return scope.permissions.has("location.view") || scope.permissions.has("product.view");
-    if (p === "receipts" || p === "returns") return scope.permissions.has("stock.in") || scope.permissions.has("stock.out");
-    if (p === "sales") return scope.permissions.has("sale.view");
-    if (p === "shipping") return scope.permissions.has("shipping.view");
-    if (p === "stock" || p === "history") return scope.permissions.has("stock.view");
-    if (p === "transfers") return scope.permissions.has("transfer.create") || scope.permissions.has("transfer.send") || scope.permissions.has("transfer.receive");
-    if (p === "opname") return scope.permissions.has("stock.opname");
-    if (p === "reports" || p === "analytics" || p === "pricing") return scope.permissions.has("report.view");
-    if (p === "attendance") return true;
-    if (p === "employees" || p === "loans") return scope.role === "owner";
-    return false;
-  };
+  const allowed = (p: Page) => isPageAllowedForUser(p, user, data);
   const visibleNavItems = navGroups.reduce<Array<[Page, string]>>((items, group) => {
     group.items.forEach(([id, label]) => {
       if (allowed(id as Page)) items.push([id as Page, label]);
@@ -1121,6 +1207,7 @@ function App() {
               locationId={scope.scopeType === "specific" ? user.outletId : undefined}
               canCreate={can('product.create')}
               canEdit={can('product.update')}
+              canExport={can('report.export')}
               open={() => checkAuth('product.create') && setModal("product")}
               edit={(productId: string) => checkAuth('product.update') && setModal(`product:${productId}`)}
               exportProducts={() => setModal("product-export")}
@@ -1129,15 +1216,18 @@ function App() {
           {page === "locations" && (
             <LocationsPage
               data={data}
+              canCreate={can('location.create')}
+              canEdit={can('location.update')}
               open={() => checkAuth('location.create') && setModal("location")}
               edit={(id: string) => checkAuth('location.update') && setModal(`location:${id}`)}
             />
           )}
-          {page === "receipts" && can('stock.in') && (
+          {page === "receipts" && can('stock.view') && (
             <ReceiptsPage
               data={data}
               variants={variantMap}
               locations={locationMap}
+              canManage={can('stock.in')}
               open={() => {
                 if (!data.products.some((p) => p.active && p.variants.some((v) => v.active !== false)))
                   return notify("Tambahkan produk aktif terlebih dahulu");
@@ -1178,6 +1268,9 @@ function App() {
               cancel={(id: string) => checkAuth('transfer.cancel') && setModal(`cancel:transfer:${id}`)}
               detail={(id: string) => setModal(`transfer-detail:${id}`)}
               helpAction={() => { setHelpSection("transfer"); setPage("help"); }}
+              canCreate={can('transfer.create')}
+              canReceivePermission={can('transfer.receive')}
+              canCancelPermission={can('transfer.cancel')}
             />
           )}
           {page === "sales" && (
@@ -1194,7 +1287,8 @@ function App() {
               }}
               cancel={(id: string) => checkAuth('sale.void') && setModal(`cancel:sale:${id}`)}
               detail={(id: string) => setModal(`sale-detail:${id}`)}
-              canCancel={true}
+              canCreate={can('sale.create')}
+              canCancel={can('sale.void')}
             />
           )}
           {page === "shipping" && (
@@ -1204,6 +1298,7 @@ function App() {
               runCommand={runCommand}
               uploadImage={uploadImage}
               notify={notify}
+              canManage={can('shipping.manage')}
             />
           )}
           {page === "returns" && (
@@ -1213,12 +1308,13 @@ function App() {
               locations={locationMap}
               role={user.role}
               outletId={user.outletId}
+              canManage={can('stock.out')}
               open={() => {
                 if (!data.products.some((p) => p.active && p.variants.some((v) => v.active !== false)))
                   return notify("Tambahkan produk aktif terlebih dahulu");
-                if (checkAuth('stock.in')) setModal("return");
+                if (checkAuth('stock.out')) setModal("return");
               }}
-              cancel={(id: string) => checkAuth('stock.in') && setModal(`cancel:return:${id}`)}
+              cancel={(id: string) => checkAuth('stock.out') && setModal(`cancel:return:${id}`)}
               detail={(id: string) => setModal(`return-detail:${id}`)}
             />
           )}
@@ -1240,6 +1336,7 @@ function App() {
               cancel={(id: string) => checkAuth('stock.opname') && setModal(`cancel:opname:${id}`)}
               detail={(id: string) => setModal(`opname-detail:${id}`)}
               canCorrect={can('stock.adjust')}
+              canCreate={can('stock.opname')}
             />
           )}
           {page === "history" && (
@@ -1259,18 +1356,20 @@ function App() {
               notify={notify}
               role={user.role}
               outletId={user.outletId}
+              canExport={can('report.export')}
             />
           )}
-          {page === "pricing" && <HppMarketplaceCalculator data={data} runCommand={runCommand} notify={notify} />}
-          {page === "suppliers" && <SuppliersPage data={data} open={() => setModal("supplier")} edit={(id:string) => setModal(`supplier:${id}`)} />}
+          {page === "pricing" && <HppMarketplaceCalculator data={data} runCommand={runCommand} notify={notify} canManage={can('pricing.manage')} />}
+          {page === "suppliers" && <SuppliersPage data={data} canManage={can('supplier.manage')} open={() => checkAuth('supplier.manage') && setModal("supplier")} edit={(id:string) => checkAuth('supplier.manage') && setModal(`supplier:${id}`)} />}
           {page === "business" && (
             <BusinessPage data={data} open={() => setModal("business")} />
           )}
-          {(page === "employees" || page === "users") && <EmployeesPage data={data} locations={locationMap} open={() => setModal("user")} editAccess={(id:string) => setModal(`user:${id}`)} editEmployee={(id:string) => setModal(`employee:${id}`)} completeEmployee={(userId:string) => setModal(`employee-link:${userId}`)} />}
-          {page === "attendance" && <AttendancePage data={data} user={user} runCommand={runCommand} notify={notify} />}
-          {page === "loans" && <LoansPage data={data} locations={locationMap} open={() => setModal("loan")} openPayrollPayment={(employeeId:string) => setModal(`payroll:${employeeId}`)} confirmInstallment={(loan:any, employeeName:string) => setConfirm({ message: `Tandai 1 cicilan kasbon ${employeeName} sebesar ${money(loanInstallmentDue(loan))} sebagai sudah dibayar? Tindakan ini akan memperbarui sisa cicilan.`, onConfirm: async () => { try { await runCommand(`/api/commands/loans/${loan.id}/installments`, {}); setConfirm(null); notify("Satu cicilan kasbon berhasil ditandai dibayar."); } catch (error:any) { notify(error.message || "Cicilan kasbon gagal diperbarui."); } } })} />}
+          {(page === "employees" || page === "users") && <EmployeesPage data={data} locations={locationMap} open={() => checkAuth("user.create") && setModal("user")} editAccess={(id:string) => checkAuth("user.update") && setModal(`user:${id}`)} editEmployee={(id:string) => checkAuth("user.update") && setModal(`employee:${id}`)} completeEmployee={(userId:string) => checkAuth("user.update") && setModal(`employee-link:${userId}`)} canCreate={can("user.create")} canEdit={can("user.update")} />}
+          {page === "attendance" && <AttendancePage data={data} user={user} runCommand={runCommand} notify={notify} canRecord={can('attendance.record')} canManage={can('attendance.manage')} />}
+          {page === "loans" && <LoansPage data={data} locations={locationMap} canManage={can('payroll.manage')} open={() => checkAuth('payroll.manage') && setModal("loan")} openPayrollPayment={(employeeId:string) => checkAuth('payroll.manage') && setModal(`payroll:${employeeId}`)} confirmInstallment={(loan:any, employeeName:string) => checkAuth('payroll.manage') && setConfirm({ message: `Tandai 1 cicilan kasbon ${employeeName} sebesar ${money(loanInstallmentDue(loan))} sebagai sudah dibayar? Tindakan ini akan memperbarui sisa cicilan.`, onConfirm: async () => { try { await runCommand(`/api/commands/loans/${loan.id}/installments`, {}); setConfirm(null); notify("Satu cicilan kasbon berhasil ditandai dibayar."); } catch (error:any) { notify(error.message || "Cicilan kasbon gagal diperbarui."); } } })} />}
           {page === "help" && <HelpPage initialSection={helpSection} clearInitialSection={() => setHelpSection(null)} />}
-          {page === "analytics" && <AnalyticsPage data={data} />}
+          {page === "analytics" && <AnalyticsPage data={data} canExport={can('report.export')} />}
+          {page === "role-access" && scope.role === "owner" && <RoleAccessPage data={data} runCommand={runCommand} notify={notify} />}
         </div>
       </main>
       {modal === "employee" && <EmployeeModal data={data} close={() => setModal(null)} createAccount={createEmployeeAccount} save={async (employee: any) => { await runCommand("/api/commands/employees", { employee }); setModal(null); notify(employee.locationId ? "Akun dan penugasan karyawan berhasil disimpan." : "Akun karyawan berhasil dibuat. Tetapkan lokasi kerja sebelum absensi dapat dilakukan."); }} />}
@@ -1434,6 +1533,7 @@ function App() {
       {modal === "return" && (
         <ReturnModal
           data={data}
+          initialLocationId={data.sales.find((sale: any) => sale.status === "completed")?.locationId}
           uploadImage={uploadImage}
           close={() => setModal(null)}
           save={async (form: any) => {
@@ -2154,7 +2254,7 @@ function Activity({ data, variants, locations, role, outletId }: any) {
   );
 }
 
-function Products({ data, open, edit, exportProducts, locationId, canCreate, canEdit }: any) {
+function Products({ data, open, edit, exportProducts, locationId, canCreate, canEdit, canExport }: any) {
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("all");
 
@@ -2186,8 +2286,8 @@ function Products({ data, open, edit, exportProducts, locationId, canCreate, can
       desc={locationId ? "Produk yang tersedia di lokasi kerja Anda." : "Kelola kategori, satuan, varian, dan harga jual."}
       action={canCreate ? "Tambah Produk" : undefined}
       onAction={canCreate ? open : undefined}
-      secondaryAction="Unduh data"
-      onSecondaryAction={exportProducts}
+      secondaryAction={canExport ? "Unduh data" : undefined}
+      onSecondaryAction={canExport ? exportProducts : undefined}
     >
       <div style={{ display: 'flex', gap: '12px' }}>
         <div className="scan-search-row" style={{ flex: 1 }}>
@@ -2261,7 +2361,7 @@ function Products({ data, open, edit, exportProducts, locationId, canCreate, can
     </PageBlock>
   );
 }
-function LocationsPage({ data, open, edit }: any) {
+function LocationsPage({ data, open, edit, canCreate, canEdit }: any) {
   const [search, setSearch] = useState("");
   const rows = data.locations.filter((x: any) =>
     `${x.name} ${x.address || ""}`.toLowerCase().includes(search.toLowerCase()),
@@ -2270,8 +2370,8 @@ function LocationsPage({ data, open, edit }: any) {
     <PageBlock
       title="Lokasi usaha"
       desc="Tambahkan, edit, atau nonaktifkan gudang dan outlet tanpa menghapus histori."
-      action="Tambah Lokasi"
-      onAction={open}
+      action={canCreate ? "Tambah Lokasi" : undefined}
+      onAction={canCreate ? open : undefined}
     >
       <ListSearch
         value={search}
@@ -2280,7 +2380,7 @@ function LocationsPage({ data, open, edit }: any) {
       />
       <div className="user-grid">
         {rows.map((location: any) => (
-          <article className="clickable-card" key={location.id} onClick={() => edit(location.id)}>
+          <article className={canEdit ? "clickable-card" : ""} key={location.id} onClick={canEdit ? () => edit(location.id) : undefined}>
             <div className="location-icon">
               {location.type === "warehouse" ? <Warehouse /> : <Store />}
             </div>
@@ -2296,19 +2396,19 @@ function LocationsPage({ data, open, edit }: any) {
               </span>
               {location.isCentralWarehouse && <span className="status info">Gudang pusat</span>}
             </div>
-            <button
+            {canEdit && <button
               className="icon-btn user-edit"
               aria-label={`Edit ${location.name}`}
             >
               <Settings />
-            </button>
+            </button>}
           </article>
         ))}
       </div>
     </PageBlock>
   );
 }
-function ReceiptsPage({ data, variants, locations, open, edit, cancel, detail }: any) {
+function ReceiptsPage({ data, variants, locations, open, edit, cancel, detail, canManage }: any) {
   const [search, setSearch] = useState("");
   const [filterStartDate, setFilterStartDate] = useState("");
   const [filterEndDate, setFilterEndDate] = useState("");
@@ -2421,10 +2521,10 @@ function ReceiptsPage({ data, variants, locations, open, edit, cancel, detail }:
           const productSummary = group.items.slice(0, 2).map((item: any) => `${variants[item.variantId]?.productName} · ${variants[item.variantId]?.name}`).join(" · ");
           return <article className="record-card clickable-record-card" key={group.key} role="button" tabIndex={0} onClick={() => detail(group.key)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); detail(group.key); } }}>
             <div className="record-card-top"><div className="record-card-code"><span>DOKUMEN STOK MASUK</span><b>{group.code}</b><time>{new Date(group.createdAt).toLocaleString("id-ID")}</time></div><span className={`status ${isCancelled ? "danger" : "ok"}`}>{isCancelled ? "Dibatalkan" : "Selesai"}</span></div>
-            <div className="record-card-body"><div className="record-detail"><small>SUMBER & LOKASI</small><b>{group.sourceType === "production" ? "Hasil produksi" : group.supplierName || "Supplier"} · {locations[group.locationId]?.name || "Lokasi tidak diketahui"}</b><span>{group.createdBy || "Penginput tidak tercatat"}</span></div><div className="record-detail"><small>ISI PENERIMAAN</small><b>{group.items.length} varian · {totalQuantity.toLocaleString("id-ID")} item · {money(totalValue)}</b><span>{productSummary}{group.items.length > 2 ? ` +${group.items.length - 2} lainnya` : ""}</span></div></div>
-            {!isCancelled && <div className="record-card-actions">{group.items.length === 1 && <button className="table-action" onClick={(event) => { event.stopPropagation(); edit(group.items[0].id); }}>Edit</button>}<button className="table-action danger-text" onClick={(event) => { event.stopPropagation(); cancel(group.key); }}>Batalkan</button></div>}
+            <div className="record-card-body"><div className="record-detail"><small>SUMBER & LOKASI</small><b>{group.sourceType === "production" ? "Hasil produksi" : group.supplierName || "Supplier"} · {locations[group.locationId]?.name || "Lokasi tidak diketahui"}</b><span>{data.users.find((user: any) => user.id === group.createdBy)?.name || group.createdBy || "Penginput tidak tercatat"}</span></div><div className="record-detail"><small>ISI PENERIMAAN</small><b>{group.items.length} varian · {totalQuantity.toLocaleString("id-ID")} item · {money(totalValue)}</b><span>{productSummary}{group.items.length > 2 ? ` +${group.items.length - 2} lainnya` : ""}</span></div></div>
+            {canManage && !isCancelled && <div className="record-card-actions">{group.items.length === 1 && <button className="table-action" onClick={(event) => { event.stopPropagation(); edit(group.items[0].id); }}>Edit</button>}<button className="table-action danger-text" onClick={(event) => { event.stopPropagation(); cancel(group.key); }}>Batalkan</button></div>}
           </article>;
-        }) : <Empty text="Belum ada stok masuk." />}
+        }) : <Empty standalone text="Belum ada stok masuk." />}
       </div>
       {totalPages > 1 && (
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 0' }}>
@@ -2452,7 +2552,7 @@ function ReceiptsPage({ data, variants, locations, open, edit, cancel, detail }:
     </PageBlock>
   );
 }
-function ReturnsPage({ data, variants, locations, open, cancel, detail, role, outletId }: any) {
+function ReturnsPage({ data, variants, locations, open, cancel, detail, role, outletId, canManage }: any) {
   const [search, setSearch] = useState("");
   const [filterStartDate, setFilterStartDate] = useState("");
   const [filterEndDate, setFilterEndDate] = useState("");
@@ -2513,8 +2613,8 @@ function ReturnsPage({ data, variants, locations, open, cancel, detail, role, ou
     <PageBlock
       title="Retur barang"
       desc="Retur pelanggan menambah stok; retur supplier mengurangi stok."
-      action="Catat Retur"
-      onAction={open}
+      action={canManage ? "Catat Retur" : undefined}
+      onAction={canManage ? open : undefined}
     >
       <div className="stats-grid compact">
         <Stat
@@ -2546,9 +2646,9 @@ function ReturnsPage({ data, variants, locations, open, cancel, detail, role, ou
           <article className="record-card clickable-record-card" key={item.id} role="button" tabIndex={0} onClick={() => detail(item.id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); detail(item.id); } }}>
             <div className="record-card-top"><div className="record-card-code"><span>TRANSAKSI RETUR</span><b>{item.type === "customer" ? "Retur dari pelanggan" : "Retur ke supplier"}</b><time>{new Date(item.createdAt).toLocaleString("id-ID")}</time></div><span className={`status ${item.status === "cancelled" ? "danger" : "ok"}`}>{item.status === "cancelled" ? "Dibatalkan" : "Selesai"}</span></div>
             <div className="record-card-body"><div className="record-detail"><small>LOKASI & ALASAN</small><b>{locations[item.locationId]?.name || "Lokasi tidak diketahui"}</b><span>{item.status === "cancelled" ? `Dibatalkan: ${item.cancelReason || item.reason}` : item.reason}</span></div><div className="record-detail"><small>PRODUK</small><b>{variants[item.variantId]?.productName} · {variants[item.variantId]?.name}</b><span>{qty(item.quantity, variants[item.variantId]?.unit)}</span></div></div>
-            {item.status !== "cancelled" && <div className="record-card-actions"><button className="table-action danger-text" onClick={(event) => { event.stopPropagation(); cancel(item.id); }}>Batalkan</button></div>}
+            {canManage && item.status !== "cancelled" && <div className="record-card-actions"><button className="table-action danger-text" onClick={(event) => { event.stopPropagation(); cancel(item.id); }}>Batalkan</button></div>}
           </article>
-        )) : <Empty text="Belum ada retur barang." />}
+        )) : <Empty standalone text="Belum ada retur barang." />}
       </div>
       {totalPages > 1 && (
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 0' }}>
@@ -2608,35 +2708,72 @@ function BusinessPage({ data, open }: any) {
     </PageBlock>
   );
 }
-function SuppliersPage({ data, open, edit }: any) {
+function SuppliersPage({ data, open, edit, canManage }: any) {
   const [search, setSearch] = useState("");
   const suppliers = (data.suppliers || []).filter((supplier:any) => `${supplier.name} ${supplier.phone || ""} ${supplier.address || ""}`.toLowerCase().includes(search.toLowerCase()));
   const receiptCount = (supplierId:string) => (data.receipts || []).filter((receipt:any) => receipt.supplierId === supplierId && receipt.status !== "cancelled").length;
-  return <PageBlock title="Supplier" desc="Kelola pemasok untuk pembelian stok dan telusuri riwayat penerimaannya." action="Tambah Supplier" onAction={open}>
+  return <PageBlock title="Supplier" desc="Kelola pemasok untuk pembelian stok dan telusuri riwayat penerimaannya." action={canManage ? "Tambah Supplier" : undefined} onAction={canManage ? open : undefined}>
     <div className="stats-grid compact"><Stat label="Supplier aktif" value={String((data.suppliers || []).filter((item:any) => item.active).length)} sub="Dapat dipilih saat stok masuk" /><Stat label="Total supplier" value={String((data.suppliers || []).length)} sub="Termasuk supplier nonaktif" tone="blue" /></div>
     <div className="table-controls"><ListSearch value={search} setValue={setSearch} placeholder="Cari nama, telepon, atau alamat supplier" /></div>
     <div className="table-wrap"><table><thead><tr><th>Supplier</th><th>Kontak</th><th>Alamat</th><th>Dokumen penerimaan</th><th>Status</th><th>Aksi</th></tr></thead><tbody>{suppliers.length ? suppliers.map((supplier:any) => <tr key={supplier.id}><td><b>{supplier.name}</b></td><td>{supplier.phone || "-"}</td><td>{supplier.address || "-"}</td><td>{receiptCount(supplier.id)} dokumen</td><td><span className={`status ${supplier.active ? "ok" : "danger"}`}>{supplier.active ? "Aktif" : "Nonaktif"}</span></td><td><button className="table-action" onClick={() => edit(supplier.id)}>Atur</button></td></tr>) : <Empty text="Belum ada supplier. Tambahkan supplier sebelum mencatat pembelian." />}</tbody></table></div>
   </PageBlock>;
 }
-function EmployeesPage({ data, locations, open, editAccess, editEmployee, completeEmployee }: any) {
+function EmployeesPage({ data, locations, open, editAccess, editEmployee, completeEmployee, canCreate, canEdit }: any) {
   const accounts = data.users.filter((account:any) => account.role !== "owner");
   const employees = data.employees || [];
   const linkedCount = accounts.filter((account:any) => employees.some((employee:any) => employee.userId === account.id)).length;
   const payrollEstimate = employees.filter((employee:any) => employee.active).reduce((sum:number, employee:any) => sum + employee.monthlySalary, 0);
-  return <PageBlock title="Tim & Akses" desc="Kelola akun, hak akses, data kerja, absensi, dan penggajian staf dari satu tempat." action="Tambah Staf" onAction={open}>
+  return <PageBlock title="Tim & Akses" desc="Kelola akun, hak akses, data kerja, absensi, dan penggajian staf dari satu tempat." action={canCreate ? "Tambah Staf" : undefined} onAction={canCreate ? open : undefined}>
     <div className="stats-grid compact"><Stat label="Akun staf aktif" value={accounts.filter((account:any) => account.active).length} sub="Dapat masuk sesuai hak akses" /><Stat label="Data kerja lengkap" value={`${linkedCount}/${accounts.length}`} sub={linkedCount === accounts.length ? "Semua staf masuk penggajian" : `${accounts.length - linkedCount} staf perlu dilengkapi`} tone={linkedCount === accounts.length ? "blue" : "amber"} /><Stat label="Estimasi gaji" value={money(payrollEstimate)} sub="Per bulan · staf aktif" /></div>
-    <div className="table-wrap"><table><thead><tr><th>Staf</th><th>Peran staf</th><th>Lokasi kerja</th><th>Gaji bulanan</th><th>Status</th><th>Aksi</th></tr></thead><tbody>{accounts.length ? accounts.map((account:any) => { const employee = employees.find((item:any) => item.userId === account.id), assigned = Boolean(employee?.locationId); return <tr key={account.id}><td><b>{account.name}</b><small className="block">{account.email}</small></td><td><span className={`status ${account.active ? "ok" : "danger"}`}>{account.active ? accessRoleLabel(account.role) : "Akun nonaktif"}</span></td><td>{employee ? assigned ? locations[employee.locationId]?.name || "Lokasi tidak aktif" : <span className="status wait">Belum ditugaskan</span> : "-"}</td><td><b>{employee ? money(employee.monthlySalary) : "-"}</b></td><td>{employee ? <span className={`status ${employee.active && assigned ? "ok" : employee.active ? "wait" : "danger"}`}>{employee.active ? assigned ? "Siap absensi & gaji" : "Data kerja tanpa lokasi" : "Data kerja nonaktif"}</span> : <span className={`status ${account.active ? "wait" : "danger"}`}>{account.active ? "Lengkapi data kerja" : "Aktifkan akun dahulu"}</span>}</td><td><div className="team-row-actions"><button className="table-action" onClick={() => editAccess(account.id)}>Atur peran</button>{employee ? <button className="table-action" onClick={() => editEmployee(employee.id)}>Atur lokasi & gaji</button> : account.active ? <button className="table-action primary-link" onClick={() => completeEmployee(account.id)}>Lengkapi lokasi & gaji</button> : null}</div></td></tr>; }) : <Empty text="Belum ada staf. Tambahkan akun staf untuk memulai." />}</tbody></table></div>
+    <div className="table-wrap"><table><thead><tr><th>Staf</th><th>Peran staf</th><th>Lokasi kerja</th><th>Gaji bulanan</th><th>Status</th><th>Aksi</th></tr></thead><tbody>{accounts.length ? accounts.map((account:any) => { const employee = employees.find((item:any) => item.userId === account.id), assigned = Boolean(employee?.locationId); return <tr key={account.id}><td><b>{account.name}</b><small className="block">{account.email}</small></td><td><span className={`status ${account.active ? "ok" : "danger"}`}>{account.active ? accessRoleLabel(account.role) : "Akun nonaktif"}</span></td><td>{employee ? assigned ? locations[employee.locationId]?.name || "Lokasi tidak aktif" : <span className="status wait">Belum ditugaskan</span> : "-"}</td><td><b>{employee ? money(employee.monthlySalary) : "-"}</b></td><td>{employee ? <span className={`status ${employee.active && assigned ? "ok" : employee.active ? "wait" : "danger"}`}>{employee.active ? assigned ? "Siap absensi & gaji" : "Data kerja tanpa lokasi" : "Data kerja nonaktif"}</span> : <span className={`status ${account.active ? "wait" : "danger"}`}>{account.active ? "Lengkapi data kerja" : "Aktifkan akun dahulu"}</span>}</td><td>{canEdit ? <div className="team-row-actions"><button className="table-action" onClick={() => editAccess(account.id)}>Atur peran</button>{employee ? <button className="table-action" onClick={() => editEmployee(employee.id)}>Atur lokasi & gaji</button> : account.active ? <button className="table-action primary-link" onClick={() => completeEmployee(account.id)}>Lengkapi lokasi & gaji</button> : null}</div> : "-"}</td></tr>; }) : <Empty text="Belum ada staf. Tambahkan akun staf untuk memulai." />}</tbody></table></div>
   </PageBlock>;
 }
-function AttendancePage({ data, user, runCommand, notify }: any) {
+
+function RoleAccessPage({ data, runCommand, notify }: any) {
+  const availableRoles = configuredRolesFromData(data);
+  const [role, setRole] = useState<ConfigurableRole>(availableRoles[0]);
+  const configured = data.rolePolicies?.[role];
+  const [menus, setMenus] = useState<string[]>(configured?.menus || defaultRoleMenus[role]);
+  const [permissions, setPermissions] = useState<string[]>(configured?.permissions || defaultRolePermissions(role));
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    const next = data.rolePolicies?.[role];
+    setMenus(next?.menus || defaultRoleMenus[role]);
+    setPermissions(next?.permissions || defaultRolePermissions(role));
+  }, [role, data.rolePolicies]);
+  const toggle = (values:string[], value:string, setter:(next:string[])=>void) => setter(values.includes(value) ? values.filter(item => item !== value) : [...values, value]);
+  const save = async (reset = false) => {
+    setSaving(true);
+    try {
+      const required = menus.map(menu => menuPermissionRequirement[menu as Page]).filter(Boolean) as ActionType[];
+      const policy = reset ? { menus: defaultRoleMenus[role], permissions: defaultRolePermissions(role) } : { menus, permissions: [...new Set([...permissions, ...required])] };
+      await runCommand("/api/commands/role-policies", { role, policy });
+      notify(reset ? "Hak akses dikembalikan ke pengaturan default." : "Hak akses peran berhasil disimpan.");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Hak akses tidak dapat disimpan.");
+    } finally { setSaving(false); }
+  };
+  const groups = [...new Set(permissionOptions.map(item => item.group))];
+  return <PageBlock title="Peran & Hak Akses" desc="Atur menu yang terlihat dan tindakan yang boleh dilakukan oleh setiap peran. Owner selalu memiliki akses penuh.">
+    <section className="role-access-card">
+      <div className="role-access-tabs">{availableRoles.map(item => <button key={item} className={role === item ? "active" : ""} onClick={() => setRole(item)}>{accessRoleLabel(item)}</button>)}</div>
+      <div className="role-access-note"><KeyRound/><div><b>{accessRoleLabel(role)}</b><p>Perubahan berlaku untuk seluruh akun dengan peran ini. Batas lokasi tiap staf tetap mengikuti lokasi kerja akun.</p></div></div>
+      <div className="role-policy-section"><div className="card-head"><div><h3>Menu yang ditampilkan</h3><span>Pilih halaman yang dapat dibuka oleh peran ini.</span></div></div><div className="role-check-grid">{roleMenuOptions.map(item => <label key={item.id}><input type="checkbox" checked={menus.includes(item.id)} onChange={() => toggle(menus,item.id,setMenus)}/><span>{item.label}</span></label>)}</div></div>
+      <div className="role-policy-section"><div className="card-head"><div><h3>Izin tindakan</h3><span>Izin ini juga diperiksa server, bukan hanya menyembunyikan tombol.</span></div></div>{groups.map(group => <div className="permission-group" key={group}><b>{group}</b><div className="role-check-grid">{permissionOptions.filter(item => item.group === group).map(item => <label key={item.id}><input type="checkbox" checked={permissions.includes(item.id)} onChange={() => toggle(permissions,item.id,setPermissions)}/><span>{item.label}</span></label>)}</div></div>)}</div>
+      <footer className="role-policy-actions"><button className="secondary" disabled={saving} onClick={() => void save(true)}>Kembalikan ke default</button><button className="primary" disabled={saving} onClick={() => void save(false)}><Check/>{saving ? "Menyimpan..." : "Simpan Hak Akses"}</button></footer>
+    </section>
+  </PageBlock>;
+}
+function AttendancePage({ data, user, runCommand, notify, canRecord, canManage }: any) {
   const today = jakartaDateKey();
-  if (user.role === "owner") return <OwnerAttendancePage data={data} runCommand={runCommand} notify={notify} today={today} />;
+  if (user.role === "owner") return <OwnerAttendancePage data={data} runCommand={runCommand} notify={notify} today={today} canManage={canManage} />;
   const employee = (data.employees || []).find((item:any) => item.userId === user.id && item.active);
   const assigned = Boolean(employee?.locationId && data.locations.some((location:any) => location.id === employee.locationId && location.active));
   const attendance = employee && (data.attendances || []).find((item:any) => item.employeeId === employee.id && item.date === today);
   const history = employee ? (data.attendances || []).filter((item:any) => item.employeeId === employee.id).sort((a:any,b:any) => b.date.localeCompare(a.date)).slice(0, 20) : [];
   const setting = employee && (data.attendanceSettings || []).find((item:any) => item.locationId === employee.locationId) || { checkInStart: "08:00", checkInEnd: "09:00", checkOutStart: "17:00", checkOutEnd: "23:59", lateToleranceMinutes: 10 };
   const capture = (kind: "in" | "out") => {
+    if (!canRecord) return notify("Peran Anda tidak memiliki izin mencatat kehadiran.");
     if (!employee || !assigned) return notify("Lokasi kerja belum ditetapkan. Hubungi owner sebelum melakukan absensi.");
     navigator.geolocation?.getCurrentPosition((position) => {
       void runCommand("/api/commands/attendance", { kind, latitude: position.coords.latitude, longitude: position.coords.longitude, capturedAt: new Date().toISOString() })
@@ -2650,7 +2787,7 @@ function AttendancePage({ data, user, runCommand, notify }: any) {
   };
   return <PageBlock title="Kehadiran" desc="Check-in dan check-out menggunakan waktu perangkat serta titik GPS saat ini.">{!assigned && <section className="attendance-hero"><div><small>STATUS PENUGASAN</small><h3>Menunggu penugasan lokasi</h3><p>Owner perlu menetapkan lokasi kerja Anda sebelum absensi dapat dilakukan.</p></div></section>}<section className="attendance-hero"><div><small>ABSENSI HARI INI</small><h3>{assigned ? data.locations.find((location:any) => location.id === employee.locationId)?.name : "Lokasi belum ditetapkan"}</h3><p>{assigned ? `Jam masuk ${setting.checkInStart}–${setting.checkInEnd} · Pulang hingga ${setting.checkOutEnd}` : "Check-in dan check-out akan terbuka setelah lokasi kerja ditetapkan."}</p></div><div className="attendance-actions"><button className="primary" disabled={!assigned || !!attendance?.checkInAt} onClick={() => capture("in")}><MapPin size={17}/> {attendance?.checkInAt ? "Sudah check-in" : "Check-in"}</button><button className="secondary" disabled={!assigned || !attendance?.checkInAt || !!attendance?.checkOutAt} onClick={() => capture("out")}><Clock3 size={17}/> {attendance?.checkOutAt ? "Sudah check-out" : "Check-out"}</button></div></section><div className="detail-list"><p><span>Check-in</span><b>{attendance?.checkInAt ? new Date(attendance.checkInAt).toLocaleString("id-ID") : "Belum tercatat"}</b></p><p><span>Lokasi check-in</span><b>{attendance?.checkInGps || "-"}</b></p><p><span>Check-out</span><b>{attendance?.checkOutAt ? new Date(attendance.checkOutAt).toLocaleString("id-ID") : "Belum tercatat"}</b></p><p><span>Keterlambatan</span><b>{attendance?.lateMinutes ? `${attendance.lateMinutes} menit` : "-"}</b></p></div><section className="payroll-section"><div className="card-head"><h3>Riwayat absensi</h3><span>20 data terbaru</span></div><div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Check-in</th><th>Check-out</th><th>Status</th></tr></thead><tbody>{history.length ? history.map((item:any) => <tr key={item.id}><td>{new Date(`${item.date}T00:00:00`).toLocaleDateString("id-ID")}</td><td>{item.checkInAt ? new Date(item.checkInAt).toLocaleTimeString("id-ID") : "-"}</td><td>{item.checkOutAt ? new Date(item.checkOutAt).toLocaleTimeString("id-ID") : "-"}</td><td><span className={`status ${item.checkOutAt ? "ok" : "wait"}`}>{item.checkOutAt ? "Lengkap" : "Belum check-out"}</span></td></tr>) : <Empty text="Belum ada riwayat absensi." />}</tbody></table></div></section>{user.role === "owner" && <section className="attendance-settings"><div className="card-head"><h3>Pengaturan kehadiran per lokasi</h3><span>Disimpan otomatis</span></div>{data.locations.filter((location:any) => location.active).map((location:any) => { const value = (data.attendanceSettings || []).find((item:any) => item.locationId === location.id) || { checkInStart: "08:00", checkInEnd: "09:00", checkOutStart: "17:00", checkOutEnd: "23:59", lateToleranceMinutes: 10 }; return <div className="attendance-setting-row" key={location.id}><b>{location.name}</b><label>Masuk<input type="time" value={value.checkInStart} onChange={(event) => updateSetting(location.id, "checkInStart", event.target.value)} /></label><label>Batas masuk<input type="time" value={value.checkInEnd} onChange={(event) => updateSetting(location.id, "checkInEnd", event.target.value)} /></label><label>Pulang<input type="time" value={value.checkOutStart} onChange={(event) => updateSetting(location.id, "checkOutStart", event.target.value)} /></label><label>Toleransi<input type="number" min="0" value={value.lateToleranceMinutes} onChange={(event) => updateSetting(location.id, "lateToleranceMinutes", Number(event.target.value))} /></label></div>; })}</section>}</PageBlock>;
 }
-function OwnerAttendancePage({ data, runCommand, notify, today }: any) {
+function OwnerAttendancePage({ data, runCommand, notify, today, canManage }: any) {
   const [date, setDate] = useState(today);
   const [search, setSearch] = useState("");
   const [locationId, setLocationId] = useState("all");
@@ -2664,6 +2801,7 @@ function OwnerAttendancePage({ data, runCommand, notify, today }: any) {
   const checkedIn = rows.filter((row:any) => row.record?.checkInAt).length;
   const completed = rows.filter((row:any) => row.record?.checkOutAt).length;
   const updateSetting = (targetLocationId:string, field:string, value:string|number) => {
+    if (!canManage) return notify("Peran Anda tidak memiliki izin mengatur kehadiran.");
     const fallback = { locationId: targetLocationId, checkInStart: "08:00", checkInEnd: "09:00", checkOutStart: "17:00", checkOutEnd: "23:59", lateToleranceMinutes: 10 };
     const existing = (data.attendanceSettings || []).find((item:any) => item.locationId === targetLocationId) || fallback;
     const next = { ...existing, [field]: value };
@@ -2676,7 +2814,7 @@ function OwnerAttendancePage({ data, runCommand, notify, today }: any) {
   </PageBlock>;
 }
 
-function LoansPage({ data, locations, open, openPayrollPayment, confirmInstallment }: any) {
+function LoansPage({ data, locations, open, openPayrollPayment, confirmInstallment, canManage }: any) {
   const loans = data.loans || [];
   const period = jakartaDateKey().slice(0, 7);
   const payrolls = data.payrolls || [];
@@ -2692,7 +2830,7 @@ function LoansPage({ data, locations, open, openPayrollPayment, confirmInstallme
   const loanRows = loans.map((loan:any) => ({ loan, employee: data.employees?.find((item:any) => item.id === loan.employeeId), account: data.users.find((item:any) => item.id === data.employees?.find((employee:any) => employee.id === loan.employeeId)?.userId) })).filter((row:any) => `${row.account?.name} ${row.employee?.position} ${row.loan.note || ""}`.toLowerCase().includes(loanSearch.toLowerCase()) && (loanStatus === "all" || row.loan.status === loanStatus) && dateMatches(row.loan.loanDate, loanFrom, loanTo)).sort((a:any,b:any) => { const av = loanSort === "amount" ? a.loan.amount : loanSort === "employee" ? a.account?.name || "" : a.loan.loanDate; const bv = loanSort === "amount" ? b.loan.amount : loanSort === "employee" ? b.account?.name || "" : b.loan.loanDate; return (av > bv ? 1 : av < bv ? -1 : 0) * (loanDesc ? -1 : 1); });
   const togglePaySort = (key:string) => { if (paySort === key) setPayDesc(!payDesc); else { setPaySort(key); setPayDesc(false); } setPayPage(1); };
   const toggleLoanSort = (key:string) => { if (loanSort === key) setLoanDesc(!loanDesc); else { setLoanSort(key); setLoanDesc(false); } setLoanPage(1); };
-  return <PageBlock title="Kasbon & penggajian" desc="Gaji dibayarkan dan dicatat per periode. Kasbon hanya tampil sebagai pengingat; tidak dipotong otomatis." action="Catat Kasbon" onAction={open}>
+  return <PageBlock title="Kasbon & penggajian" desc="Gaji dibayarkan dan dicatat per periode. Kasbon hanya tampil sebagai pengingat; tidak dipotong otomatis." action={canManage ? "Catat Kasbon" : undefined} onAction={canManage ? open : undefined}>
     <div className="stats-grid compact"><Stat label="Gaji periode ini" value={money(totalPayroll)} sub={`Periode ${period}`} /><Stat label="Sudah dibayar" value={money(paidPayroll)} sub={`${payrolls.filter((payroll:any) => payroll.period === period).length} karyawan`} /><Stat label="Menunggu pembayaran" value={String(Math.max(0, activeEmployees.length - payrolls.filter((payroll:any) => payroll.period === period).length))} sub="Gaji pokok, tanpa potongan kasbon" tone="amber" /></div>
     <section className="payroll-section"><div className="card-head"><h3>Penggajian periode {period}</h3><span>Owner saja · kasbon tidak mengurangi nominal</span></div><div className="table-controls"><ListSearch value={paySearch} setValue={(value:string) => { setPaySearch(value); setPayPage(1); }} placeholder="Cari karyawan atau lokasi" /><AppSelect value={payStatus} onChange={(event:any) => { setPayStatus(event.target.value); setPayPage(1); }}><option value="all">Semua status</option><option value="paid">Sudah dibayar</option><option value="waiting">Menunggu</option></AppSelect><AppSelect value={payLocation} onChange={(event:any) => { setPayLocation(event.target.value); setPayPage(1); }}><option value="all">Semua lokasi</option>{data.locations.map((location:any) => <option key={location.id} value={location.id}>{location.name}</option>)}</AppSelect></div><div className="table-wrap"><table><thead><tr><th onClick={() => togglePaySort("employee")}>Karyawan {paySort === "employee" && (payDesc ? "↓" : "↑")}</th><th onClick={() => togglePaySort("location")}>Lokasi {paySort === "location" && (payDesc ? "↓" : "↑")}</th><th onClick={() => togglePaySort("salary")}>Gaji pokok {paySort === "salary" && (payDesc ? "↓" : "↑")}</th><th>Pengingat kasbon</th><th>Tanggal dibayar</th><th>Status</th><th>Aksi</th></tr></thead><tbody>{payRows.length ? payRows.slice((payPage - 1) * pageSize, payPage * pageSize).map((row:any) => <tr key={row.employee.id}><td><b>{row.account?.name || "-"}</b><small className="block">{row.employee.position}</small></td><td>{locations[row.employee.locationId]?.name || "-"}</td><td><b>{money(row.employee.monthlySalary)}</b></td><td>{row.loanReminder ? <span className="status wait">Kasbon {money(row.loanReminder)}</span> : "-"}</td><td>{row.payroll ? new Date(row.payroll.paidAt).toLocaleString("id-ID", { dateStyle: "short", timeStyle: "medium" }) : "-"}{row.payroll?.proofUrl && <a className="proof-link" href={row.payroll.proofUrl} target="_blank" rel="noreferrer">Lihat bukti transfer</a>}</td><td><span className={`status ${row.payroll ? "ok" : "wait"}`}>{row.payroll ? "Dibayar" : "Menunggu"}</span></td><td>{!row.payroll && <button className="table-action" onClick={() => payEmployee(row.employee)}>Tandai dibayar</button>}</td></tr>) : <Empty text="Data penggajian tidak ditemukan." />}</tbody></table></div><TablePagination page={payPage} total={payRows.length} size={pageSize} setPage={setPayPage} /></section>
     <section className="payroll-section"><div className="card-head"><h3>Kasbon aktif</h3><span>Pengingat cicilan, terpisah dari gaji</span></div><div className="table-controls"><ListSearch value={loanSearch} setValue={(value:string) => { setLoanSearch(value); setLoanPage(1); }} placeholder="Cari karyawan atau catatan" /><AppSelect value={loanStatus} onChange={(event:any) => { setLoanStatus(event.target.value); setLoanPage(1); }}><option value="all">Semua status</option><option value="active">Aktif</option><option value="paid">Lunas</option></AppSelect><label className="date-filter">Dari<input type="date" value={loanFrom} onChange={(event) => { setLoanFrom(event.target.value); setLoanPage(1); }} /></label><label className="date-filter">Hingga<input type="date" value={loanTo} onChange={(event) => { setLoanTo(event.target.value); setLoanPage(1); }} /></label></div><div className="table-wrap"><table><thead><tr><th onClick={() => toggleLoanSort("employee")}>Karyawan {loanSort === "employee" && (loanDesc ? "↓" : "↑")}</th><th onClick={() => toggleLoanSort("date")}>Tanggal pinjaman {loanSort === "date" && (loanDesc ? "↓" : "↑")}</th><th onClick={() => toggleLoanSort("amount")}>Kasbon {loanSort === "amount" && (loanDesc ? "↓" : "↑")}</th><th>Cicilan</th><th>Sisa</th><th>Aksi</th></tr></thead><tbody>{loanRows.length ? loanRows.slice((loanPage - 1) * pageSize, loanPage * pageSize).map((row:any) => { const remaining = Math.max(0, row.loan.installmentCount - row.loan.paidInstallments); return <tr key={row.loan.id}><td><b>{row.account?.name || "-"}</b><small className="block">{locations[row.employee?.locationId]?.name || "-"}</small></td><td>{new Date(row.loan.loanDate).toLocaleDateString("id-ID")}</td><td>{money(row.loan.amount)}</td><td>{money(row.loan.installmentAmount)} × {row.loan.installmentCount}</td><td><span className={`status ${remaining ? "wait" : "ok"}`}>{remaining ? `${remaining} cicilan` : "Lunas"}</span></td><td>{remaining > 0 && <button className="table-action" onClick={() => confirmInstallment(row.loan, row.account?.name || "karyawan")}>Tandai 1 cicilan</button>}</td></tr>; }) : <Empty text="Data kasbon tidak ditemukan." />}</tbody></table></div><TablePagination page={loanPage} total={loanRows.length} size={pageSize} setPage={setLoanPage} /></section>
@@ -2932,6 +3070,9 @@ function Transfers({
   cancel,
   detail,
   helpAction,
+  canCreate,
+  canReceivePermission,
+  canCancelPermission,
 }: any) {
   const [search, setSearch] = useState("");
   const [filterStartDate, setFilterStartDate] = useState("");
@@ -3002,15 +3143,15 @@ function Transfers({
       return false;
     }
   };
-  const canReceive = (group: any) => groupStatus(group) === "sent" && (role === "owner" || group.toId === outletId);
+  const canReceive = (group: any) => groupStatus(group) === "sent" && canReceivePermission && (!outletId || group.toId === outletId);
   const selectableGroups = paginatedRows.filter((group: any) => canReceive(group));
   const selectedGroups = paginatedRows.filter((group: any) => selectedCodes.includes(group.key) && canReceive(group));
   return (<>
     <PageBlock
       title="Transfer antar lokasi"
       desc="Stok tujuan bertambah setelah penerima mengonfirmasi barang."
-      action="Buat Transfer"
-      onAction={open}
+      action={canCreate ? "Buat Transfer" : undefined}
+      onAction={canCreate ? open : undefined}
     >
       <div className="stats-grid compact">
         <Stat
@@ -3060,7 +3201,7 @@ function Transfers({
               <div className="transfer-route"><small>RUTE PENGIRIMAN</small><b>{locations[group.fromId]?.name || group.fromName || "Lokasi asal"}</b><span>→</span><b>{locations[group.toId]?.name || group.toName || "Lokasi tujuan"}</b></div>
               <div className="transfer-items-summary"><small>ISI PENGIRIMAN</small><b>{group.items.length} varian · {group.items.reduce((sum: number, item: any) => sum + item.quantity, 0)} item</b><span>{group.items.slice(0, 2).map((item: any) => `${variants[item.variantId]?.productName} · ${variants[item.variantId]?.name}`).join(" · ")}{group.items.length > 2 ? ` +${group.items.length - 2} lainnya` : ""}</span></div>
             </div>
-            <div className="transfer-document-actions">{canReceive(group) && <button className="small-primary" onClick={(event) => { event.stopPropagation(); setReceiveVerifyGroup(group); }}><Check size={16} /> Terima</button>}{status !== "cancelled" && role === "owner" && <button className="table-action danger-text" onClick={(event) => { event.stopPropagation(); cancel(group.key); }}>Batalkan</button>}</div>
+            <div className="transfer-document-actions">{canReceive(group) && <button className="small-primary" onClick={(event) => { event.stopPropagation(); setReceiveVerifyGroup(group); }}><Check size={16} /> Terima</button>}{status !== "cancelled" && canCancelPermission && (!outletId || group.fromId === outletId) && <button className="table-action danger-text" onClick={(event) => { event.stopPropagation(); cancel(group.key); }}>Batalkan</button>}</div>
           </article>;
         }) : <div className="empty standalone"><PackagePlus /><b>Belum ada transfer stok.</b><span>Buat transfer untuk mengirim stok antar lokasi.</span></div>}
       </div>
@@ -3121,7 +3262,7 @@ function TransferReceiveScanner({ group, variants, locations, uploadImage, close
     <footer className="modal-actions"><button type="button" className="secondary" onClick={close}>Batal</button><button type="button" className="primary" disabled={!complete || saving} onClick={async () => { setSaving(true); setUploadError(""); try { const receiveProofUrl = proofFile ? await uploadImage(proofFile) : undefined; await confirm(receiveProofUrl); } catch (error) { setUploadError(error instanceof Error ? error.message : "Bukti penerimaan tidak dapat diunggah."); setSaving(false); } }}><Check />{saving ? "Menerima..." : complete ? "Terima transfer" : `Centang ${expectedIds.filter((id) => !verified[id]).length} varian lagi`}</button></footer>
   </Modal>;
 }
-function Sales({ data, variants, locations, open, cancel, detail, role, outletId, canCancel }: any) {
+function Sales({ data, variants, locations, open, cancel, detail, role, outletId, canCreate, canCancel }: any) {
   const [search, setSearch] = useState("");
   const [channel, setChannel] = useState("all");
   const [filterStartDate, setFilterStartDate] = useState("");
@@ -3184,8 +3325,8 @@ function Sales({ data, variants, locations, open, cancel, detail, role, outletId
     <PageBlock
       title="Transaksi penjualan"
       desc="Offline, online, dan reseller tercatat dalam satu laporan."
-      action="Catat Penjualan"
-      onAction={open}
+      action={canCreate ? "Catat Penjualan" : undefined}
+      onAction={canCreate ? open : undefined}
     >
       <div className="stats-grid compact">
         <Stat
@@ -3223,7 +3364,7 @@ function Sales({ data, variants, locations, open, cancel, detail, role, outletId
             <div className="record-card-body"><div className="record-detail"><small>ITEM TERJUAL</small><b>{variant?.productName} · {variant?.name}</b><span>{firstItem ? qty(firstItem.quantity, variant?.unit) : "Tidak ada item"}{itemCount > 1 ? ` +${itemCount - 1} item lainnya` : ""}</span></div><div className="record-detail"><small>PEMBAYARAN & TOTAL</small><b>{money(s.total)}</b><span>{s.payment || "Metode pembayaran tidak tercatat"}</span></div></div>
             {canCancel && s.status !== "voided" && <div className="record-card-actions"><button className="table-action danger-text" onClick={(event) => { event.stopPropagation(); cancel(s.id); }}>Batalkan</button></div>}
           </article>;
-        }) : <Empty text="Belum ada penjualan." />}
+        }) : <Empty standalone text="Belum ada penjualan." hint={canCreate ? undefined : "Akun ini memiliki akses lihat saja."} />}
       </div>
       {totalPages > 1 && (
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 0' }}>
@@ -3251,7 +3392,7 @@ function Sales({ data, variants, locations, open, cancel, detail, role, outletId
     </PageBlock>
   );
 }
-function Opname({ data, variants, locations, open, edit, cancel, detail, role, outletId, canCorrect }: any) {
+function Opname({ data, variants, locations, open, edit, cancel, detail, role, outletId, canCorrect, canCreate }: any) {
   const [search, setSearch] = useState("");
   const [filterStartDate, setFilterStartDate] = useState("");
   const [filterEndDate, setFilterEndDate] = useState("");
@@ -3314,8 +3455,8 @@ function Opname({ data, variants, locations, open, edit, cancel, detail, role, o
     <PageBlock
       title="Stock opname"
       desc="Bandingkan stok sistem dan fisik tanpa menghapus histori."
-      action="Mulai Opname"
-      onAction={open}
+      action={canCreate ? "Mulai Opname" : undefined}
+      onAction={canCreate ? open : undefined}
     >
       <div className="stats-grid compact">
         <Stat
@@ -3340,11 +3481,11 @@ function Opname({ data, variants, locations, open, edit, cancel, detail, role, o
       <div className="record-card-list">
         {paginatedRows.length ? paginatedRows.map((o: any) => (
           <article className="record-card clickable-record-card" key={o.id} role="button" tabIndex={0} onClick={() => detail(o.id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); detail(o.id); } }}>
-            <div className="record-card-top"><div className="record-card-code"><span>DOKUMEN STOCK OPNAME</span><b>{locations[o.locationId]?.name || "Lokasi tidak diketahui"}</b><time>{new Date(o.createdAt).toLocaleString("id-ID")} · {o.createdBy || "Penginput tidak tercatat"}</time></div><span className={`status ${o.status === "cancelled" ? "danger" : "ok"}`}>{o.status === "cancelled" ? "Dibatalkan" : "Selesai"}</span></div>
+            <div className="record-card-top"><div className="record-card-code"><span>DOKUMEN STOCK OPNAME</span><b>{locations[o.locationId]?.name || "Lokasi tidak diketahui"}</b><time>{new Date(o.createdAt).toLocaleString("id-ID")} · {data.users.find((user: any) => user.id === o.createdBy)?.name || o.createdBy || "Penginput tidak tercatat"}</time></div><span className={`status ${o.status === "cancelled" ? "danger" : "ok"}`}>{o.status === "cancelled" ? "Dibatalkan" : "Selesai"}</span></div>
             <div className="record-card-body"><div className="record-detail"><small>VARIAN & ALASAN</small><b>{variants[o.variantId]?.productName} · {variants[o.variantId]?.name}</b><span>{o.status === "cancelled" ? `Dibatalkan: ${o.cancelReason || o.reason}` : o.reason}</span></div><div className="record-detail"><small>SISTEM / FISIK / SELISIH</small><b>{qty(o.systemQty, variants[o.variantId]?.unit)} / {qty(o.actualQty, variants[o.variantId]?.unit)}</b><strong className={o.difference < 0 ? "negative" : "positive"}>{o.difference > 0 ? "+" : ""}{qty(o.difference, variants[o.variantId]?.unit)}</strong></div></div>
             {canCorrect && o.status !== "cancelled" && <div className="record-card-actions"><button className="table-action" onClick={(event) => { event.stopPropagation(); edit(o.id); }}>Edit</button><button className="table-action danger-text" onClick={(event) => { event.stopPropagation(); cancel(o.id); }}>Batalkan</button></div>}
           </article>
-        )) : <Empty text="Belum ada stock opname." />}
+        )) : <Empty standalone text="Belum ada stock opname." />}
       </div>
       {totalPages > 1 && (
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 0' }}>
@@ -3466,7 +3607,7 @@ function HistoryPage({ data, variants, locations, role, outletId }: any) {
             <div className="record-card-top"><div className="record-card-code"><span>JEJAK PERGERAKAN STOK</span><b>{m.type === "INITIAL_BALANCE" ? "Saldo awal" : m.type}</b><time>{new Date(m.createdAt).toLocaleString("id-ID")}</time></div><strong className={m.quantity >= 0 ? "positive" : "negative"}>{m.quantity > 0 ? "+" : ""}{qty(m.quantity, variants[m.variantId]?.unit)}</strong></div>
             <div className="record-card-body"><div className="record-detail"><small>LOKASI & PENGGUNA</small><b>{locations[m.locationId]?.name || "Lokasi tidak diketahui"}</b><span>{m.user || "Pengguna tidak tercatat"}</span></div><div className="record-detail"><small>VARIAN & KETERANGAN</small><b>{variants[m.variantId]?.productName} · {variants[m.variantId]?.name}</b><span>{m.type === "INITIAL_BALANCE" ? "Stok awal" : m.note || "Tidak ada keterangan"}</span></div></div>
           </article>
-        )) : <Empty text="Belum ada jejak stok." />}
+        )) : <Empty standalone text="Belum ada jejak stok." />}
       </div>
       {totalPages > 1 && (
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 0' }}>
@@ -3494,7 +3635,7 @@ function HistoryPage({ data, variants, locations, role, outletId }: any) {
     </PageBlock>
   );
 }
-function Reports({ data, variants, locations, notify, role, outletId }: any) {
+function Reports({ data, variants, locations, notify, role, outletId, canExport }: any) {
   const todayKey = jakartaDateKey();
   const [dateFrom, setDateFrom] = useState(shiftDateKey(todayKey, -29));
   const [dateTo, setDateTo] = useState(todayKey);
@@ -3849,10 +3990,10 @@ function Reports({ data, variants, locations, notify, role, outletId }: any) {
     <PageBlock
       title="Laporan & analisis stok"
       desc="Saring per periode, outlet, produk, dan kanal."
-      action="Unduh Excel"
-      onAction={download}
-      secondaryAction="Unduh PDF"
-      onSecondaryAction={downloadPDF}
+      action={canExport ? "Unduh Excel" : undefined}
+      onAction={canExport ? download : undefined}
+      secondaryAction={canExport ? "Unduh PDF" : undefined}
+      onSecondaryAction={canExport ? downloadPDF : undefined}
     >
       <div id="report-content" style={{ padding: '16px', backgroundColor: '#fff', borderRadius: '8px' }}>
 
@@ -3967,17 +4108,15 @@ const PageBlock = ({ title, desc, action, onAction, secondaryAction, onSecondary
     {children}
   </>
 );
-const Empty = ({ text }: any) => (
-  <tr>
+const Empty = ({ text, hint = "Gunakan tombol di kanan atas untuk mulai.", standalone = false }: any) => {
+  const content = <div className="empty"><PackagePlus /><b>{text}</b><span>{hint}</span></div>;
+  if (standalone) return content;
+  return <tr>
     <td colSpan={9}>
-      <div className="empty">
-        <PackagePlus />
-        <b>{text}</b>
-        <span>Gunakan tombol di kanan atas untuk mulai.</span>
-      </div>
+      {content}
     </td>
-  </tr>
-);
+  </tr>;
+};
 
 const Modal = ({ title, desc, close, children, className = "" }: any) => (
   <div className="modal-backdrop">
@@ -4434,36 +4573,47 @@ function EmployeeModal({ data, employee, initialUserId, close, save, createAccou
   return <Modal title={editing ? "Atur data kerja" : "Lengkapi data kerja"} desc="Peran staf mengikuti pengaturan akses. Di sini Owner cukup mengatur lokasi kerja dan gaji." close={close}><form onSubmit={submit}>{!editing && <><label className="toggle-field"><input type="checkbox" checked={useExisting} onChange={(event) => setUseExisting(event.target.checked)} /><span>Hubungkan akun staf yang sudah ada</span></label>{useExisting ? <><Field label="Akun staf"><AppSelect required value={userId} onChange={(event:any) => setUserId(event.target.value)}><option value="" disabled>Pilih akun staf</option>{eligibleUsers.map((item:any) => <option key={item.id} value={item.id} data-meta={accessRoleLabel(item.role)}>{item.name} · {item.email}</option>)}</AppSelect></Field><small className="upload-hint">Peran staf ditentukan dari pengaturan akses dan otomatis digunakan pada data kerja serta penggajian.</small>{eligibleUsers.length === 0 && <small className="upload-hint">Semua akun staf aktif sudah terhubung. Hilangkan centang di atas untuk membuat akun Karyawan baru.</small>}</> : <div className="form-grid"><Field label="Nama karyawan"><input required value={name} onChange={(event) => setName(event.target.value)} /></Field><Field label="Email login"><input type="email" required value={email} onChange={(event) => setEmail(event.target.value)} /></Field><Field label="Password awal"><input type="password" required minLength={8} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Minimal 8 karakter" /></Field></div>}</>}<Field label="Lokasi kerja"><AppSelect value={locationId} onChange={(event:any) => setLocationId(event.target.value)}><option value="">Belum ditetapkan</option>{data.locations.filter((location:any) => location.active).map((location:any) => <option key={location.id} value={location.id}>{location.name}</option>)}</AppSelect></Field><small className="upload-hint">Tanpa lokasi kerja, staf tetap dapat login sesuai perannya, tetapi tidak dapat melakukan absensi.</small><div className="form-grid"><Field label="Peran staf"><input readOnly className="input-readonly" value={useExisting ? staffPosition : "Karyawan"} /></Field><Field label="Gaji bulanan"><RupiahInput label="Gaji bulanan" value={Number(monthlySalary || 0)} onValue={(value) => setMonthlySalary(String(value))} /></Field></div>{error && <p className="login-error">{error}</p>}<ModalActions close={close} disabled={loading} /></form></Modal>;
 }
 function LoanModal({ data, close, save }: any) {
-  const [employeeId, setEmployeeId] = useState(data.employees?.find((item:any) => item.active)?.id || ""), [amount, setAmount] = useState(0), [installmentCount, setInstallmentCount] = useState(1), [loanDate, setLoanDate] = useState(jakartaDateKey()), [note, setNote] = useState("");
+  const [employeeId, setEmployeeId] = useState(data.employees?.find((item:any) => item.active)?.id || ""), [amount, setAmount] = useState(0), [installmentCount, setInstallmentCount] = useState<number | "">(1), [loanDate, setLoanDate] = useState(jakartaDateKey()), [note, setNote] = useState("");
   const [loading, setLoading] = useState(false), [error, setError] = useState("");
-  const installmentEstimate = calculateLoanInstallment(amount, installmentCount);
-  const submit = async (event:React.FormEvent) => { event.preventDefault(); const nominal = Number(amount), tenor = Number(installmentCount); if (loading) return; setError(""); if (!employeeId) return setError("Pilih karyawan terlebih dahulu."); if (nominal <= 0) return setError("Nominal kasbon harus lebih dari Rp 0."); if (!Number.isInteger(tenor) || tenor < 1 || tenor > 120) return setError("Jumlah cicilan harus antara 1 sampai 120 kali."); setLoading(true); try { await save({ id: newId("loan"), employeeId, loanDate, amount: nominal, installmentCount: tenor, installmentAmount: installmentEstimate, paidInstallments: 0, note, status: "active" }); } catch (err) { setError(err instanceof Error ? err.message : "Kasbon tidak dapat disimpan."); setLoading(false); } };
-  return <Modal title="Catat kasbon" desc="Kasbon dicatat sebagai pengingat owner dan tidak memotong gaji secara otomatis." close={close}><form onSubmit={submit}><Field label="Karyawan"><AppSelect required value={employeeId} onChange={(event:any) => setEmployeeId(event.target.value)}><option value="" disabled>Pilih karyawan</option>{(data.employees || []).filter((employee:any) => employee.active).map((employee:any) => <option key={employee.id} value={employee.id}>{data.users.find((user:any) => user.id === employee.userId)?.name || "Karyawan"}</option>)}</AppSelect></Field><div className="form-grid"><Field label="Tanggal pinjaman"><input type="date" required value={loanDate} onChange={(event) => setLoanDate(event.target.value)} /></Field><Field label="Nominal kasbon"><RupiahInput label="Nominal kasbon" value={amount} onValue={setAmount} /></Field><Field label="Jumlah cicilan"><input type="number" inputMode="numeric" min="1" max="120" step="1" required value={installmentCount} onChange={(event) => setInstallmentCount(Math.max(0, Math.trunc(Number(event.target.value) || 0)))} /></Field><Field label="Estimasi per cicilan (otomatis)"><RupiahInput label="Estimasi per cicilan" readOnly value={installmentEstimate} onValue={() => undefined} /></Field></div><small className="upload-hint loan-estimate-hint">Estimasi dihitung otomatis dari nominal kasbon dibagi jumlah cicilan. Pembulatan dilakukan ke atas; cicilan terakhir otomatis disesuaikan agar total pembayaran tepat sama dengan nominal kasbon.</small><Field label="Catatan"><textarea maxLength={500} value={note} onChange={(event) => setNote(event.target.value)} placeholder="Contoh: kebutuhan pribadi" /></Field>{error && <p className="login-error">{error}</p>}<ModalActions close={close} disabled={loading} /></form></Modal>;
+  const installmentInputRef = useRef<HTMLInputElement>(null);
+  const installmentEstimate = calculateLoanInstallment(amount, Number(installmentCount) || 0);
+  const submit = async (event:React.FormEvent) => { event.preventDefault(); const nominal = Number(amount), tenor = Number(installmentInputRef.current?.value ?? installmentCount); if (loading) return; setError(""); if (!employeeId) return setError("Pilih karyawan terlebih dahulu."); if (nominal <= 0) return setError("Nominal kasbon harus lebih dari Rp 0."); if (!Number.isInteger(tenor) || tenor < 1 || tenor > 120) return setError("Jumlah cicilan harus antara 1 sampai 120 kali."); setLoading(true); try { await save({ id: newId("loan"), employeeId, loanDate, amount: nominal, installmentCount: tenor, installmentAmount: calculateLoanInstallment(nominal, tenor), paidInstallments: 0, note, status: "active" }); } catch (err) { setError(err instanceof Error ? err.message : "Kasbon tidak dapat disimpan."); setLoading(false); } };
+  return <Modal title="Catat kasbon" desc="Kasbon dicatat sebagai pengingat owner dan tidak memotong gaji secara otomatis." close={close}><form onSubmit={submit}><Field label="Karyawan"><AppSelect required value={employeeId} onChange={(event:any) => setEmployeeId(event.target.value)}><option value="" disabled>Pilih karyawan</option>{(data.employees || []).filter((employee:any) => employee.active).map((employee:any) => <option key={employee.id} value={employee.id}>{data.users.find((user:any) => user.id === employee.userId)?.name || "Karyawan"}</option>)}</AppSelect></Field><div className="form-grid"><Field label="Tanggal pinjaman"><input type="date" required value={loanDate} onChange={(event) => setLoanDate(event.target.value)} /></Field><Field label="Nominal kasbon"><RupiahInput label="Nominal kasbon" value={amount} onValue={setAmount} /></Field><Field label="Jumlah cicilan"><input ref={installmentInputRef} type="number" inputMode="numeric" min="1" max="120" step="1" required value={installmentCount} onInput={(event) => setInstallmentCount(event.currentTarget.value === "" ? "" : Math.max(1, Math.min(120, Math.trunc(Number(event.currentTarget.value) || 0))))} /></Field><Field label="Estimasi per cicilan (otomatis)"><RupiahInput label="Estimasi per cicilan" readOnly value={installmentEstimate} onValue={() => undefined} /></Field></div><small className="upload-hint loan-estimate-hint">Estimasi dihitung otomatis dari nominal kasbon dibagi jumlah cicilan. Pembulatan dilakukan ke atas; cicilan terakhir otomatis disesuaikan agar total pembayaran tepat sama dengan nominal kasbon.</small><Field label="Catatan"><textarea maxLength={500} value={note} onChange={(event) => setNote(event.target.value)} placeholder="Contoh: kebutuhan pribadi" /></Field>{error && <p className="login-error">{error}</p>}<ModalActions close={close} disabled={loading} /></form></Modal>;
 }
 function PayrollPaymentModal({ employee, employeeName, close, save, uploadImage }: any) {
   const [file, setFile] = useState<File | null>(null), [note, setNote] = useState(""), [loading, setLoading] = useState(false), [error, setError] = useState("");
   return <Modal title={`Tandai gaji dibayar`} desc="Unggah bukti transfer bila tersedia. Bukti bersifat opsional dan dapat dilihat kembali dari tabel penggajian." close={close}><form onSubmit={async (event) => { event.preventDefault(); if (loading) return; setLoading(true); setError(""); try { const proofUrl = file ? await uploadImage(file) : undefined; await save(proofUrl, note.trim() || undefined); } catch (err) { setError(err instanceof Error ? err.message : "Bukti transfer tidak dapat diunggah."); setLoading(false); } }}><div className="detail-list payroll-payment-summary"><p><span>Karyawan</span><b>{employeeName}</b></p><p><span>Gaji pokok</span><b>{money(employee.monthlySalary)}</b></p></div><Field label="Bukti transfer (opsional)"><input type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif" onChange={(event) => setFile(event.target.files?.[0] || null)} /></Field><small className="upload-hint">Unggah gambar JPG, PNG, WebP, HEIC, atau HEIF. Maksimal 5 MB.</small><Field label="Catatan (opsional)"><textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Contoh: transfer melalui BCA" /></Field>{error && <p className="login-error">{error}</p>}<footer className="modal-actions"><button type="button" className="secondary" onClick={close} disabled={loading}>Batal</button><button type="submit" className="primary" disabled={loading}>{loading ? "Mengunggah..." : "Simpan pembayaran"}</button></footer></form></Modal>;
 }
 function UserModal({ data, close, save, user, uploadImage, onDelete }: any) {
+  const availableRoles = configuredRolesFromData(data);
   const editing = Boolean(user),
     isOwner = user?.role === "owner",
     [name, setName] = useState(user?.name || ""),
     [email, setEmail] = useState(user?.email || ""),
     [password, setPassword] = useState(""),
-    [role, setRole] = useState<"owner" | "pic" | "finance" | "admin" | "warehouse" | "cashier" | "employee">(
-      user?.role || "pic",
+    [role, setRole] = useState<"owner" | ConfigurableRole>(
+      user?.role || availableRoles[0],
     ),
     [outletId, setOutletId] = useState(
       user?.outletId ||
         data.locations.find((item: any) => item.type === "outlet")?.id ||
         "",
     ),
+    [workLocationId, setWorkLocationId] = useState(
+      user?.outletId || data.locations.find((item: any) => item.active && item.type === "outlet")?.id || "",
+    ),
+    [monthlySalary, setMonthlySalary] = useState(0),
     [active, setActive] = useState(user?.active ?? true),
     [file,setFile]=useState<File|null>(null),
     [error, setError] = useState(""),
     [loading, setLoading] = useState(false),
     [showPasswordEdit, setShowPasswordEdit] = useState(false),
     [showHelp, setShowHelp] = useState(false);
+  const selectedPolicy = role === "owner"
+    ? { menus: roleMenuOptions.map(item => item.id), permissions: permissionOptions.map(item => item.id) }
+    : data.rolePolicies?.[role] || { menus: defaultRoleMenus[role], permissions: defaultRolePermissions(role) };
+  const selectedMenuLabels = roleMenuOptions.filter(item => selectedPolicy.menus.includes(item.id)).map(item => item.label);
+  const selectedPermissionLabels = permissionOptions.filter(item => selectedPolicy.permissions.includes(item.id)).map(item => item.label);
   return (
     <Modal
       title={editing ? "Edit profil pengguna" : "Tambah pengguna"}
@@ -4490,6 +4640,12 @@ function UserModal({ data, close, save, user, uploadImage, onDelete }: any) {
               outletId: ["pic", "warehouse", "cashier"].includes(role) ? outletId : undefined,
               active,
               avatarUrl,
+              ...(!editing ? {
+                employment: {
+                  locationId: workLocationId,
+                  monthlySalary,
+                },
+              } : {}),
             });
           } catch (err) {
             setError(
@@ -4567,30 +4723,30 @@ function UserModal({ data, close, save, user, uploadImage, onDelete }: any) {
           <select
             value={role}
             disabled={isOwner}
-            onChange={(e) => setRole(e.target.value as "owner" | "pic" | "finance" | "admin" | "warehouse" | "cashier" | "employee")}
+            onChange={(e) => {
+              const nextRole = e.target.value as "owner" | ConfigurableRole;
+              setRole(nextRole);
+              const compatible = data.locations.find((item: any) => item.active && (nextRole === "warehouse" ? item.type === "warehouse" : ["pic", "cashier"].includes(nextRole) ? item.type === "outlet" : true));
+              if (["pic", "warehouse", "cashier"].includes(nextRole)) {
+                setOutletId(compatible?.id || "");
+                setWorkLocationId(compatible?.id || "");
+              }
+            }}
           >
             {isOwner && <option value="owner">Owner</option>}
-            <option value="admin">Admin Cabang</option>
-            <option value="pic">PIC Outlet</option>
-            <option value="warehouse">Staf Gudang</option>
-            <option value="cashier">Kasir</option>
-            <option value="finance">Keuangan</option>
-            <option value="employee">Karyawan (Absensi)</option>
+            {availableRoles.map(item => <option key={item} value={item}>{accessRoleLabel(item)}</option>)}
           </select>
           {showHelp && (
-            <div style={{ marginTop: '8px', padding: '12px', background: 'var(--mint)', borderRadius: '8px', fontSize: '11.5px', color: 'var(--text)', border: '1px solid #d8f6e8', lineHeight: 1.5 }}>
-              <div style={{ display: 'grid', gap: '8px' }}>
-                <div><b>Admin Cabang:</b> Mengelola operasional cabang (stok & penjualan), tanpa akses laporan keuangan.</div>
-                <div><b>PIC Outlet:</b> Kepala operasional toko/outlet.</div>
-                <div><b>Staf Gudang:</b> Khusus mencatat mutasi stok di gudang, tanpa melihat harga jual/omset.</div>
-                <div><b>Kasir:</b> Hanya bisa mengakses dan melayani transaksi di menu Penjualan.</div>
-                <div><b>Keuangan:</b> Memantau laporan omset dan laba, tanpa bisa memodifikasi stok fisik.</div>
-                <div><b>Karyawan:</b> Hanya dapat mengakses absensi dan riwayat absensi pribadi.</div>
-              </div>
+            <div className="role-help-summary">
+              <header><KeyRound size={17}/><div><b>{accessRoleLabel(role)}</b><span>Ringkasan ini mengikuti pengaturan hak akses terbaru.</span></div></header>
+              <div className="role-help-section"><b>Menu yang dapat dibuka ({selectedMenuLabels.length})</b><div className="role-help-chips">{selectedMenuLabels.length ? <>{selectedMenuLabels.slice(0, 8).map(label => <span key={label}>{label}</span>)}{selectedMenuLabels.length > 8 && <span className="more">+{selectedMenuLabels.length - 8} menu lainnya</span>}</> : <em>Tidak ada menu operasional.</em>}</div></div>
+              <div className="role-help-section"><b>Tindakan yang diizinkan ({selectedPermissionLabels.length})</b><div className="role-help-chips permission">{selectedPermissionLabels.length ? <>{selectedPermissionLabels.slice(0, 8).map(label => <span key={label}>{label}</span>)}{selectedPermissionLabels.length > 8 && <span className="more">+{selectedPermissionLabels.length - 8} izin lainnya</span>}</> : <em>Hanya dapat melihat menu yang tersedia.</em>}</div></div>
+              <p>Akses lokasi tetap dibatasi sesuai lokasi kerja staf.</p>
+              <button type="button" className="role-help-link" onClick={() => { close(); window.location.hash = "role-access"; }}>Lihat detail pengaturan peran</button>
             </div>
           )}
         </Field>
-        {["pic", "warehouse", "cashier"].includes(role) && (
+        {editing && ["pic", "warehouse", "cashier"].includes(role) && (
           <Field label="Lokasi Penempatan">
             <select
               required
@@ -4621,6 +4777,25 @@ function UserModal({ data, close, save, user, uploadImage, onDelete }: any) {
             />
             <span>Akun aktif dan dapat masuk</span>
           </label>
+        )}
+        {!editing && (
+          <>
+            <Field label="Lokasi kerja">
+              <select required value={workLocationId} onChange={(e) => {
+                setWorkLocationId(e.target.value);
+                if (["pic", "warehouse", "cashier"].includes(role)) setOutletId(e.target.value);
+              }}>
+                <option value="">Pilih lokasi kerja</option>
+                {data.locations
+                  .filter((item: any) => item.active && (role === "warehouse" ? item.type === "warehouse" : ["pic", "cashier"].includes(role) ? item.type === "outlet" : true))
+                  .map((item: any) => <option key={item.id} value={item.id}>{item.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Gaji bulanan">
+              <RupiahInput label="Gaji bulanan" value={monthlySalary} onValue={setMonthlySalary} />
+            </Field>
+            <small className="upload-hint">Data ini langsung dipakai untuk absensi dan estimasi penggajian staf.</small>
+          </>
         )}
         {error && <div className="login-error">{error}</div>}
         <footer className="modal-actions">
@@ -4827,7 +5002,7 @@ function ReceiptModal({ data, receipt, close, save, uploadImage, prefillLocation
     </Modal>
   );
 }
-function ReturnModal({ data, close, save, uploadImage }: any) {
+function ReturnModal({ data, close, save, uploadImage, initialLocationId }: any) {
   const [isSaving, setIsSaving] = useState(false);
   const [proofFile, setProofFile] = useState<File | null>(null);
   const [uploadError, setUploadError] = useState("");
@@ -4840,7 +5015,7 @@ function ReturnModal({ data, close, save, uploadImage }: any) {
       ),
     [type, setType] = useState<"customer" | "supplier">("customer"),
     [locationId, setLocationId] = useState(
-      data.locations.find((l: any) => l.active)?.id || "",
+      data.locations.find((l: any) => l.active && l.id === initialLocationId)?.id || data.locations.find((l: any) => l.active)?.id || "",
     ),
     [selectedItems, setSelectedItems] = useState<Record<string, { quantity: number }>>({}),
     [reason, setReason] = useState(""),
@@ -5616,12 +5791,15 @@ function OpnameModal({ data, item, close, save, fixedLocation }: any) {
     [selectedProductId, setSelectedProductId] = useState(initialProductId),
     [productPickerOpen, setProductPickerOpen] = useState(false),
     [productSearch, setProductSearch] = useState(""),
-    [selectedItems, setSelectedItems] = useState<Record<string, { actualQty: number, reason: string }>>(
+    [selectedItems, setSelectedItems] = useState<Record<string, { actualQty: number | "", reason: string }>>(
       item ? { [item.variantId]: { actualQty: item.actualQty || 0, reason: item.reason || "Koreksi saldo dari halaman stok" } } : {}
     );
   const selectedProduct = products.find((product: any) => product.id === selectedProductId);
   const visibleVariants = selectedProduct?.variants.map((variant: any) => ({ ...variant, unit: selectedProduct.unit, productName: selectedProduct.name })) || [];
   const matchingProducts = products.filter((product: any) => product.name.toLowerCase().includes(productSearch.toLowerCase()));
+  const invalidItems = Object.values(selectedItems).some((selectedItem) =>
+    selectedItem.actualQty === "" || !Number.isInteger(Number(selectedItem.actualQty)) || Number(selectedItem.actualQty) < 0 || selectedItem.reason.trim().length < 3
+  );
 
   return (
     <Modal
@@ -5634,8 +5812,8 @@ function OpnameModal({ data, item, close, save, fixedLocation }: any) {
           e.preventDefault();
           if (isSaving) return;
           setIsSaving(true);
-          if (Object.keys(selectedItems).length === 0) { setIsSaving(false); return alert("Pilih minimal satu produk"); }
-          save(loc, Object.entries(selectedItems).map(([vid, val]) => ({ variantId: vid, actualQty: val.actualQty, reason: val.reason })));
+          if (Object.keys(selectedItems).length === 0 || invalidItems) { setIsSaving(false); return; }
+          save(loc, Object.entries(selectedItems).map(([vid, val]) => ({ variantId: vid, actualQty: Number(val.actualQty), reason: val.reason })));
         }}
       >
         <Field label="Lokasi opname">
@@ -5659,7 +5837,7 @@ function OpnameModal({ data, item, close, save, fixedLocation }: any) {
             if (!product) return false;
             setSelectedProductId(product.id);
             setProductPickerOpen(false);
-            setSelectedItems((current) => ({ ...current, [variant.id]: current[variant.id] || { actualQty: 0, reason: "Hasil hitung fisik akhir hari" } }));
+            setSelectedItems((current) => ({ ...current, [variant.id]: current[variant.id] || { actualQty: "", reason: "Hasil hitung fisik akhir hari" } }));
             return true;
           }} />
           <small className="scan-field-hint">Setelah scan, masukkan jumlah fisik aktual untuk menyelesaikan opname.</small>
@@ -5683,7 +5861,7 @@ function OpnameModal({ data, item, close, save, fixedLocation }: any) {
               <label key={v.id} className="variant-picker-option">
                 <input type="checkbox" checked={!!selectedItems[v.id]} style={{ width: 'auto', padding: 0, margin: 0 }} onChange={e => {
                   if (e.target.checked) {
-                    setSelectedItems({ ...selectedItems, [v.id]: { actualQty: 0, reason: "Hasil hitung fisik akhir hari" } });
+                    setSelectedItems({ ...selectedItems, [v.id]: { actualQty: "", reason: "Hasil hitung fisik akhir hari" } });
                   } else {
                     const next = { ...selectedItems };
                     delete next[v.id];
@@ -5704,10 +5882,10 @@ function OpnameModal({ data, item, close, save, fixedLocation }: any) {
               if (!v) return null;
               return (
                 <div key={vid} className="opname-selected-item">
-                  <div className="opname-item-head"><div><b>{v.productName} · {v.name}</b><small>Stok sistem: {qty(getBalance(data.balances, loc, v.id), v.unit)}</small></div><span className={selectedItem.actualQty - getBalance(data.balances, loc, v.id) === 0 ? "status ok" : "status wait"}>{selectedItem.actualQty - getBalance(data.balances, loc, v.id) === 0 ? "Sesuai" : `Selisih ${selectedItem.actualQty - getBalance(data.balances, loc, v.id) > 0 ? "+" : ""}${qty(selectedItem.actualQty - getBalance(data.balances, loc, v.id), v.unit)}`}</span></div>
+                  <div className="opname-item-head"><div><b>{v.productName} · {v.name}</b><small>Stok sistem: {qty(getBalance(data.balances, loc, v.id), v.unit)}</small></div>{selectedItem.actualQty === "" ? <span className="status wait">Belum dihitung</span> : <span className={Number(selectedItem.actualQty) - getBalance(data.balances, loc, v.id) === 0 ? "status ok" : "status wait"}>{Number(selectedItem.actualQty) - getBalance(data.balances, loc, v.id) === 0 ? "Sesuai" : `Selisih ${Number(selectedItem.actualQty) - getBalance(data.balances, loc, v.id) > 0 ? "+" : ""}${qty(Number(selectedItem.actualQty) - getBalance(data.balances, loc, v.id), v.unit)}`}</span>}</div>
                   <div className="form-grid">
                   <Field label={`Stok fisik (${v.unit})`}>
-                     <input type="number" min="0" value={String(selectedItem.actualQty)} onInput={e => { const actualQty = Number(e.currentTarget.value.replace(/^0+(?=\d)/, '')) || 0; setSelectedItems((current) => ({...current, [vid]: { ...current[vid], actualQty }})); }} onBlur={e => { const actualQty = Number(e.currentTarget.value) || 0; setSelectedItems((current) => ({...current, [vid]: { ...current[vid], actualQty }})); }} style={{ background: 'white' }} />
+                     <input type="number" min="0" step="1" required placeholder="Masukkan hasil hitung" value={selectedItem.actualQty} onInput={e => { const raw = e.currentTarget.value; const actualQty = raw === "" ? "" : Math.max(0, Math.trunc(Number(raw) || 0)); setSelectedItems((current) => ({...current, [vid]: { ...current[vid], actualQty }})); }} style={{ background: 'white' }} />
                   </Field>
                   <Field label="Alasan / catatan">
                      <textarea required value={selectedItem.reason} onChange={e => { const reason = e.currentTarget.value; setSelectedItems((current) => ({...current, [vid]: { ...current[vid], reason }})); }} style={{ background: 'white' }} />
@@ -5718,7 +5896,7 @@ function OpnameModal({ data, item, close, save, fixedLocation }: any) {
             })}
           </div>
         )}
-        <ModalActions close={close} disabled={isSaving} />
+        <ModalActions close={close} disabled={isSaving || Object.keys(selectedItems).length === 0 || invalidItems} />
       </form>
     </Modal>
   );
@@ -6321,7 +6499,7 @@ const ModalActions = ({ close, onDelete, disabled, label = 'Simpan' }: any) => (
   );
 }
 
-function HppMarketplaceCalculator({ data, runCommand, notify }: { data: AppData; runCommand: (path: string, payload: object, method?: "POST" | "PATCH") => Promise<AppData>; notify: (message: string) => void }) {
+function HppMarketplaceCalculator({ data, runCommand, notify, canManage }: { data: AppData; runCommand: (path: string, payload: object, method?: "POST" | "PATCH") => Promise<AppData>; notify: (message: string) => void; canManage: boolean }) {
   const variants = useMemo(() => data.products.flatMap(product => product.variants.map(variant => ({ ...variant, productId: product.id, productName: product.name, unit: product.unit }))), [data.products]);
   const presets = {
     Shopee: { adminFee: 6.5, paymentFee: 1.8, shippingFee: 4, affiliateFee: 0, fixedFee: 1000 },
@@ -6399,6 +6577,7 @@ function HppMarketplaceCalculator({ data, runCommand, notify }: { data: AppData;
     if (product) setSellingPrice(Number(next.sellingPrice || product.price || 0));
   };
   const savePricing = async (nextRecipe?: HppRecipe, configOnly = false, syncConfirmed = false) => {
+    if (!canManage) return notify("Peran Anda hanya dapat melihat simulasi harga.");
     if (!configOnly && !(nextRecipe || recipe).name.trim()) { notify("Nama resep HPP wajib diisi"); return; }
     const draftRecipe = nextRecipe || recipe;
     const linkedIds = recipeVariantIds(draftRecipe);
@@ -6465,7 +6644,7 @@ function HppMarketplaceCalculator({ data, runCommand, notify }: { data: AppData;
   </PageBlock>;
 }
 
-function AnalyticsPage({ data }: { data: AppData }) {
+function AnalyticsPage({ data, canExport }: { data: AppData; canExport: boolean }) {
   const [refreshing, setRefreshing] = useState<Record<string, boolean>>({});
   const todayKey = jakartaDateKey();
   const [dateFrom, setDateFrom] = useState(todayKey);
@@ -6598,7 +6777,7 @@ function AnalyticsPage({ data }: { data: AppData }) {
     <PageBlock
       title="Dashboard Utama"
       desc="Ringkasan performa dan kesehatan bisnis Anda."
-      action="Unduh Analitik Excel"
+      action={canExport ? "Unduh Analitik Excel" : undefined}
       onAction={async () => {
         const summaryData = [
           ["Total Omset", stats.revenue],

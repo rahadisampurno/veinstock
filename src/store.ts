@@ -71,7 +71,7 @@ export const normalizeData = (data: AppData): AppData => {
     stockCounts: data.stockCounts || [],
     suppliers: data.suppliers || [],
     receipts: data.receipts || [],
-    returns: data.returns || [], employees: data.employees || [], attendanceSettings: data.attendanceSettings || [], attendances: data.attendances || [], loans: data.loans || [], payrolls: data.payrolls || [], shipments: data.shipments || [], shipmentHandovers: data.shipmentHandovers || []
+    returns: data.returns || [], employees: data.employees || [], attendanceSettings: data.attendanceSettings || [], attendances: data.attendances || [], loans: data.loans || [], payrolls: data.payrolls || [], shipments: data.shipments || [], shipmentHandovers: data.shipmentHandovers || [], rolePolicies: data.rolePolicies || {}
   };
 };
 

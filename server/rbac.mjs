@@ -21,27 +21,35 @@ export function resolveUserScope(user) {
      'location.view', 'location.create', 'location.update', 'location.delete',
      'user.view', 'user.create', 'user.update', 'user.assign_location',
      'stock.view', 'stock.initial_balance', 'stock.in', 'stock.out', 'stock.adjust', 'stock.opname',
-     'transfer.create', 'transfer.send', 'transfer.receive', 'transfer.cancel',
+     'transfer.view', 'transfer.create', 'transfer.send', 'transfer.receive', 'transfer.cancel',
      'sale.view', 'sale.create', 'sale.void', 'shipping.view', 'shipping.manage',
-     'report.view', 'report.export', 'audit.view'].forEach(p => permissions.add(p));
+     'report.view', 'report.export', 'audit.view', 'supplier.view', 'supplier.manage',
+     'pricing.view', 'pricing.manage', 'attendance.view', 'attendance.record', 'attendance.manage', 'payroll.view', 'payroll.manage'].forEach(p => permissions.add(p));
   } else if (role === 'admin') {
     ['product.view', 'product.create', 'product.update',
      'location.view', 'location.create', 'location.update',
      'user.view', 'user.create', 'user.assign_location',
      'stock.view', 'stock.initial_balance', 'stock.in', 'stock.out', 'stock.adjust', 'stock.opname',
-     'transfer.create', 'transfer.send', 'transfer.receive', 'transfer.cancel',
+     'transfer.view', 'transfer.create', 'transfer.send', 'transfer.receive', 'transfer.cancel',
      'sale.view', 'sale.create', 'sale.void', 'shipping.view', 'shipping.manage',
-     'report.view', 'report.export'].forEach(p => permissions.add(p));
+     'report.view', 'report.export', 'audit.view', 'supplier.view', 'supplier.manage', 'pricing.view', 'pricing.manage', 'attendance.view', 'attendance.record'].forEach(p => permissions.add(p));
   } else if (role === 'finance') {
-    ['stock.view', 'report.view', 'report.export'].forEach(p => permissions.add(p));
+    ['stock.view', 'report.view', 'report.export', 'pricing.view'].forEach(p => permissions.add(p));
   } else if (role === 'warehouse') {
     ['product.view', 'location.view', 'stock.view', 'stock.in', 'stock.out', 'stock.opname',
-     'transfer.create', 'transfer.send', 'shipping.view', 'shipping.manage', 'report.view', 'report.export'].forEach(p => permissions.add(p));
+     'transfer.view', 'transfer.create', 'transfer.send', 'shipping.view', 'shipping.manage', 'report.view', 'report.export', 'audit.view', 'attendance.view', 'attendance.record'].forEach(p => permissions.add(p));
   } else if (role === 'pic') {
     ['product.view', 'location.view', 'stock.view', 'stock.opname',
-     'transfer.receive', 'transfer.create', 'transfer.send', 'sale.view', 'sale.create', 'sale.void', 'shipping.view', 'shipping.manage', 'report.view', 'report.export'].forEach(p => permissions.add(p));
+     'transfer.view', 'transfer.receive', 'transfer.create', 'transfer.send', 'sale.view', 'sale.create', 'sale.void', 'shipping.view', 'shipping.manage', 'report.view', 'report.export', 'audit.view', 'attendance.view', 'attendance.record'].forEach(p => permissions.add(p));
   } else if (role === 'cashier') {
-    ['product.view', 'location.view', 'stock.view', 'sale.create', 'sale.view'].forEach(p => permissions.add(p));
+    ['product.view', 'location.view', 'stock.view', 'sale.create', 'sale.view', 'attendance.view', 'attendance.record'].forEach(p => permissions.add(p));
+  } else if (role === 'employee') {
+    ['attendance.view', 'attendance.record'].forEach(p => permissions.add(p));
+  }
+
+  if (role !== 'owner' && Array.isArray(user?.rolePermissions)) {
+    permissions.clear();
+    user.rolePermissions.forEach(permission => permissions.add(permission));
   }
 
   return {

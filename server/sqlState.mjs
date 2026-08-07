@@ -48,13 +48,13 @@ export async function syncStateToSQL(conn, orgId, data) {
      // snapshot idempoten: hapus detail lama lalu tulis satu kali per item unik.
      await conn.execute('DELETE FROM sale_items WHERE sale_id = ?', [sale.id ?? 'unknown']);
      const uniqueItems = Array.from(new Map((sale.items || []).map(item => {
-       const key = [item.variantId, item.quantity, item.price ?? 0, item.discount ?? 0, item.subtotal ?? 0].join('|');
+       const key = [item.variantId, item.quantity, item.unitCost ?? '', item.price ?? 0, item.discount ?? 0, item.subtotal ?? 0].join('|');
        return [key, item];
      })).values());
      for (const item of uniqueItems) {
        await conn.execute(
-         `INSERT INTO sale_items (sale_id, variant_id, quantity, price, discount, subtotal) VALUES (?, ?, ?, ?, ?, ?)`,
-         [sale.id ?? 'unknown', item.variantId ?? 'unknown', item.quantity ?? 0, item.price ?? 0, item.discount ?? 0, item.subtotal ?? 0]
+         `INSERT INTO sale_items (sale_id, variant_id, quantity, unit_cost, price, discount, subtotal) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+         [sale.id ?? 'unknown', item.variantId ?? 'unknown', item.quantity ?? 0, Number.isFinite(Number(item.unitCost)) ? Number(item.unitCost) : null, item.price ?? 0, item.discount ?? 0, item.subtotal ?? 0]
        );
      }
   }
@@ -104,13 +104,13 @@ export async function getStateFromSQL(conn, orgId) {
   const saleIds = sales.map(s => s.id);
   let saleItems = [];
   if (saleIds.length > 0) {
-    const [items] = await conn.query('SELECT sale_id, variant_id as variantId, quantity, price, discount, subtotal FROM sale_items WHERE sale_id IN (?)', [saleIds]);
+    const [items] = await conn.query('SELECT sale_id, variant_id as variantId, quantity, unit_cost as unitCost, price, discount, subtotal FROM sale_items WHERE sale_id IN (?)', [saleIds]);
     saleItems = items;
   }
   for (const s of sales) {
     const seenItems = new Set();
     s.items = saleItems.filter(i => i.sale_id === s.id).filter(item => {
-      const key = [item.variantId, item.quantity, item.price ?? 0, item.discount ?? 0, item.subtotal ?? 0].join('|');
+      const key = [item.variantId, item.quantity, item.unitCost ?? '', item.price ?? 0, item.discount ?? 0, item.subtotal ?? 0].join('|');
       if (seenItems.has(key)) return false;
       seenItems.add(key);
       return true;
@@ -192,6 +192,7 @@ export async function getStateFromSQL(conn, orgId) {
       shipments: rawState.shipments || [],
       shipmentHandovers: rawState.shipmentHandovers || [],
       pricing: rawState.pricing || { hppRecipes: [], marketplaceConfigs: [] },
+      rolePolicies: rawState.rolePolicies || {},
     }
   };
 }

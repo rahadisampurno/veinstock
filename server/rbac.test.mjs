@@ -28,4 +28,11 @@ describe('server RBAC policy', () => {
       expect(authorizeAction({ user: user('cashier'), action, locationId: 'outlet-a' }).allowed).toBe(false);
     }
   });
+
+  it('uses organization role permissions when a custom policy is attached', () => {
+    const user = { role: 'cashier', outletId: 'outlet-a', organizationId: 'org-a', rolePermissions: ['stock.view', 'stock.opname'] };
+    expect(authorizeAction({ user, action: 'stock.opname', locationId: 'outlet-a' }).allowed).toBe(true);
+    expect(authorizeAction({ user, action: 'sale.create', locationId: 'outlet-a' }).allowed).toBe(false);
+    expect(authorizeAction({ user, action: 'stock.opname', locationId: 'outlet-b' }).allowed).toBe(false);
+  });
 });

@@ -231,6 +231,7 @@ body{font-size:16px;line-height:1.5}.brand small{font-size:12px}.workspace>span{
   background: #d1fae5;
 }
 .form-grid { gap: 16px; }
+.role-access-card{background:#fff;border:1px solid var(--line);border-radius:18px;padding:22px}.role-access-tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px}.role-access-tabs button{border:1px solid var(--line);background:#f7fafb;color:var(--muted);border-radius:10px;padding:10px 14px;font-weight:750;cursor:pointer}.role-access-tabs button.active{background:var(--navy);border-color:var(--navy);color:#fff}.role-access-note{display:flex;gap:13px;align-items:flex-start;padding:15px;border-radius:13px;background:var(--mint);margin-bottom:20px}.role-access-note svg{width:20px;color:var(--green);flex:none}.role-access-note p{margin:4px 0 0;font-size:12px;color:var(--muted)}.role-policy-section{border-top:1px solid var(--line);padding:20px 0}.role-check-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}.role-check-grid label{display:flex;align-items:center;gap:9px;border:1px solid var(--line);border-radius:10px;padding:11px 12px;font-size:12px;cursor:pointer}.role-check-grid input{accent-color:var(--green)}.permission-group{margin-top:15px}.permission-group>b{display:block;font-size:11px;margin-bottom:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}.role-policy-actions{display:flex;justify-content:flex-end;gap:10px;border-top:1px solid var(--line);padding-top:18px}@media(max-width:760px){.role-check-grid{grid-template-columns:1fr}.role-policy-actions{flex-direction:column-reverse}.role-policy-actions button{width:100%}}
 .proof-link{display:block;margin-top:6px;font-size:12px;font-weight:700;color:var(--green)}
 .payroll-payment-summary{margin:0 0 20px}
 
@@ -1926,6 +1927,84 @@ body{font-size:16px;line-height:1.5}.brand small{font-size:12px}.workspace>span{
   margin: 3px 0 0;
   font-size: 10px;
   line-height: 1.5;
+}
+
+.role-help-summary {
+  display: grid;
+  gap: 12px;
+  margin-top: 8px;
+  padding: 14px;
+  border: 1px solid #cdeedf;
+  border-radius: 12px;
+  background: var(--mint);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.role-help-summary header {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  color: var(--navy);
+}
+
+.role-help-summary header div,
+.role-help-section {
+  display: grid;
+  gap: 4px;
+}
+
+.role-help-summary header span,
+.role-help-summary p {
+  color: var(--muted);
+}
+
+.role-help-summary p {
+  margin: 0;
+}
+
+.role-help-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.role-help-chips span {
+  padding: 4px 7px;
+  border: 1px solid #cce5dc;
+  border-radius: 999px;
+  background: #fff;
+  color: var(--navy);
+}
+
+.role-help-chips.permission span {
+  border-color: #cce0ef;
+  background: #f5fbff;
+}
+
+.role-help-chips span.more {
+  border-style: dashed;
+  background: transparent;
+  color: var(--green);
+  font-weight: 700;
+}
+
+.role-help-chips em {
+  color: var(--muted);
+  font-style: normal;
+}
+
+.role-help-link {
+  width: fit-content;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--green);
+  font: inherit;
+  font-weight: 750;
+  text-decoration: underline;
+  cursor: pointer;
 }
 
 @media (max-width: 1100px) {

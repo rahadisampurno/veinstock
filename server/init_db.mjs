@@ -36,7 +36,8 @@ async function init() {
       role ENUM('owner','pic','finance','admin','warehouse','cashier','employee') NOT NULL,
       outlet_id VARCHAR(40) NULL,
       active BOOLEAN NOT NULL DEFAULT TRUE,
-      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_users_org_created (organization_id, created_at)
     )`,
     `CREATE TABLE IF NOT EXISTS locations (
       id VARCHAR(40) PRIMARY KEY,
@@ -118,6 +119,7 @@ async function init() {
       sale_id VARCHAR(40) NOT NULL,
       variant_id VARCHAR(40) NOT NULL,
       quantity INT NOT NULL,
+      unit_cost INT NULL,
       price INT NOT NULL,
       discount INT NOT NULL DEFAULT 0,
       subtotal INT NOT NULL,

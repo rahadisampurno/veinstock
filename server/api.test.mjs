@@ -23,6 +23,21 @@ beforeAll(async () => {
 afterAll(() => server?.kill('SIGTERM'));
 
 describe('multi-tenant API', () => {
+  it('stores role menu and permission policies per organization and rejects non-owner changes', async () => {
+    const suffix = `${Date.now()}-role-policy`;
+    const owner = await post('/api/register', { organizationName: 'Role Policy', name: 'Owner', email: `owner-${suffix}@test.local`, password: 'Password123!' });
+    const policy = { menus: ['dashboard', 'reports', 'help'], permissions: ['report.view', 'report.export'] };
+    expect((await post('/api/commands/role-policies', { role: 'finance', policy }, owner.body.token)).status).toBe(201);
+    const state = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    expect(state.body.data.rolePolicies.finance).toEqual(policy);
+    expect(state.body.data.movements.some(item => item.type === 'Perubahan hak akses')).toBe(true);
+
+    const financeEmail = `finance-${suffix}@test.local`;
+    expect((await post('/api/users', { name: 'Finance', email: financeEmail, password: 'Password123!', role: 'finance' }, owner.body.token)).status).toBe(201);
+    const finance = await post('/api/login', { email: financeEmail, password: 'Password123!' });
+    expect((await post('/api/commands/role-policies', { role: 'cashier', policy }, finance.body.token)).status).toBe(403);
+  });
+
   it('persists an uploaded product image after the product is edited', async () => {
     const suffix = `${Date.now()}-product-image`;
     const owner = await post('/api/register', { organizationName: 'Gambar Produk', name: 'Owner', email: `owner-${suffix}@test.local`, password: 'Password123!' });
@@ -323,5 +338,69 @@ describe('multi-tenant API', () => {
     const refreshed = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
     const updatedProduct = refreshed.body.data.products.find(item => item.id === product.id);
     expect(updatedProduct.variants.map(item => item.cost)).toEqual([500, 500]);
+  });
+
+  it('serializes concurrent sales so the last unit cannot be oversold', async () => {
+    const suffix = `${Date.now()}-concurrent-sale`;
+    const owner = await post('/api/register', { organizationName: 'Concurrency Aman', name: 'Owner', email: `owner-${suffix}@test.local`, password: 'Password123!' });
+    const product = {
+      id: `product-${suffix}`, name: 'Unit Terakhir', category: 'Uji', unit: 'Pcs', active: true,
+      variants: [{ id: `variant-${suffix}`, name: 'Reguler', sku: `LAST-${suffix}`, cost: 1000, price: 2000, resellerPrice: 1500, minStock: 0 }],
+    };
+    expect((await post('/api/commands/products', { product, initialStocks: [{ locationId: 'loc-owner', variantId: `variant-${suffix}`, quantity: 1 }] }, owner.body.token)).status).toBe(201);
+
+    const payload = { locationId: 'loc-owner', channel: 'offline', payment: 'Tunai', items: [{ variantId: `variant-${suffix}`, quantity: 1 }] };
+    const results = await Promise.all([post('/api/commands/sales', payload, owner.body.token), post('/api/commands/sales', payload, owner.body.token)]);
+    expect(results.map(result => result.status).sort()).toEqual([201, 400]);
+    const state = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    expect(state.body.data.sales).toHaveLength(1);
+    expect(state.body.data.balances.find(item => item.locationId === 'loc-owner' && item.variantId === `variant-${suffix}`).quantity).toBe(0);
+  });
+
+  it('refuses to deactivate a location that still has staff or stock', async () => {
+    const suffix = `${Date.now()}-location-guard`;
+    const owner = await post('/api/register', { organizationName: 'Lokasi Aman', name: 'Owner', email: `owner-${suffix}@test.local`, password: 'Password123!' });
+    const location = { id: `outlet-${suffix}`, name: 'Outlet Aktif', type: 'outlet', address: '', active: true, isCentralWarehouse: false };
+    expect((await post('/api/commands/locations', { location }, owner.body.token)).status).toBe(201);
+    expect((await post('/api/users', { name: 'PIC Aktif', email: `pic-${suffix}@test.local`, password: 'Password123!', role: 'pic', outletId: location.id }, owner.body.token)).status).toBe(201);
+    const denied = await patch(`/api/commands/locations/${location.id}`, { location: { ...location, active: false } }, owner.body.token);
+    expect(denied.status).toBe(400);
+    expect(denied.body.message).toMatch(/dipakai oleh staf/i);
+  });
+
+  it('rejects invalid and duplicate operational input without changing stock', async () => {
+    const suffix = `${Date.now()}-negative-cases`;
+    const owner = await post('/api/register', { organizationName: 'Validasi Ketat', name: 'Owner', email: `owner-${suffix}@test.local`, password: 'Password123!' });
+    const outlet = { id: `outlet-${suffix}`, name: 'Outlet Tujuan', type: 'outlet', active: true };
+    expect((await post('/api/commands/locations', { location: outlet }, owner.body.token)).status).toBe(201);
+    const product = {
+      id: `product-${suffix}`, name: 'Produk Validasi', category: 'Uji', unit: 'Pcs', active: true,
+      variants: [{ id: `variant-${suffix}`, name: 'Reguler', sku: `NEG-${suffix}`, barcode: `20${String(Date.now()).slice(-10)}0`, cost: 1000, price: 2000, resellerPrice: 1500, minStock: 0 }],
+    };
+    expect((await post('/api/commands/products', { product, initialStocks: [{ locationId: 'loc-owner', variantId: `variant-${suffix}`, quantity: 3 }] }, owner.body.token)).status).toBe(201);
+
+    const invalidResults = await Promise.all([
+      post('/api/commands/sales', { locationId: 'loc-owner', channel: 'offline', payment: 'Tunai', items: [{ variantId: `variant-${suffix}`, quantity: 4 }] }, owner.body.token),
+      post('/api/commands/transfers', { fromId: 'loc-owner', toId: 'loc-owner', items: [{ variantId: `variant-${suffix}`, quantity: 1 }] }, owner.body.token),
+      post('/api/commands/transfers', { fromId: 'loc-owner', toId: outlet.id, items: [{ variantId: `variant-${suffix}`, quantity: 4 }] }, owner.body.token),
+      post('/api/commands/returns', { type: 'supplier', locationId: 'loc-owner', reason: 'Jumlah melebihi stok', items: [{ variantId: `variant-${suffix}`, quantity: 4 }] }, owner.body.token),
+      post('/api/commands/opnames', { locationId: 'loc-owner', items: [{ variantId: `variant-${suffix}`, actualQty: -1, reason: 'Tidak valid' }] }, owner.body.token),
+      post('/api/commands/products', { product: { ...product, id: `${product.id}-duplicate`, variants: [{ ...product.variants[0], id: `${product.variants[0].id}-duplicate` }] } }, owner.body.token),
+    ]);
+    expect(invalidResults.map(result => ({ status: result.status, message: result.body.message }))).toEqual([
+      expect.objectContaining({ status: 400 }),
+      expect.objectContaining({ status: 400 }),
+      expect.objectContaining({ status: 400 }),
+      expect.objectContaining({ status: 400 }),
+      expect.objectContaining({ status: 400 }),
+      expect.objectContaining({ status: 400 }),
+    ]);
+    expect((await post('/api/users', { name: 'Duplikat', email: owner.body.user.email, password: 'Password123!', role: 'finance' }, owner.body.token)).status).toBe(409);
+    const state = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    expect(state.body.data.balances.find(item => item.locationId === 'loc-owner' && item.variantId === `variant-${suffix}`).quantity).toBe(3);
+    expect(state.body.data.sales).toHaveLength(0);
+    expect(state.body.data.transfers).toHaveLength(0);
+    expect(state.body.data.returns).toHaveLength(0);
+    expect(state.body.data.stockCounts).toHaveLength(0);
   });
 });

@@ -86,11 +86,46 @@ async function backfillLegacySaleCashiers(pool) {
   }
   if (salesBackfilled) console.info(`Backfilled cashier identity for ${salesBackfilled} legacy sales across ${organizationsUpdated} organizations.`);
 }
+async function backfillRolePolicyDependencies(pool) {
+  const requirements = { analytics:'report.view', products:'product.view', locations:'location.view', pricing:'pricing.view', suppliers:'supplier.view', receipts:'stock.view', stock:'stock.view', transfers:'transfer.view', opname:'stock.view', history:'audit.view', sales:'sale.view', shipping:'shipping.view', returns:'stock.view', employees:'user.view', attendance:'attendance.view', loans:'payroll.view', reports:'report.view' };
+  const [rows] = await pool.execute('SELECT id, payload FROM app_state');
+  for (const row of rows) {
+    const state = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload;
+    let changed = false;
+    state.rolePolicies ||= {};
+    const defaults = defaultRolePolicyState();
+    for (const [role, policy] of Object.entries(defaults)) {
+      if (!state.rolePolicies[role]) { state.rolePolicies[role] = policy; changed = true; }
+    }
+    for (const policy of Object.values(state?.rolePolicies || {})) {
+      policy.permissions ||= [];
+      for (const menu of policy.menus || []) {
+        const required = requirements[menu];
+        if (required && !policy.permissions.includes(required)) { policy.permissions.push(required); changed = true; }
+      }
+    }
+    if (changed) await pool.execute('UPDATE app_state SET payload=? WHERE id=?', [JSON.stringify(state), row.id]);
+  }
+}
+
+const defaultRoleMenusById = {
+  admin: ['dashboard','analytics','products','locations','pricing','suppliers','receipts','stock','transfers','opname','history','sales','shipping','returns','employees','attendance','reports','help'],
+  pic: ['dashboard','products','locations','stock','transfers','opname','history','sales','shipping','reports','attendance','help'],
+  finance: ['dashboard','stock','reports','analytics','help'],
+  warehouse: ['dashboard','products','locations','receipts','stock','transfers','opname','history','shipping','reports','attendance','help'],
+  cashier: ['dashboard','products','locations','stock','sales','attendance','help'],
+  employee: ['attendance','help'],
+};
+const defaultRolePolicyState = () => Object.fromEntries(Object.entries(defaultRoleMenusById).map(([role, menus]) => [role, {
+  menus: [...menus],
+  permissions: [...resolveUserScope({ role, outletId: 'default-location' }).permissions],
+}]));
 
 const app = express();
 const port = Number(process.env.PORT || 8787);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const isProduction = process.env.NODE_ENV === 'production';
+const databaseRequired = isProduction || (process.env.NODE_ENV !== 'test' && process.env.REQUIRE_DATABASE === 'true');
 const appOrigin = process.env.APP_ORIGIN?.trim();
 const selfRegistrationEnabled = process.env.ALLOW_SELF_REGISTRATION === 'true';
 const configuredJwtSecret = process.env.JWT_SECRET || '';
@@ -112,6 +147,7 @@ app.use((req, res, next) => {
     'Permissions-Policy': 'camera=(self), microphone=(), geolocation=()'
   });
   if (isProduction) res.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  if (isProduction) res.set('Content-Security-Policy', "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https://res.cloudinary.com; connect-src 'self'; media-src 'self' blob:");
   next();
 });
 // State aplikasi saat ini masih dikirim sebagai satu dokumen agar perubahan
@@ -269,7 +305,10 @@ function rateLimit({ key, windowMs, max }) {
 
 let pool;
 async function db() {
-  if (!process.env.DB_HOST) return null;
+  if (!process.env.DB_HOST) {
+    if (databaseRequired) throw new Error('Database wajib digunakan, tetapi DB_HOST belum dikonfigurasi');
+    return null;
+  }
   if (!pool) {
     pool = mysql.createPool({
       host: process.env.DB_HOST,
@@ -400,6 +439,7 @@ async function db() {
       if (error?.code !== 'ER_DUP_FIELDNAME') throw error;
     }
     await backfillBarcodes(pool);
+    await backfillRolePolicyDependencies(pool);
     await pool.execute(`CREATE TABLE IF NOT EXISTS variant_location_min_stock (
       variant_id VARCHAR(40) NOT NULL,
       location_id VARCHAR(40) NOT NULL,
@@ -451,11 +491,17 @@ async function db() {
       sale_id VARCHAR(40) NOT NULL,
       variant_id VARCHAR(40) NOT NULL,
       quantity INT NOT NULL,
+      unit_cost INT NULL,
       price INT NOT NULL,
       discount INT NOT NULL DEFAULT 0,
       subtotal INT NOT NULL,
       INDEX idx_sale (sale_id)
     )`);
+    try {
+      await pool.execute('ALTER TABLE sale_items ADD COLUMN unit_cost INT NULL AFTER quantity');
+    } catch (error) {
+      if (error?.code !== 'ER_DUP_FIELDNAME') throw error;
+    }
     await pool.execute(`CREATE TABLE IF NOT EXISTS transfers (
       id VARCHAR(40) PRIMARY KEY,
       transfer_code VARCHAR(64),
@@ -511,6 +557,19 @@ async function db() {
       ];
       for (const [id,name,email,role,outletId] of initialUsers) await pool.execute('INSERT INTO users (id,organization_id,name,email,password_hash,role,outlet_id,active) VALUES (?,\'org-meneng\',?,?,?,?,?,TRUE)', [id,name,email,passwordHash,role,outletId]);
     }
+
+    // Instalasi database baru harus langsung memiliki state organisasi. Tanpa
+    // baris ini akun awal dapat login, tetapi seluruh command operasional akan
+    // ditolak dengan pesan "Data usaha belum siap".
+    const [initialStateRows] = await pool.execute("SELECT id FROM app_state WHERE id = 'org-meneng' LIMIT 1");
+    if (!initialStateRows.length) {
+      const [ownerRows] = await pool.execute("SELECT id, name, email FROM users WHERE organization_id = 'org-meneng' AND role = 'owner' LIMIT 1");
+      if (ownerRows.length) {
+        const initialState = emptyState('Meneng', ownerRows[0]);
+        await pool.execute('INSERT INTO app_state (id, version, payload) VALUES (?, 1, ?)', ['org-meneng', JSON.stringify(initialState)]);
+        await syncStateToSQL(pool, 'org-meneng', initialState);
+      }
+    }
   }
   return pool;
 }
@@ -523,8 +582,31 @@ const demoUsers = [
   { id:'u-fin',organization_id:'org-meneng',organization_name:'Meneng',name:'Dewi - Keuangan',email:'finance@meneng.id',role:'finance',active:true },
 ];
 const safeUser = user => ({ id:user.id,name:user.name,email:user.email,role:user.role,outletId:user.outlet_id || user.outletId,active:Boolean(user.active),organizationId:user.organization_id,organizationName:user.organization_name });
+async function attachRolePermissions(conn, organizationId, actor) {
+  if (!actor || actor.role === 'owner') return actor;
+  let state;
+  if (!conn) state = demoStates.get(organizationId)?.data;
+  else {
+    const [rows] = await conn.execute('SELECT payload FROM app_state WHERE id=? LIMIT 1', [organizationId]);
+    state = rows[0]?.payload;
+    if (typeof state === 'string') state = JSON.parse(state);
+  }
+  actor.rolePermissions = state?.rolePolicies?.[actor.role]?.permissions;
+  return actor;
+}
+async function organizationRoleIds(conn, organizationId) {
+  let state;
+  if (!conn) state = demoStates.get(organizationId)?.data;
+  else {
+    const [rows] = await conn.execute('SELECT payload FROM app_state WHERE id=? LIMIT 1', [organizationId]);
+    state = rows[0]?.payload;
+    if (typeof state === 'string') state = JSON.parse(state);
+  }
+  const roles = Object.keys(state?.rolePolicies || {}).filter(role => configurableRoles.has(role));
+  return new Set(roles.length ? roles : configurableRoles);
+}
 const slugify=value=>String(value).toLowerCase().trim().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,80);
-const emptyState=(organizationName,owner)=>({business:{name:organizationName,ownerName:owner.name,email:owner.email},users:[{id:owner.id,name:owner.name,email:owner.email,role:'owner',active:true}],locations:[{id:'loc-owner',name:`Gudang ${organizationName}`,type:'warehouse',active:true}],products:[],balances:[],transfers:[],sales:[],movements:[],stockCounts:[],suppliers:[],receipts:[],returns:[],employees:[],attendanceSettings:[],attendances:[],loans:[],payrolls:[]});
+const emptyState=(organizationName,owner)=>({business:{name:organizationName,ownerName:owner.name,email:owner.email},users:[{id:owner.id,name:owner.name,email:owner.email,role:'owner',active:true}],locations:[{id:'loc-owner',name:`Gudang ${organizationName}`,type:'warehouse',active:true}],products:[],balances:[],transfers:[],sales:[],movements:[],stockCounts:[],suppliers:[],receipts:[],returns:[],employees:[],attendanceSettings:[],attendances:[],loans:[],payrolls:[],rolePolicies:defaultRolePolicyState()});
 app.post('/api/login', async (req,res) => {
   const email=String(req.body?.email||'').trim().toLowerCase();
   const password=String(req.body?.password||'');
@@ -802,6 +884,16 @@ const commandMovement = (variantId, locationId, type, quantity, note, actor) => 
   id: commandId('mov'), variantId, locationId, type, quantity, note, user: actor.name, createdAt: new Date().toISOString(),
 });
 const commandAuth = (actor, action, locationId) => authorizeAction({ user: actor, action, locationId });
+const configurableRoles = new Set(['admin', 'pic', 'finance', 'warehouse', 'cashier', 'employee']);
+const configurablePermissions = new Set([
+  'product.view','product.create','product.update','product.delete','location.view','location.create','location.update','location.delete',
+  'user.view','user.create','user.update','user.assign_location','stock.view','stock.initial_balance','stock.in','stock.out','stock.adjust','stock.opname',
+  'transfer.view','transfer.create','transfer.send','transfer.receive','transfer.cancel','sale.view','sale.create','sale.void','shipping.view','shipping.manage',
+  'report.view','report.export','audit.view'
+  ,'supplier.view','supplier.manage','pricing.view','pricing.manage','attendance.view','attendance.record','attendance.manage','payroll.view','payroll.manage'
+]);
+const configurableMenus = new Set(['dashboard','analytics','products','locations','pricing','suppliers','receipts','stock','transfers','opname','history','sales','shipping','returns','employees','attendance','loans','reports','help']);
+const menuPermissionRequirements = { analytics:'report.view', products:'product.view', locations:'location.view', pricing:'pricing.view', suppliers:'supplier.view', receipts:'stock.view', stock:'stock.view', transfers:'transfer.view', opname:'stock.view', history:'audit.view', sales:'sale.view', shipping:'shipping.view', returns:'stock.view', employees:'user.view', attendance:'attendance.view', loans:'payroll.view', reports:'report.view' };
 const validateCommandProduct = (product) => {
   if (!product?.id || !String(product.name || '').trim() || !Array.isArray(product.variants) || !product.variants.length) return 'Produk atau varian tidak valid.';
   const skuSet = new Set();
@@ -836,18 +928,32 @@ async function commitCommandState(conn, orgId, state, version) {
   await syncStateToSQL(conn, orgId, state);
 }
 
+const demoCommandLocks = new Map();
 async function executeCommand(req, res, mutate) {
   const conn = await db();
   const actor = await currentUser(conn, req.auth);
   if (!actor) return res.status(401).json({ message: 'Akun tidak aktif' });
-  if (actor.role === 'finance') return res.status(403).json({ message: 'Akun Keuangan hanya memiliki akses baca' });
-
   const connection = conn ? await conn.getConnection() : null;
+  let releaseDemoLock;
+  let demoLockTail;
+  if (!connection) {
+    const previous = demoCommandLocks.get(req.auth.org) || Promise.resolve();
+    const current = new Promise(resolve => { releaseDemoLock = resolve; });
+    demoLockTail = previous.then(() => current);
+    demoCommandLocks.set(req.auth.org, demoLockTail);
+    await previous;
+  }
   try {
-    if (connection) await connection.beginTransaction();
+    if (connection) {
+      await connection.beginTransaction();
+      // Serialisasi seluruh mutasi tenant pada baris versi kanonis. Ini
+      // mencegah dua perangkat memakai saldo awal yang sama secara bersamaan.
+      await connection.execute('SELECT version FROM app_state WHERE id = ? FOR UPDATE', [req.auth.org]);
+    }
     const loaded = await loadStateForCommand(connection, req.auth.org);
     if (!loaded.data) throw invalidCommand('Data usaha belum siap. Muat ulang halaman lalu coba lagi.');
     const state = structuredClone(loaded.data);
+    actor.rolePermissions = state.rolePolicies?.[actor.role]?.permissions;
     // Users are authoritative in the users table.  Keeping this projection in
     // the command transaction prevents a newly created employee account from
     // being invisible until some unrelated legacy snapshot is written.
@@ -881,10 +987,14 @@ async function executeCommand(req, res, mutate) {
     return res.status(201).json({ version: nextVersion });
   } catch (error) {
     if (connection) await connection.rollback();
-    console.error('Transactional command failed:', error);
+    if (!error?.status || error.status >= 500) console.error('Transactional command failed:', error);
     return commandFailure(res, error);
   } finally {
     connection?.release();
+    if (releaseDemoLock) {
+      releaseDemoLock();
+      if (demoCommandLocks.get(req.auth.org) === demoLockTail) demoCommandLocks.delete(req.auth.org);
+    }
   }
 }
 app.put('/api/organization', requireAuth, async (req, res) => {
@@ -912,9 +1022,11 @@ app.put('/api/organization', requireAuth, async (req, res) => {
 });
 app.post('/api/users',requireAuth,async(req,res)=>{
   const conn=await db(),actor=await currentUser(conn,req.auth);
-  if(!actor||actor.role!=='owner')return res.status(403).json({message:'Hanya Owner yang dapat menambah pengguna'});
+  await attachRolePermissions(conn, req.auth.org, actor);
+  if(!actor||!authorizeAction({user:actor,action:'user.create'}).allowed)return res.status(403).json({message:'Akun Anda tidak memiliki izin menambah pengguna'});
   const name=String(req.body?.name||'').trim(),email=String(req.body?.email||'').trim().toLowerCase(),password=String(req.body?.password||''),role=String(req.body?.role||''),rawOutletId=req.body?.outletId||null;
-  if(name.length<2||!email.includes('@')||password.length<8||!['pic','finance','admin','warehouse','cashier','employee'].includes(role))return res.status(400).json({message:'Data pengguna belum lengkap atau role tidak valid'});
+  const availableRoles=await organizationRoleIds(conn,req.auth.org);
+  if(name.length<2||!email.includes('@')||password.length<8||!availableRoles.has(role))return res.status(400).json({message:'Data pengguna belum lengkap atau peran tidak tersedia di pengaturan Peran & Hak Akses'});
   let outletId = null;
   if(['pic','warehouse','cashier'].includes(role)){
     if(!rawOutletId)return res.status(400).json({message:'Role ini wajib dihubungkan ke lokasi'});
@@ -945,7 +1057,8 @@ app.post('/api/users',requireAuth,async(req,res)=>{
 });
 app.patch('/api/users/:id',requireAuth,async(req,res)=>{
   const conn=await db(),actor=await currentUser(conn,req.auth),targetId=String(req.params.id||'');
-  if(!actor||actor.role!=='owner')return res.status(403).json({message:'Hanya Owner yang dapat mengubah profil pengguna'});
+  await attachRolePermissions(conn, req.auth.org, actor);
+  if(!actor||!authorizeAction({user:actor,action:'user.update'}).allowed)return res.status(403).json({message:'Akun Anda tidak memiliki izin mengubah pengguna'});
   const requestedRole=String(req.body?.role||''),rawOutletId=req.body?.outletId||null,active=req.body?.active!==false;
   const name=String(req.body?.name||'').trim(),email=String(req.body?.email||'').trim().toLowerCase(),password=req.body?.password?String(req.body.password):null;
   if(name.length<2||!email.includes('@')||(password&&password.length<8))return res.status(400).json({message:'Nama, email, atau password belum valid'});
@@ -955,7 +1068,8 @@ app.patch('/api/users/:id',requireAuth,async(req,res)=>{
   if(!target)return res.status(404).json({message:'Pengguna tidak ditemukan'});
   const role=target.role==='owner'?'owner':requestedRole;
   const finalActive=target.role==='owner'?true:active;
-  if(!['owner','pic','finance','admin','warehouse','cashier','employee'].includes(role))return res.status(400).json({message:'Role pengguna tidak valid'});
+  const availableRoles=await organizationRoleIds(conn,req.auth.org);
+  if(role!=='owner'&&!availableRoles.has(role))return res.status(400).json({message:'Peran pengguna tidak tersedia di pengaturan Peran & Hak Akses'});
   
   let outletId = null;
   if(['pic','warehouse','cashier'].includes(role)){
@@ -1030,6 +1144,7 @@ app.post('/api/auth/reset-password', async (req, res) => {
   const email = String(req.body?.email || '').trim().toLowerCase();
   const otp = String(req.body?.otp || '').trim();
   const newPassword = String(req.body?.newPassword || '');
+  if (!rateLimit({ key: `reset:${email}:${req.ip}`, windowMs: 15 * 60 * 1000, max: 10 })) return res.status(429).json({ message: 'Terlalu banyak percobaan reset. Coba lagi dalam 15 menit.' });
   if (!email.includes('@') || otp.length < 6 || newPassword.length < 8)
     return res.status(400).json({ message: 'Data tidak lengkap atau password minimal 8 karakter' });
   const entry = resetTokens.get(email);
@@ -1103,16 +1218,42 @@ app.get('/api/state', requireAuth, async (req, res) => {
   const actor = await currentUser(conn, req.auth);
   if (!actor) return res.status(401).json({ message: 'Akun tidak aktif atau sesi tidak valid' });
   
-  const scope = resolveUserScope(actor);
   const sanitize = (data) => {
     if (!data) return data;
-    if (scope.scopeType === 'all') return actor.role === 'owner' ? data : { ...data, employees: [], attendanceSettings: [], attendances: [], loans: [], payrolls: [] };
+    actor.rolePermissions = data.rolePolicies?.[actor.role]?.permissions;
+    const permissions = resolveUserScope(actor).permissions;
+    const hasAny = (...items) => items.some(item => permissions.has(item));
+    const maskByPermissions = (source) => actor.role === 'owner' ? source : ({
+      ...source,
+      rolePolicies: source.rolePolicies?.[actor.role] ? { [actor.role]: source.rolePolicies[actor.role] } : {},
+      products: hasAny('product.view','product.create','product.update','stock.view','stock.in','stock.out','stock.opname','transfer.view','transfer.create','sale.view','sale.create','shipping.view','pricing.view','pricing.manage','report.view') ? source.products : [],
+      locations: hasAny('location.view','location.create','location.update','stock.view','stock.in','stock.out','stock.opname','transfer.view','transfer.create','sale.view','sale.create','shipping.view','attendance.view','payroll.view','report.view') ? source.locations : [],
+      balances: hasAny('stock.view','stock.in','stock.out','stock.adjust','stock.opname','transfer.view','transfer.create','transfer.send','transfer.receive','sale.create','report.view') ? source.balances : [],
+      sales: hasAny('sale.view','sale.create','sale.void','shipping.view','shipping.manage','report.view') ? source.sales : [],
+      transfers: hasAny('transfer.view','transfer.create','transfer.send','transfer.receive','transfer.cancel','report.view') ? source.transfers : [],
+      movements: hasAny('audit.view','stock.view','report.view') ? source.movements : [],
+      stockCounts: hasAny('stock.view','stock.opname','stock.adjust','report.view') ? source.stockCounts : [],
+      receipts: hasAny('stock.view','stock.in','report.view') ? source.receipts : [],
+      returns: hasAny('stock.view','stock.out','report.view') ? source.returns : [],
+      suppliers: hasAny('supplier.view','supplier.manage','stock.in') ? source.suppliers : [],
+      shipments: hasAny('shipping.view','shipping.manage') ? source.shipments : [],
+      shipmentHandovers: hasAny('shipping.view','shipping.manage') ? source.shipmentHandovers : [],
+      users: hasAny('user.view','attendance.view','payroll.view') ? source.users : (source.users || []).filter(user => user.id === actor.id),
+      employees: hasAny('user.view','attendance.view','payroll.view') ? source.employees : (source.employees || []).filter(employee => employee.userId === actor.id),
+      attendanceSettings: hasAny('attendance.view','attendance.record','attendance.manage') ? source.attendanceSettings : [],
+      attendances: hasAny('attendance.view','attendance.manage') ? source.attendances : (source.attendances || []).filter(attendance => (source.employees || []).some(employee => employee.userId === actor.id && employee.id === attendance.employeeId)),
+      loans: hasAny('payroll.view','payroll.manage') ? source.loans : [],
+      payrolls: hasAny('payroll.view','payroll.manage') ? source.payrolls : [],
+      pricing: hasAny('pricing.view','pricing.manage') ? source.pricing : undefined,
+    });
+    const scope = resolveUserScope(actor);
+    if (scope.scopeType === 'all') return maskByPermissions(data);
     const locationNames = new Map((data.locations || []).map(location => [location.id, location.name]));
     const myEmployees = (data.employees || []).filter(employee => employee.userId === actor.id);
     // Akun karyawan tidak dapat melihat data lokasi lain, tetapi tetap perlu
     // menerima lokasi penugasannya sendiri agar jadwal dan absensi dapat dipakai.
     const employeeLocationIds = actor.role === 'employee' ? myEmployees.map(employee => employee.locationId).filter(Boolean) : scope.allowedLocationIds;
-    return {
+    return maskByPermissions({
       ...data,
       locations: (data.locations||[]).filter(l => employeeLocationIds.includes(l.id)),
       users: (data.users||[]).filter(u => u.id === actor.id),
@@ -1134,7 +1275,7 @@ app.get('/api/state', requireAuth, async (req, res) => {
       transfers: (data.transfers||[])
         .filter(t => scope.allowedLocationIds.includes(t.fromId) || scope.allowedLocationIds.includes(t.toId))
         .map(t => ({ ...t, fromName: locationNames.get(t.fromId) || t.fromName, toName: locationNames.get(t.toId) || t.toName }))
-    };
+    });
   };
 
   if (!conn) {
@@ -1327,9 +1468,8 @@ app.post('/api/commands/shipping/handover/finalize', requireAuth, async (req, re
 
 app.post('/api/commands/pricing', requireAuth, async (req, res) => {
   await executeCommand(req, res, async (state, actor) => {
-    const authorization = commandAuth(actor, 'report.view');
+    const authorization = commandAuth(actor, 'pricing.manage');
     if (!authorization.allowed) throw forbiddenCommand(authorization.reason);
-    if (!['owner', 'admin'].includes(actor.role)) throw forbiddenCommand('Hanya Owner atau Admin yang dapat mengubah resep HPP dan biaya marketplace.');
     const pricing = req.body?.pricing;
     if (!pricing || typeof pricing !== 'object') throw invalidCommand('Konfigurasi HPP dan marketplace tidak valid.');
     const hppRecipes = Array.isArray(pricing.hppRecipes) ? pricing.hppRecipes : [];
@@ -1356,10 +1496,27 @@ app.post('/api/commands/pricing', requireAuth, async (req, res) => {
     state.pricing = { hppRecipes, marketplaceConfigs };
   });
 });
+app.post('/api/commands/role-policies', requireAuth, async (req, res) => {
+  await executeCommand(req, res, async (state, actor) => {
+    if (actor.role !== 'owner') throw forbiddenCommand('Hanya Owner yang dapat mengatur peran dan hak akses.');
+    const role = String(req.body?.role || '');
+    const policy = req.body?.policy;
+    if (!configurableRoles.has(role) || !policy || !Array.isArray(policy.menus) || !Array.isArray(policy.permissions)) throw invalidCommand('Kebijakan peran tidak valid.');
+    const menus = [...new Set(policy.menus.map(String))];
+    const permissions = [...new Set(policy.permissions.map(String))];
+    if (menus.some(menu => !configurableMenus.has(menu)) || permissions.some(permission => !configurablePermissions.has(permission))) throw invalidCommand('Menu atau izin tidak dikenal.');
+    const missingDependency = menus.find(menu => menuPermissionRequirements[menu] && !permissions.includes(menuPermissionRequirements[menu]));
+    if (missingDependency) throw invalidCommand(`Menu ${missingDependency} membutuhkan izin ${menuPermissionRequirements[missingDependency]}.`);
+    state.rolePolicies ||= {};
+    state.rolePolicies[role] = { menus, permissions };
+    state.movements ||= [];
+    state.movements.push({ id: commandId('audit'), variantId: 'system', locationId: 'system', type: 'Perubahan hak akses', quantity: 0, note: `Kebijakan role ${role} diperbarui`, user: actor.name, createdAt: new Date().toISOString() });
+  });
+});
 
 app.post('/api/commands/suppliers', requireAuth, async (req, res) => {
   await executeCommand(req, res, async (state, actor) => {
-    if (!['owner', 'admin'].includes(actor.role)) throw forbiddenCommand('Hanya Owner atau Admin yang dapat mengelola supplier.');
+    if (!commandAuth(actor, 'supplier.manage').allowed) throw forbiddenCommand('Akun Anda tidak memiliki izin mengelola supplier.');
     const supplier = req.body?.supplier;
     if (!supplier?.id || String(supplier.name || '').trim().length < 2) throw invalidCommand('Nama supplier minimal 2 karakter.');
     if (state.suppliers.some(item => item.id === supplier.id || String(item.name || '').trim().toLowerCase() === String(supplier.name).trim().toLowerCase())) throw invalidCommand('Supplier dengan nama tersebut sudah ada.');
@@ -1368,7 +1525,7 @@ app.post('/api/commands/suppliers', requireAuth, async (req, res) => {
 });
 app.patch('/api/commands/suppliers/:id', requireAuth, async (req, res) => {
   await executeCommand(req, res, async (state, actor) => {
-    if (!['owner', 'admin'].includes(actor.role)) throw forbiddenCommand('Hanya Owner atau Admin yang dapat mengelola supplier.');
+    if (!commandAuth(actor, 'supplier.manage').allowed) throw forbiddenCommand('Akun Anda tidak memiliki izin mengelola supplier.');
     const supplier = req.body?.supplier;
     const index = state.suppliers.findIndex(item => item.id === req.params.id);
     if (index < 0 || !supplier || supplier.id !== req.params.id || String(supplier.name || '').trim().length < 2) throw invalidCommand('Data supplier tidak valid.');
@@ -1382,7 +1539,7 @@ app.patch('/api/commands/suppliers/:id', requireAuth, async (req, res) => {
 // browser because attendance/payroll is often entered from several devices.
 app.post('/api/commands/employees', requireAuth, async (req, res) => {
   await executeCommand(req, res, async (state, actor) => {
-    if (actor.role !== 'owner') throw forbiddenCommand('Hanya Owner yang dapat menambah karyawan.');
+    if (!commandAuth(actor, 'user.create').allowed) throw forbiddenCommand('Akun Anda tidak memiliki izin menambah karyawan.');
     const employee = req.body?.employee;
     if (!employee?.id || !employee?.userId || !String(employee.position || '').trim()) throw invalidCommand('Data karyawan tidak valid.');
     if (!state.users.some(user => user.id === employee.userId && user.active && user.role !== 'owner')) throw invalidCommand('Akun staf tidak ditemukan, tidak aktif, atau merupakan akun Owner.');
@@ -1393,7 +1550,7 @@ app.post('/api/commands/employees', requireAuth, async (req, res) => {
 });
 app.patch('/api/commands/employees/:id', requireAuth, async (req, res) => {
   await executeCommand(req, res, async (state, actor) => {
-    if (actor.role !== 'owner') throw forbiddenCommand('Hanya Owner yang dapat mengubah karyawan.');
+    if (!commandAuth(actor, 'user.update').allowed) throw forbiddenCommand('Akun Anda tidak memiliki izin mengubah karyawan.');
     const index = state.employees.findIndex(item => item.id === req.params.id);
     const employee = req.body?.employee;
     if (index < 0 || !employee || employee.id !== req.params.id || !String(employee.position || '').trim()) throw invalidCommand('Data karyawan tidak valid.');
@@ -1403,6 +1560,7 @@ app.patch('/api/commands/employees/:id', requireAuth, async (req, res) => {
 });
 app.post('/api/commands/attendance', requireAuth, async (req, res) => {
   await executeCommand(req, res, async (state, actor) => {
+    if (!commandAuth(actor, 'attendance.record').allowed) throw forbiddenCommand('Akun Anda tidak memiliki izin mencatat kehadiran.');
     const { kind, latitude, longitude, capturedAt } = req.body || {};
     if (!['in', 'out'].includes(kind) || !Number.isFinite(Number(latitude)) || !Number.isFinite(Number(longitude))) throw invalidCommand('Data absensi atau GPS tidak valid.');
     const employee = state.employees.find(item => item.userId === actor.id && item.active);
@@ -1430,7 +1588,7 @@ app.post('/api/commands/attendance', requireAuth, async (req, res) => {
 });
 app.patch('/api/commands/attendance-settings/:locationId', requireAuth, async (req, res) => {
   await executeCommand(req, res, async (state, actor) => {
-    if (actor.role !== 'owner') throw forbiddenCommand('Hanya Owner yang dapat mengubah pengaturan kehadiran.');
+    if (!commandAuth(actor, 'attendance.manage').allowed) throw forbiddenCommand('Akun Anda tidak memiliki izin mengatur kehadiran.');
     const setting = req.body?.setting;
     if (!state.locations.some(location => location.id === req.params.locationId && location.active !== false) || !setting || !/^\d{2}:\d{2}$/.test(String(setting.checkInStart || '')) || !/^\d{2}:\d{2}$/.test(String(setting.checkInEnd || '')) || !/^\d{2}:\d{2}$/.test(String(setting.checkOutEnd || ''))) throw invalidCommand('Pengaturan kehadiran tidak valid.');
     const next = { locationId: req.params.locationId, checkInStart: setting.checkInStart, checkInEnd: setting.checkInEnd, checkOutStart: setting.checkOutStart || setting.checkInEnd, checkOutEnd: setting.checkOutEnd, lateToleranceMinutes: Math.max(0, Number(setting.lateToleranceMinutes || 0)) };
@@ -1440,7 +1598,7 @@ app.patch('/api/commands/attendance-settings/:locationId', requireAuth, async (r
 });
 app.post('/api/commands/loans', requireAuth, async (req, res) => {
   await executeCommand(req, res, async (state, actor) => {
-    if (actor.role !== 'owner') throw forbiddenCommand('Hanya Owner yang dapat mencatat kasbon.');
+    if (!commandAuth(actor, 'payroll.manage').allowed) throw forbiddenCommand('Akun Anda tidak memiliki izin mengelola kasbon.');
     const loan = req.body?.loan;
     const installmentCount = Number(loan?.installmentCount);
     const loanDate = String(loan?.loanDate || '');
@@ -1450,7 +1608,7 @@ app.post('/api/commands/loans', requireAuth, async (req, res) => {
 });
 app.post('/api/commands/loans/:id/installments', requireAuth, async (req, res) => {
   await executeCommand(req, res, async (state, actor) => {
-    if (actor.role !== 'owner') throw forbiddenCommand('Hanya Owner yang dapat mencatat cicilan kasbon.');
+    if (!commandAuth(actor, 'payroll.manage').allowed) throw forbiddenCommand('Akun Anda tidak memiliki izin mengelola kasbon.');
     const loan = state.loans.find(item => item.id === req.params.id && item.status === 'active');
     if (!loan) throw invalidCommand('Kasbon aktif tidak ditemukan.');
     loan.paidInstallments = Math.min(Number(loan.installmentCount), Number(loan.paidInstallments || 0) + 1);
@@ -1459,7 +1617,7 @@ app.post('/api/commands/loans/:id/installments', requireAuth, async (req, res) =
 });
 app.post('/api/commands/payrolls', requireAuth, async (req, res) => {
   await executeCommand(req, res, async (state, actor) => {
-    if (actor.role !== 'owner') throw forbiddenCommand('Hanya Owner yang dapat mencatat penggajian.');
+    if (!commandAuth(actor, 'payroll.manage').allowed) throw forbiddenCommand('Akun Anda tidak memiliki izin mengelola penggajian.');
     const payroll = req.body?.payroll;
     if (!payroll?.id || !payroll?.period || !state.employees.some(employee => employee.id === payroll.employeeId && employee.active) || !Number.isFinite(Number(payroll.grossAmount)) || Number(payroll.grossAmount) < 0) throw invalidCommand('Data penggajian tidak valid.');
     if (state.payrolls.some(item => item.employeeId === payroll.employeeId && item.period === payroll.period)) throw invalidCommand('Gaji karyawan untuk periode ini sudah dicatat.');
@@ -1762,6 +1920,11 @@ app.post('/api/commands/products', requireAuth, async (req, res) => {
     const validationError = validateCommandProduct(product);
     if (validationError) throw invalidCommand(validationError);
     if (state.products.some(item => item.id === product.id)) throw invalidCommand('ID produk sudah digunakan.');
+    const existingVariants = state.products.flatMap(item => item.variants || []);
+    if (product.variants.some(variant => existingVariants.some(existing =>
+      String(existing.sku || '').trim().toLowerCase() === String(variant.sku || '').trim().toLowerCase() ||
+      (String(variant.barcode || '').trim() && String(existing.barcode || '').trim() === String(variant.barcode || '').trim())
+    ))) throw invalidCommand('SKU atau barcode sudah digunakan varian lain.');
     state.products.push({ ...product, name: String(product.name).trim(), active: product.active !== false });
     let balances = state.balances;
     const validVariants = new Set(product.variants.map(variant => variant.id));
@@ -1787,6 +1950,11 @@ app.patch('/api/commands/products/:id', requireAuth, async (req, res) => {
     if (!product || product.id !== req.params.id) throw invalidCommand('Data produk tidak valid.');
     const validationError = validateCommandProduct(product);
     if (validationError) throw invalidCommand(validationError);
+    const existingVariants = state.products.filter(item => item.id !== req.params.id).flatMap(item => item.variants || []);
+    if (product.variants.some(variant => existingVariants.some(existing =>
+      String(existing.sku || '').trim().toLowerCase() === String(variant.sku || '').trim().toLowerCase() ||
+      (String(variant.barcode || '').trim() && String(existing.barcode || '').trim() === String(variant.barcode || '').trim())
+    ))) throw invalidCommand('SKU atau barcode sudah digunakan varian lain.');
     state.products[index] = { ...product, name: String(product.name).trim(), active: product.active !== false };
   });
 });
@@ -1813,6 +1981,13 @@ app.patch('/api/commands/locations/:id', requireAuth, async (req, res) => {
     const location = req.body?.location;
     if (index < 0 || !location || !String(location.name || '').trim() || !['warehouse', 'outlet'].includes(location.type)) throw invalidCommand('Data lokasi tidak valid.');
     if (state.locations[index].active && location.active === false && state.locations.filter(item => item.active).length <= 1) throw invalidCommand('Minimal satu lokasi harus tetap aktif.');
+    if (state.locations[index].active && location.active === false) {
+      const assignedUsers = state.users.filter(user => user.active !== false && user.outletId === req.params.id);
+      const assignedEmployees = state.employees.filter(employee => employee.active !== false && employee.locationId === req.params.id);
+      const remainingStock = state.balances.some(balance => balance.locationId === req.params.id && Number(balance.quantity) !== 0);
+      if (assignedUsers.length || assignedEmployees.length) throw invalidCommand('Lokasi masih dipakai oleh staf aktif. Pindahkan penugasan staf sebelum menonaktifkan lokasi.');
+      if (remainingStock) throw invalidCommand('Lokasi masih memiliki saldo stok. Pindahkan atau kosongkan stok sebelum menonaktifkan lokasi.');
+    }
     if (location.isCentralWarehouse && location.type !== 'warehouse') throw invalidCommand('Gudang pusat harus menggunakan jenis lokasi gudang.');
     const duplicate = state.locations.some(item => item.id !== req.params.id && `${item.name}`.trim().toLowerCase() === `${location.name}`.trim().toLowerCase() && item.type === location.type);
     if (duplicate) throw invalidCommand('Terdapat lokasi dengan nama dan jenis yang sama.');
@@ -1839,3 +2014,4 @@ app.use((error,req,res,next)=>{
 app.use(express.static(path.join(root, 'dist')));
 app.use((_req, res) => res.sendFile(path.join(root, 'dist', 'index.html')));
 app.listen(port, () => console.log(`MENENGS server running on http://localhost:${port}`));
+setInterval(() => {}, 1000 * 60 * 60);
