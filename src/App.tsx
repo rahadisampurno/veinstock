@@ -307,7 +307,6 @@ const startOfWeekKey = (dateKey: string) => {
   return shiftDateKey(dateKey, -offset);
 };
 const startOfMonthKey = (dateKey: string) => `${dateKey.slice(0, 7)}-01`;
-const startOfYearKey = (dateKey: string) => `${dateKey.slice(0, 4)}-01-01`;
 const isPositiveNumber = (value?: number | null) => typeof value === 'number' && Number.isFinite(value) && value > 0;
 const minimumFor = (variant: Variant | undefined, locationId: string) =>
   variant?.minStockByLocation?.[locationId] ?? variant?.minStock ?? 0;
@@ -551,12 +550,20 @@ function App() {
   // tidak lagi dipakai sebagai sumber data operasional.
   const [data, setDataState] = useState<AppData>(() => normalizeData(seedData));
   useEffect(() => {
-    const preventLeadingZeroes = (event: Event) => {
+    const normalizeInput = (event: Event) => {
       const input = event.target;
       if (input instanceof HTMLInputElement && input.type === "number") normalizeNumberInput(input);
+      if ((input instanceof HTMLInputElement && ["text", "search"].includes(input.type)) || input instanceof HTMLTextAreaElement) {
+        if (input.dataset.allowSymbols === "true") return;
+        const limit = input instanceof HTMLTextAreaElement ? 500 : 120;
+        // Huruf Unicode, angka, spasi, dan tanda baca umum tetap diperbolehkan;
+        // simbol kontrol/dekoratif dibuang sebelum masuk ke state React.
+        const safeValue = input.value.replace(/[^\p{L}\p{N}\s.,/'()\-:]/gu, "").slice(0, limit);
+        if (safeValue !== input.value) input.value = safeValue;
+      }
     };
-    document.addEventListener("input", preventLeadingZeroes, true);
-    return () => document.removeEventListener("input", preventLeadingZeroes, true);
+    document.addEventListener("input", normalizeInput, true);
+    return () => document.removeEventListener("input", normalizeInput, true);
   }, []);
   const [authUser, setAuthUser] = useState<SessionUser | null>(
     () => readSession()?.user || null,
@@ -898,8 +905,17 @@ function App() {
     if (!response.ok)
       throw new Error(result.message || "Gagal memperbarui pengguna");
     const linkedEmployee = (dataRef.current.employees || []).find((employee:any) => employee.userId === id);
-    if (linkedEmployee && payload.role) {
-      await runCommand(`/api/commands/employees/${linkedEmployee.id}`, { employee: { ...linkedEmployee, position: accessRoleLabel(payload.role) } }, "PATCH");
+    if (linkedEmployee && (payload.role || Object.prototype.hasOwnProperty.call(payload, "outletId"))) {
+      const locationId = ["pic", "warehouse", "cashier"].includes(payload.role)
+        ? payload.outletId
+        : linkedEmployee.locationId;
+      await runCommand(`/api/commands/employees/${linkedEmployee.id}`, {
+        employee: {
+          ...linkedEmployee,
+          position: payload.role ? accessRoleLabel(payload.role) : linkedEmployee.position,
+          locationId,
+        },
+      }, "PATCH");
     }
     applyLocalData((current) => ({
       ...current,
@@ -2158,12 +2174,22 @@ function Dashboard({
 type PeriodMode = "all" | "realtime" | "yesterday" | "last7" | "last30" | "day" | "week" | "month" | "year";
 function DateRangePicker({ from, to, setFrom, setTo, initialMode = "all", onApplied, className = "" }: { from: string; to: string; setFrom: (value: string) => void; setTo: (value: string) => void; initialMode?: PeriodMode; onApplied?: () => void; className?: string }) {
   const todayKey = jakartaDateKey();
+  const earliestAllowed = shiftDateKey(todayKey, -59);
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<PeriodMode>(initialMode);
   const [pickerView, setPickerView] = useState<"range" | "month" | "year">("range");
   const [viewYear, setViewYear] = useState(Number(todayKey.slice(0, 4)));
   const [decadeStart, setDecadeStart] = useState(Math.floor(Number(todayKey.slice(0, 4)) / 10) * 10);
   const pickerRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    // Filter lama yang berarti "semua data" dinormalisasi saat komponen
+    // dibuka agar tidak pernah memuat lebih dari batas performa 60 hari.
+    if (!from && !to) {
+      setFrom(earliestAllowed);
+      setTo(todayKey);
+      setMode("all");
+    }
+  }, [earliestAllowed, from, setFrom, setTo, to, todayKey]);
   useEffect(() => {
     if (!open) return;
     const closeWhenOutside = (event: MouseEvent | TouchEvent) => {
@@ -2182,24 +2208,26 @@ function DateRangePicker({ from, to, setFrom, setTo, initialMode = "all", onAppl
   const formatDate = (value: string) => new Date(`${value}T00:00:00`).toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" });
   const rangeLabel = !from && !to ? "Semua tanggal" : from && to ? (from === to ? formatDate(from) : `${formatDate(from)} – ${formatDate(to)}`) : from ? `Sejak ${formatDate(from)}` : `Hingga ${formatDate(to)}`;
   const jakartaTime = new Intl.DateTimeFormat("id-ID", { timeZone: "Asia/Jakarta", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date()).replace(".", ":");
-  const modeTitle: Record<PeriodMode, string> = { all: "Semua tanggal", realtime: `Hari ini · ${jakartaTime} WIB`, yesterday: "Kemarin", last7: "7 hari terakhir", last30: "30 hari terakhir", day: "Per hari", week: "Per minggu", month: "Per bulan", year: "Berdasarkan tahun" };
+  const modeTitle: Record<PeriodMode, string> = { all: "60 hari terakhir", realtime: `Hari ini · ${jakartaTime} WIB`, yesterday: "Kemarin", last7: "7 hari terakhir", last30: "30 hari terakhir", day: "Per hari", week: "Per minggu", month: "Per bulan", year: "Maksimal 60 hari" };
   const selectPeriod = (next: PeriodMode) => {
-    const ranges: Record<PeriodMode, [string, string]> = { all: ["", ""], realtime: [todayKey, todayKey], yesterday: [shiftDateKey(todayKey, -1), shiftDateKey(todayKey, -1)], last7: [shiftDateKey(todayKey, -6), todayKey], last30: [shiftDateKey(todayKey, -29), todayKey], day: [todayKey, todayKey], week: [startOfWeekKey(todayKey), todayKey], month: [startOfMonthKey(todayKey), todayKey], year: [startOfYearKey(todayKey), todayKey] };
+    const ranges: Record<PeriodMode, [string, string]> = { all: [earliestAllowed, todayKey], realtime: [todayKey, todayKey], yesterday: [shiftDateKey(todayKey, -1), shiftDateKey(todayKey, -1)], last7: [shiftDateKey(todayKey, -6), todayKey], last30: [shiftDateKey(todayKey, -29), todayKey], day: [todayKey, todayKey], week: [startOfWeekKey(todayKey), todayKey], month: [startOfMonthKey(todayKey), todayKey], year: [earliestAllowed, todayKey] };
     setMode(next); setPickerView("range"); setFrom(ranges[next][0]); setTo(ranges[next][1]);
   };
   const selectMonth = (monthIndex: number) => {
     const first = `${viewYear}-${String(monthIndex + 1).padStart(2, "0")}-01`;
     const last = new Date(Date.UTC(viewYear, monthIndex + 1, 0)).toISOString().slice(0, 10);
-    setFrom(first); setTo(last > todayKey ? todayKey : last); setPickerView("range");
+    const cappedLast = last > todayKey ? todayKey : last;
+    setTo(cappedLast); setFrom(first < shiftDateKey(cappedLast, -59) ? shiftDateKey(cappedLast, -59) : first); setPickerView("range");
   };
   const selectYear = (year: number) => {
-    setFrom(`${year}-01-01`); setTo(year === Number(todayKey.slice(0, 4)) ? todayKey : `${year}-12-31`); setPickerView("range");
+    const end = year === Number(todayKey.slice(0, 4)) ? todayKey : `${year}-12-31`;
+    setFrom(shiftDateKey(end, -59)); setTo(end); setPickerView("range");
   };
   const options: Array<[PeriodMode, string, string]> = [["realtime", "Real-time", "Data hingga waktu sekarang"], ["yesterday", "Kemarin", "Satu hari penuh sebelumnya"], ["last7", "7 hari terakhir", "Termasuk hari ini"], ["last30", "30 hari terakhir", "Termasuk hari ini"], ["day", "Per hari", "Pilih tanggal tertentu"], ["week", "Per minggu", "Senin hingga hari ini"], ["month", "Per bulan", "Awal bulan hingga hari ini"], ["year", "Berdasarkan tahun", "Awal tahun hingga hari ini"]];
   const monthNames = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"];
   return <section ref={pickerRef} className={`period-picker ${className}`} aria-label="Filter periode">
-    <button type="button" className="period-trigger" aria-expanded={open} onClick={() => setOpen(value => !value)}><span>Periode data</span><b>{modeTitle[mode]}</b><em>{rangeLabel}</em><CalendarDays aria-hidden="true" /><ChevronDown aria-hidden="true" className={open ? "open" : ""} /></button>
-    {open && <div className="period-popover"><div className="period-menu" role="menu" aria-label="Pilihan periode"><button type="button" className={mode === "all" ? "active" : ""} onClick={() => selectPeriod("all")}><span>Semua tanggal</span><small>Tampilkan seluruh riwayat</small></button>{options.map(([value, label, hint], index) => <button type="button" key={value} className={`${mode === value ? "active" : ""}${index === 4 ? " period-menu-divider" : ""}`} onClick={() => { if (value === "month") { setMode(value); setViewYear(Number(todayKey.slice(0, 4))); setPickerView("month"); } else if (value === "year") { setMode(value); setDecadeStart(Math.floor(Number(todayKey.slice(0, 4)) / 10) * 10); setPickerView("year"); } else selectPeriod(value); }}><span>{label}</span><small>{hint}</small>{["day", "week", "month", "year"].includes(value) && <ChevronRight aria-hidden="true" />}</button>)}</div><div className="period-range-panel">{pickerView === "month" ? <div className="period-calendar"><header><button type="button" aria-label="Tahun sebelumnya" onClick={() => setViewYear(year => year - 1)}>‹</button><b>{viewYear}</b><button type="button" aria-label="Tahun berikutnya" disabled={viewYear >= Number(todayKey.slice(0, 4))} onClick={() => setViewYear(year => year + 1)}>›</button></header><div className="period-calendar-grid">{monthNames.map((name, index) => { const disabled = viewYear === Number(todayKey.slice(0, 4)) && index > Number(todayKey.slice(5, 7)) - 1; const active = from.startsWith(`${viewYear}-${String(index + 1).padStart(2, "0")}`); return <button type="button" key={name} disabled={disabled} className={active ? "active" : ""} onClick={() => selectMonth(index)}>{name}</button>; })}</div></div> : pickerView === "year" ? <div className="period-calendar"><header><button type="button" aria-label="Dekade sebelumnya" onClick={() => setDecadeStart(year => year - 10)}>‹</button><b>{decadeStart} – {decadeStart + 9}</b><button type="button" aria-label="Dekade berikutnya" disabled={decadeStart + 10 > Number(todayKey.slice(0, 4))} onClick={() => setDecadeStart(year => year + 10)}>›</button></header><div className="period-calendar-grid">{Array.from({ length: 10 }, (_, index) => decadeStart + index).map(year => <button type="button" key={year} disabled={year > Number(todayKey.slice(0, 4))} className={from.startsWith(`${year}-`) ? "active" : ""} onClick={() => selectYear(year)}>{year}</button>)}</div></div> : <><small>PERIODE TERPILIH</small><h3>{modeTitle[mode]}</h3><p>{rangeLabel}</p><div className="period-date-inputs"><label><span>Tanggal mulai</span><input type="date" onClick={(e) => { try { (e.target as any).showPicker(); } catch {} }} value={from} max={to || todayKey} onChange={event => { setFrom(event.target.value); setMode("day"); }} /></label><label><span>Tanggal akhir</span><input type="date" onClick={(e) => { try { (e.target as any).showPicker(); } catch {} }} value={to} min={from} max={todayKey} onChange={event => { setTo(event.target.value); setMode("day"); }} /></label></div><button type="button" className="primary period-apply" onClick={() => { setOpen(false); onApplied?.(); }}>Terapkan periode <Check /></button></>}</div></div>}
+    <button type="button" className="period-trigger" aria-expanded={open} onClick={() => setOpen(value => !value)}><span>Periode data · maks. 60 hari</span><b>{modeTitle[mode]}</b><em>{rangeLabel}</em><CalendarDays aria-hidden="true" /><ChevronDown aria-hidden="true" className={open ? "open" : ""} /></button>
+    {open && <div className="period-popover"><div className="period-menu" role="menu" aria-label="Pilihan periode"><button type="button" className={mode === "all" ? "active" : ""} onClick={() => selectPeriod("all")}><span>60 hari terakhir</span><small>Batas maksimum data</small></button>{options.map(([value, label, hint], index) => <button type="button" key={value} className={`${mode === value ? "active" : ""}${index === 4 ? " period-menu-divider" : ""}`} onClick={() => { if (value === "month") { setMode(value); setViewYear(Number(todayKey.slice(0, 4))); setPickerView("month"); } else if (value === "year") { setMode(value); setDecadeStart(Math.floor(Number(todayKey.slice(0, 4)) / 10) * 10); setPickerView("year"); } else selectPeriod(value); }}><span>{label}</span><small>{hint}</small>{["day", "week", "month", "year"].includes(value) && <ChevronRight aria-hidden="true" />}</button>)}</div><div className="period-range-panel">{pickerView === "month" ? <div className="period-calendar"><header><button type="button" aria-label="Tahun sebelumnya" onClick={() => setViewYear(year => year - 1)}>‹</button><b>{viewYear}</b><button type="button" aria-label="Tahun berikutnya" disabled={viewYear >= Number(todayKey.slice(0, 4))} onClick={() => setViewYear(year => year + 1)}>›</button></header><div className="period-calendar-grid">{monthNames.map((name, index) => { const disabled = viewYear === Number(todayKey.slice(0, 4)) && index > Number(todayKey.slice(5, 7)) - 1; const active = from.startsWith(`${viewYear}-${String(index + 1).padStart(2, "0")}`); return <button type="button" key={name} disabled={disabled} className={active ? "active" : ""} onClick={() => selectMonth(index)}>{name}</button>; })}</div></div> : pickerView === "year" ? <div className="period-calendar"><header><button type="button" aria-label="Dekade sebelumnya" onClick={() => setDecadeStart(year => year - 10)}>‹</button><b>{decadeStart} – {decadeStart + 9}</b><button type="button" aria-label="Dekade berikutnya" disabled={decadeStart + 10 > Number(todayKey.slice(0, 4))} onClick={() => setDecadeStart(year => year + 10)}>›</button></header><div className="period-calendar-grid">{Array.from({ length: 10 }, (_, index) => decadeStart + index).map(year => <button type="button" key={year} disabled={year > Number(todayKey.slice(0, 4))} className={from.startsWith(`${year}-`) ? "active" : ""} onClick={() => selectYear(year)}>{year}</button>)}</div></div> : <><small>PERIODE TERPILIH</small><h3>{modeTitle[mode]}</h3><p>{rangeLabel}</p><div className="period-date-inputs"><label><span>Tanggal mulai</span><input type="date" onClick={(e) => { try { (e.target as any).showPicker(); } catch {} }} value={from} min={to ? shiftDateKey(to, -59) : earliestAllowed} max={to || todayKey} onChange={event => { const next = event.target.value; setFrom(next); if (to && next < shiftDateKey(to, -59)) setTo(shiftDateKey(next, 59) > todayKey ? todayKey : shiftDateKey(next, 59)); setMode("day"); }} /></label><label><span>Tanggal akhir</span><input type="date" onClick={(e) => { try { (e.target as any).showPicker(); } catch {} }} value={to} min={from} max={from ? (shiftDateKey(from, 59) > todayKey ? todayKey : shiftDateKey(from, 59)) : todayKey} onChange={event => { setTo(event.target.value); setMode("day"); }} /></label></div><small>Maksimal 60 hari per pencarian.</small><button type="button" className="primary period-apply" onClick={() => { setOpen(false); onApplied?.(); }}>Terapkan periode <Check /></button></>}</div></div>}
   </section>;
 }
 const Stat = ({ label, value, sub, tone = "green" }: any) => (
@@ -4610,9 +4638,20 @@ function ProductModal({
   );
 }
 function LocationModal({ close, save, location, onDelete }: any) {
+  const NAME_MAX = 60, ADDRESS_MAX = 250;
   const [isSaving, setIsSaving] = useState(false);
   const editing=Boolean(location),[name, setName] = useState(location?.name||""),
     [type, setType] = useState<"warehouse" | "outlet">(location?.type||"outlet"),[address,setAddress]=useState(location?.address||""),[active,setActive]=useState(location?.active??true),[isCentralWarehouse,setIsCentralWarehouse]=useState(location?.isCentralWarehouse===true);
+  const invalidNameCharacters = !/^[\p{L}\p{N}\s.,'()-]*$/u.test(name);
+  const nameError = name.length > NAME_MAX
+    ? `Nama lokasi terlalu panjang. Maksimal ${NAME_MAX} karakter (${name.length}/${NAME_MAX}).`
+    : invalidNameCharacters
+      ? "Nama lokasi hanya boleh berisi huruf, angka, spasi, titik, koma, apostrof, tanda kurung, dan tanda hubung."
+      : "";
+  const addressError = address.length > ADDRESS_MAX
+    ? `Alamat lokasi terlalu panjang. Maksimal ${ADDRESS_MAX} karakter (${address.length}/${ADDRESS_MAX}).`
+    : "";
+  const invalid = Boolean(nameError || addressError || !name.trim());
   return (
     <Modal
       title={editing?"Edit lokasi usaha":"Tambah lokasi usaha"}
@@ -4622,7 +4661,7 @@ function LocationModal({ close, save, location, onDelete }: any) {
       <form
         onSubmit={async (e) => {
           e.preventDefault();
-          if (isSaving) return;
+          if (isSaving || invalid) return;
           setIsSaving(true);
           try {
             await save(name, type, address, active, isCentralWarehouse);
@@ -4637,9 +4676,15 @@ function LocationModal({ close, save, location, onDelete }: any) {
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="Contoh: Outlet Pasar Baru"
+            aria-invalid={Boolean(nameError)}
+            data-allow-symbols="true"
           />
+          {nameError ? <small className="field-validation-error" role="alert">{nameError}</small> : <small className="field-character-count">{name.length}/{NAME_MAX} karakter</small>}
         </Field>
-        <Field label="Alamat lokasi"><textarea value={address} onChange={(e)=>setAddress(e.target.value)} placeholder="Alamat lengkap gudang atau outlet"/></Field>
+        <Field label="Alamat lokasi">
+          <textarea value={address} onChange={(e)=>setAddress(e.target.value)} placeholder="Alamat lengkap gudang atau outlet" aria-invalid={Boolean(addressError)} data-allow-symbols="true"/>
+          {addressError ? <small className="field-validation-error" role="alert">{addressError}</small> : <small className="field-character-count">{address.length}/{ADDRESS_MAX} karakter</small>}
+        </Field>
         {editing&&<label className="toggle-field"><input type="checkbox" checked={active} onChange={(e)=>setActive(e.target.checked)}/><span>Lokasi aktif dan dapat digunakan untuk transaksi</span></label>}
         <Field label="Jenis lokasi">
           <select
@@ -4651,7 +4696,7 @@ function LocationModal({ close, save, location, onDelete }: any) {
           </select>
         </Field>
         {type === "warehouse" && <label className="toggle-field"><input type="checkbox" checked={isCentralWarehouse} onChange={(e)=>setIsCentralWarehouse(e.target.checked)}/><span>Tetapkan sebagai gudang pusat</span></label>}
-        <ModalActions close={close} onDelete={onDelete} disabled={isSaving} />
+        <ModalActions close={close} onDelete={onDelete} disabled={isSaving || invalid} />
       </form>
     </Modal>
   );
@@ -5570,6 +5615,7 @@ function SaleModal({ data, close, save, fixedLocation, notify }: any) {
     [payment, setPayment] = useState("QRIS"),
     [cart, setCart] = useState<Array<{ variantId: string; quantity: number }>>([]),
     [printerSettings, setPrinterSettings] = useState<PrinterSettings>(() => loadPrinterSettings()),
+    [printReceipt, setPrintReceipt] = useState(false),
     [saving, setSaving] = useState(false),
     [cameraOpen, setCameraOpen] = useState(false),
     [cameraError, setCameraError] = useState(""),
@@ -5587,7 +5633,6 @@ function SaleModal({ data, close, save, fixedLocation, notify }: any) {
     return groups;
   }, {}));
   const scannerRef = useRef<HTMLInputElement>(null);
-  const submitIntentRef = useRef<"save" | "print">("save");
   const scannerVideoRef = useRef<HTMLVideoElement>(null);
   const scannerStreamRef = useRef<MediaStream | null>(null);
   const barcodePhotoRef = useRef<HTMLInputElement>(null);
@@ -5807,31 +5852,31 @@ function SaleModal({ data, close, save, fixedLocation, notify }: any) {
         onSubmit={async (e) => {
           e.preventDefault();
           if (cart.length === 0 || saving) return;
-          const shouldPrint = submitIntentRef.current === "print";
-          let reservedWindow: Window | null = null;
-          if (shouldPrint && printerSettings.mode === "system") reservedWindow = window.open("", "_blank");
+          const shouldPrint = printReceipt;
           setSaving(true);
           try {
             const result = await save(loc, channel, cart, payment);
             if (shouldPrint) {
               try {
-                if (printerSettings.mode === "system") systemPrintSale(result.sale, result.data, printerSettings, reservedWindow);
+                if (printerSettings.mode === "system") systemPrintSale(result.sale, result.data, printerSettings);
                 else await directPrintSale(result.sale, result.data, printerSettings);
                 notify("Struk penjualan dikirim ke printer.");
               } catch (printError) {
-                reservedWindow?.close();
                 notify(`Penjualan sudah tersimpan, tetapi struk gagal dicetak: ${printError instanceof Error ? printError.message : "periksa koneksi printer"}`, "error");
               }
-            } else reservedWindow?.close();
+            }
             close();
           } catch (error) {
-            reservedWindow?.close();
             notify(error instanceof Error ? error.message : "Penjualan tidak dapat disimpan.", "error");
             setSaving(false);
           }
         }}
       >
-        <PrinterConnectionPanel settings={printerSettings} setSettings={setPrinterSettings} notify={notify} />
+        <label className="receipt-print-toggle">
+          <input type="checkbox" checked={printReceipt} onChange={(event) => setPrintReceipt(event.target.checked)} />
+          <span><b>Cetak resi setelah disimpan</b><small>Default tidak mencetak. Aktifkan hanya jika pelanggan membutuhkan resi.</small></span>
+        </label>
+        {printReceipt && <PrinterConnectionPanel settings={printerSettings} setSettings={setPrinterSettings} notify={notify} />}
         <div className="form-grid">
           <Field label="Lokasi">
             <select
@@ -5971,8 +6016,10 @@ function SaleModal({ data, close, save, fixedLocation, notify }: any) {
         </div>
         <footer className="modal-actions sale-print-actions">
           <button type="button" className="secondary" onClick={close} disabled={saving}>Batal</button>
-          <button type="submit" className="secondary" disabled={cart.length === 0 || saving} onClick={() => { submitIntentRef.current = "save"; }}><Check size={17} />{saving ? "Menyimpan..." : "Simpan tanpa cetak"}</button>
-          <button type="submit" className="primary" disabled={cart.length === 0 || saving || (printerSettings.mode !== "system" && !isPrinterConnected(printerSettings.mode))} onClick={() => { submitIntentRef.current = "print"; }}><Printer size={17} />{saving ? "Memproses..." : "Simpan & Cetak"}</button>
+          <button type="submit" className="primary" disabled={cart.length === 0 || saving || (printReceipt && printerSettings.mode !== "system" && !isPrinterConnected(printerSettings.mode))}>
+            {printReceipt ? <Printer size={17} /> : <Check size={17} />}
+            {saving ? "Memproses..." : printReceipt ? "Simpan & Cetak" : "Simpan Penjualan"}
+          </button>
         </footer>
       </form>
     </Modal>

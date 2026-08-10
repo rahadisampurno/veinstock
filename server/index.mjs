@@ -1982,6 +1982,9 @@ app.post('/api/commands/locations', requireAuth, async (req, res) => {
     if (!authorization.allowed) throw forbiddenCommand(authorization.reason);
     const { location } = req.body || {};
     if (!location?.id || !String(location.name || '').trim() || !['warehouse', 'outlet'].includes(location.type)) throw invalidCommand('Data lokasi tidak valid.');
+    if (String(location.name).length > 60) throw invalidCommand('Nama lokasi maksimal 60 karakter.');
+    if (!/^[\p{L}\p{N}\s.,'()-]+$/u.test(String(location.name))) throw invalidCommand('Nama lokasi mengandung karakter yang tidak diizinkan.');
+    if (String(location.address || '').length > 250) throw invalidCommand('Alamat lokasi maksimal 250 karakter.');
     const duplicate = state.locations.some(item => `${item.name}`.trim().toLowerCase() === `${location.name}`.trim().toLowerCase() && item.type === location.type);
     if (duplicate) throw invalidCommand('Terdapat lokasi dengan nama dan jenis yang sama.');
     if (location.isCentralWarehouse && location.type !== 'warehouse') throw invalidCommand('Gudang pusat harus menggunakan jenis lokasi gudang.');
@@ -1997,6 +2000,9 @@ app.patch('/api/commands/locations/:id', requireAuth, async (req, res) => {
     const index = state.locations.findIndex(item => item.id === req.params.id);
     const location = req.body?.location;
     if (index < 0 || !location || !String(location.name || '').trim() || !['warehouse', 'outlet'].includes(location.type)) throw invalidCommand('Data lokasi tidak valid.');
+    if (String(location.name).length > 60) throw invalidCommand('Nama lokasi maksimal 60 karakter.');
+    if (!/^[\p{L}\p{N}\s.,'()-]+$/u.test(String(location.name))) throw invalidCommand('Nama lokasi mengandung karakter yang tidak diizinkan.');
+    if (String(location.address || '').length > 250) throw invalidCommand('Alamat lokasi maksimal 250 karakter.');
     if (state.locations[index].active && location.active === false && state.locations.filter(item => item.active).length <= 1) throw invalidCommand('Minimal satu lokasi harus tetap aktif.');
     if (state.locations[index].active && location.active === false) {
       const assignedUsers = state.users.filter(user => user.active !== false && user.outletId === req.params.id);

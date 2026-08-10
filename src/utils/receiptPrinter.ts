@@ -244,21 +244,31 @@ export async function directPrintSale(sale: Sale, data: AppData, settings: Print
   }
 }
 
-export function systemPrintSale(sale: Sale, data: AppData, settings: PrinterSettings, reservedWindow?: Window | null) {
-  // Jangan memakai feature `noopener` pada window.open di sini. Sejumlah
-  // browser mengembalikan null ketika opener diputus, sehingga jendela yang
-  // sebenarnya terbuka tidak dapat diisi dengan HTML struk untuk cetak ulang.
-  const printWindow = reservedWindow || window.open("", "_blank");
-  if (!printWindow) throw new Error("Izinkan popup browser agar dialog cetak dapat dibuka.");
+export function systemPrintSale(sale: Sale, data: AppData, settings: PrinterSettings) {
+  // Cetak dari iframe pada halaman aktif. Tablet tidak lagi dipindahkan ke tab
+  // kosong setelah transaksi disimpan.
+  const frame = document.createElement("iframe");
+  frame.setAttribute("aria-hidden", "true");
+  frame.style.position = "fixed";
+  frame.style.width = "0";
+  frame.style.height = "0";
+  frame.style.border = "0";
+  document.body.appendChild(frame);
+  const printWindow = frame.contentWindow;
+  if (!printWindow) {
+    frame.remove();
+    throw new Error("Pratinjau cetak tidak dapat disiapkan di browser ini.");
+  }
   printWindow.document.open();
   printWindow.document.write(receiptHtml(sale, data, settings));
   printWindow.document.close();
-  printWindow.focus();
   let printed = false;
   const printWhenReady = () => {
     if (printed) return;
     printed = true;
+    printWindow.focus();
     printWindow.print();
+    window.setTimeout(() => frame.remove(), 1_000);
   };
   if (printWindow.document.readyState === "complete") window.setTimeout(printWhenReady, 150);
   else {

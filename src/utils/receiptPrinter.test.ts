@@ -39,19 +39,25 @@ describe("receipt printer", () => {
     expect(receiptHtml(sale, data, { mode: "system", paperWidth: "80", copies: 2 })).toContain("size:80mm auto");
   });
 
-  it("fills a reserved print window and starts printing", () => {
+  it("prints through a hidden iframe without opening another tab", () => {
     const write = vi.fn(), print = vi.fn(), focus = vi.fn();
-    const reservedWindow = { document: { open: vi.fn(), write, close: vi.fn() }, print, focus } as unknown as Window;
+    const printWindow = { document: { open: vi.fn(), write, close: vi.fn(), readyState: "complete" }, print, focus } as unknown as Window;
+    const frame = { style: {}, setAttribute: vi.fn(), contentWindow: printWindow, remove: vi.fn() };
+    const appendChild = vi.fn();
+    vi.stubGlobal("document", { createElement: vi.fn(() => frame), body: { appendChild } });
     vi.stubGlobal("window", { open: vi.fn(), setTimeout: (callback: () => void) => { callback(); return 1; } });
-    systemPrintSale(sale, data, { mode: "system", paperWidth: "58", copies: 1 }, reservedWindow);
+    systemPrintSale(sale, data, { mode: "system", paperWidth: "58", copies: 1 });
     expect(write).toHaveBeenCalledWith(expect.stringContaining("TRX-12345678"));
+    expect(appendChild).toHaveBeenCalledWith(frame);
+    expect(window.open).not.toHaveBeenCalled();
     expect(focus).toHaveBeenCalledOnce();
     expect(print).toHaveBeenCalledOnce();
   });
 
-  it("reports a blocked popup instead of losing the receipt silently", () => {
-    vi.stubGlobal("window", { open: vi.fn(() => null), setTimeout: vi.fn() });
-    expect(() => systemPrintSale(sale, data, { mode: "system", paperWidth: "58", copies: 1 })).toThrow("Izinkan popup browser");
+  it("reports when an inline print frame cannot be prepared", () => {
+    const frame = { style: {}, setAttribute: vi.fn(), contentWindow: null, remove: vi.fn() };
+    vi.stubGlobal("document", { createElement: vi.fn(() => frame), body: { appendChild: vi.fn() } });
+    expect(() => systemPrintSale(sale, data, { mode: "system", paperWidth: "58", copies: 1 })).toThrow("Pratinjau cetak tidak dapat disiapkan");
   });
 
   it("reconnects an already-authorized USB printer without opening a chooser", async () => {
