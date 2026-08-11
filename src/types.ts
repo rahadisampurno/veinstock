@@ -11,7 +11,7 @@ export interface Product { id: string; name: string; category: string; unit: Sto
 export interface Balance { locationId: string; variantId: string; quantity: number }
 export interface Transfer { id: string; transferCode?: string; fromId: string; toId: string; variantId: string; quantity: number; status: 'sent' | 'received' | 'cancelled'; createdAt: string; createdBy?: string; sendProofUrl?: string; receivedAt?: string; receivedBy?: string; receiveProofUrl?: string; cancelledAt?: string; cancelReason?: string }
 export interface SaleItem { variantId: string; quantity: number; unit: StockUnit; unitCost: number; subtotal: number }
-export interface Sale { id: string; locationId: string; channel: Channel; customer?: string; total: number; payment: string; createdAt: string; items: SaleItem[]; cashierId?: string; status?: 'completed' | 'voided'; cancelledAt?: string; cancelReason?: string }
+export interface Sale { id: string; locationId: string; channel: Channel; customer?: string; total: number; payment: string; createdAt: string; items: SaleItem[]; cashierId?: string; status?: 'pending_print' | 'completed' | 'voided'; printedAt?: string; printedBy?: string; cancelledAt?: string; cancelReason?: string }
 export interface Movement { id: string; variantId: string; locationId: string; type: string; quantity: number; note: string; user: string; createdAt: string }
 export interface StockCount { id: string; locationId: string; variantId: string; systemQty: number; actualQty: number; difference: number; reason: string; createdAt: string; status?: "cancelled"; cancelReason?: string; cancelledAt?: string; updatedAt?: string; createdBy?: string; }
 export interface Supplier { id: string; name: string; phone?: string; address?: string; active: boolean }

@@ -731,7 +731,7 @@ function validateRoleChange(previous,next,user){
     if (!old) { // New sale
       const auth = authorizeAction({ user, action: 'sale.create', locationId: s.locationId });
       if (!auth.allowed) return auth.reason;
-      if (s.status && s.status !== 'completed') return 'Penjualan baru harus berstatus selesai.';
+      if (s.status && !['pending_print', 'completed'].includes(s.status)) return 'Status penjualan baru tidak valid.';
       for (const item of s.items) addInventoryDelta(expectedBalanceDeltas, s.locationId, item.variantId, -item.quantity);
     } else if (!same(s, old)) {
       if (old.status !== 'voided' && s.status === 'voided') {
@@ -1662,7 +1662,7 @@ app.post('/api/commands/payrolls', requireAuth, async (req, res) => {
 
 app.post('/api/commands/sales', requireAuth, async (req, res) => {
   await executeCommand(req, res, async (state, actor) => {
-    const { locationId, channel, payment, items } = req.body || {};
+    const { locationId, channel, payment, items, requiresPrint = false } = req.body || {};
     const authorization = commandAuth(actor, 'sale.create', locationId);
     if (!authorization.allowed) throw forbiddenCommand(authorization.reason);
     if (!state.locations.some(location => location.id === locationId && location.active !== false)) throw invalidCommand('Lokasi penjualan tidak aktif atau tidak ditemukan.');
@@ -1694,8 +1694,36 @@ app.post('/api/commands/sales', requireAuth, async (req, res) => {
       movements.push(commandMovement(variantId, locationId, `Penjualan ${channel}`, -quantity, `${quantity} ${variant.unit}`, actor));
     }
     state.balances = balances;
-    state.sales.unshift({ id: commandId('sale'), locationId, channel, total, payment: String(payment || 'Tunai'), cashierId: actor.id, createdAt: new Date().toISOString(), items: saleItems, status: 'completed' });
+    state.sales.unshift({ id: commandId('sale'), locationId, channel, total, payment: String(payment || 'Tunai'), cashierId: actor.id, createdAt: new Date().toISOString(), items: saleItems, status: requiresPrint === true ? 'pending_print' : 'completed' });
     state.movements.unshift(...movements);
+  });
+});
+
+app.post('/api/commands/sales/:id/finalize-print', requireAuth, async (req, res) => {
+  await executeCommand(req, res, async (state, actor) => {
+    const sale = state.sales.find(item => item.id === req.params.id);
+    const authorization = commandAuth(actor, 'sale.create', sale?.locationId);
+    if (!authorization.allowed) throw forbiddenCommand(authorization.reason);
+    if (!sale) throw invalidCommand('Penjualan tidak ditemukan.');
+    if (sale.status !== 'pending_print') throw invalidCommand('Penjualan ini tidak sedang menunggu cetak.');
+    Object.assign(sale, { status: 'completed', printedAt: new Date().toISOString(), printedBy: actor.id });
+  });
+});
+
+app.post('/api/commands/sales/:id/abort-print', requireAuth, async (req, res) => {
+  await executeCommand(req, res, async (state, actor) => {
+    const sale = state.sales.find(item => item.id === req.params.id);
+    const authorization = commandAuth(actor, 'sale.create', sale?.locationId);
+    if (!authorization.allowed) throw forbiddenCommand(authorization.reason);
+    if (!sale) throw invalidCommand('Penjualan tidak ditemukan.');
+    if (sale.status !== 'pending_print') throw invalidCommand('Hanya transaksi yang menunggu cetak yang dapat dibatalkan dari kasir.');
+    let balances = state.balances;
+    for (const line of sale.items || []) {
+      balances = commandAdjustBalance(balances, sale.locationId, line.variantId, Number(line.quantity));
+      state.movements.unshift(commandMovement(line.variantId, sale.locationId, 'Pembatalan karena cetak gagal', Number(line.quantity), 'Struk tidak berhasil dicetak', actor));
+    }
+    state.balances = balances;
+    Object.assign(sale, { status: 'voided', cancelReason: 'Struk tidak berhasil dicetak', cancelledAt: new Date().toISOString() });
   });
 });
 

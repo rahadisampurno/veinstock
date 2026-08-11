@@ -171,7 +171,7 @@ export async function reconnectSavedPrinter(settings: PrinterSettings) {
 
 export function disconnectPrinter(mode: PrinterMode) {
   if (mode === "usb") {
-    void usbDevice?.close?.().catch(() => undefined);
+    if (usbDevice?.close) void Promise.resolve(usbDevice.close()).catch(() => undefined);
     usbDevice = null;
     usbEndpoint = null;
   }
@@ -223,10 +223,28 @@ function escposReceipt(sale: Sale, data: AppData, settings: PrinterSettings) {
 
 async function writeBluetooth(bytes: Uint8Array) {
   if (!bluetoothCharacteristic || !bluetoothDevice?.gatt?.connected) throw new Error("Printer Bluetooth belum terhubung.");
-  for (let offset = 0; offset < bytes.length; offset += 180) {
-    const chunk = bytes.slice(offset, offset + 180);
-    if (bluetoothCharacteristic.writeValueWithoutResponse) await bluetoothCharacteristic.writeValueWithoutResponse(chunk);
-    else await bluetoothCharacteristic.writeValue(chunk);
+  // Printer thermal murah umumnya memakai MTU BLE 23 byte (payload 20 byte).
+  // Paket 180 byte dapat resolve di browser tetapi diam-diam dibuang printer.
+  for (let offset = 0; offset < bytes.length; offset += 20) {
+    const chunk = bytes.slice(offset, offset + 20);
+    if (bluetoothCharacteristic.properties?.write && bluetoothCharacteristic.writeValueWithResponse) {
+      await bluetoothCharacteristic.writeValueWithResponse(chunk);
+    } else if (bluetoothCharacteristic.writeValue) {
+      await bluetoothCharacteristic.writeValue(chunk);
+    } else if (bluetoothCharacteristic.properties?.writeWithoutResponse && bluetoothCharacteristic.writeValueWithoutResponse) {
+      await bluetoothCharacteristic.writeValueWithoutResponse(chunk);
+    } else {
+      throw new Error("Printer Bluetooth tidak menyediakan jalur tulis yang didukung.");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 12));
+  }
+}
+
+async function writeUsb(bytes: Uint8Array) {
+  if (!usbDevice?.opened || usbEndpoint === null) throw new Error("Printer USB belum terhubung.");
+  const result = await usbDevice.transferOut(usbEndpoint, bytes);
+  if (!result || result.status !== "ok" || (Number.isFinite(result.bytesWritten) && result.bytesWritten < bytes.byteLength)) {
+    throw new Error("Printer USB menolak atau tidak menerima seluruh data struk.");
   }
 }
 
@@ -234,8 +252,7 @@ export async function directPrintSale(sale: Sale, data: AppData, settings: Print
   const bytes = escposReceipt(sale, data, settings);
   for (let copy = 0; copy < settings.copies; copy += 1) {
     if (settings.mode === "usb") {
-      if (!usbDevice?.opened || usbEndpoint === null) throw new Error("Printer USB belum terhubung.");
-      await usbDevice.transferOut(usbEndpoint, bytes);
+      await writeUsb(bytes);
     } else if (settings.mode === "bluetooth") {
       await writeBluetooth(bytes);
     } else {
@@ -281,7 +298,7 @@ export async function testDirectPrinter(settings: PrinterSettings) {
   const test = encoder.encode("\x1b@\x1ba\x01MENENGS\nPrinter terhubung\nTes cetak berhasil\n\n\n\x1dV\x00");
   if (settings.mode === "usb") {
     if (!usbDevice?.opened || usbEndpoint === null) throw new Error("Hubungkan printer USB terlebih dahulu.");
-    await usbDevice.transferOut(usbEndpoint, test);
+    await writeUsb(test);
   } else if (settings.mode === "bluetooth") {
     await writeBluetooth(test);
   } else {

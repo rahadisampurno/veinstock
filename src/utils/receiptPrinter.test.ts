@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { disconnectPrinter, isPrinterConnected, receiptHtml, reconnectSavedPrinter, systemPrintSale } from "./receiptPrinter";
+import { directPrintSale, disconnectPrinter, isPrinterConnected, receiptHtml, reconnectSavedPrinter, systemPrintSale } from "./receiptPrinter";
 import type { AppData, Sale } from "../types";
 
 const sale: Sale = {
@@ -78,6 +78,35 @@ describe("receipt printer", () => {
     expect(restored).toBe(true);
     expect(getDevices).toHaveBeenCalledOnce();
     expect(isPrinterConnected("usb")).toBe(true);
+    disconnectPrinter("usb");
+  });
+
+  it("only reports USB print success after the printer accepts every byte", async () => {
+    const transferOut = vi.fn(async (_endpoint: number, bytes: Uint8Array) => ({ status: "ok", bytesWritten: bytes.byteLength }));
+    const device: any = {
+      vendorId: 1234, productId: 5678, serialNumber: "OK", opened: false,
+      configuration: { interfaces: [{ interfaceNumber: 1, alternates: [{ endpoints: [{ direction: "out", endpointNumber: 2 }] }] }] },
+      open: vi.fn(async () => { device.opened = true; }), claimInterface: vi.fn(), close: vi.fn(), transferOut,
+    };
+    vi.stubGlobal("navigator", { usb: { getDevices: vi.fn(async () => [device]), addEventListener: vi.fn() } });
+    const settings = { mode: "usb", paperWidth: "58", copies: 1, usbVendorId: 1234, usbProductId: 5678, usbSerialNumber: "OK" } as const;
+    await reconnectSavedPrinter(settings);
+    await expect(directPrintSale(sale, data, settings)).resolves.toBeUndefined();
+    expect(transferOut).toHaveBeenCalledOnce();
+    disconnectPrinter("usb");
+  });
+
+  it("rejects a false USB success when the transfer stalls", async () => {
+    const device: any = {
+      vendorId: 1234, productId: 5678, serialNumber: "STALL", opened: false,
+      configuration: { interfaces: [{ interfaceNumber: 1, alternates: [{ endpoints: [{ direction: "out", endpointNumber: 2 }] }] }] },
+      open: vi.fn(async () => { device.opened = true; }), claimInterface: vi.fn(), close: vi.fn(),
+      transferOut: vi.fn(async () => ({ status: "stall", bytesWritten: 0 })),
+    };
+    vi.stubGlobal("navigator", { usb: { getDevices: vi.fn(async () => [device]), addEventListener: vi.fn() } });
+    const settings = { mode: "usb", paperWidth: "58", copies: 1, usbVendorId: 1234, usbProductId: 5678, usbSerialNumber: "STALL" } as const;
+    await reconnectSavedPrinter(settings);
+    await expect(directPrintSale(sale, data, settings)).rejects.toThrow("menolak atau tidak menerima seluruh data");
     disconnectPrinter("usb");
   });
 });

@@ -1681,16 +1681,19 @@ function App() {
             loc: string,
             channel: Channel,
             cart: Array<{variantId: string, quantity: number}>,
-            payment: string
+            payment: string,
+            requiresPrint: boolean
           ) => {
             if (!cart.some(item => isPositiveNumber(item.quantity))) return notify("Tidak ada produk valid di keranjang");
             const previousIds = new Set(data.sales.map((sale) => sale.id));
-            const updated = normalizeData(await runCommand("/api/commands/sales", { locationId: loc, channel, items: cart, payment }));
+            const updated = normalizeData(await runCommand("/api/commands/sales", { locationId: loc, channel, items: cart, payment, requiresPrint }));
             const sale = updated.sales.find((item) => !previousIds.has(item.id)) || [...updated.sales].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
             if (!sale) throw new Error("Penjualan tersimpan, tetapi struk transaksi belum dapat ditemukan.");
-            notify("Penjualan tersimpan dan stok otomatis berkurang");
+            notify(requiresPrint ? "Transaksi menunggu struk tercetak." : "Penjualan tersimpan dan stok otomatis berkurang");
             return { sale, data: updated };
           }}
+          finalizePrint={async (saleId: string) => normalizeData(await runCommand(`/api/commands/sales/${saleId}/finalize-print`, {}))}
+          abortPrint={async (saleId: string) => normalizeData(await runCommand(`/api/commands/sales/${saleId}/abort-print`, {}))}
         />
       )}
       {modal?.startsWith("opname") && (
@@ -1766,6 +1769,7 @@ function App() {
           item={data.sales.find((x) => x.id === modal.split(":")[1])}
           data={data}
           notify={notify}
+          finalizePrint={async (saleId: string) => normalizeData(await runCommand(`/api/commands/sales/${saleId}/finalize-print`, {}))}
           variants={variantMap}
           locations={locationMap}
           close={() => setModal(null)}
@@ -2066,7 +2070,7 @@ function Dashboard({
   const [dateTo, setDateTo] = useState(todayKey);
   const selectedSales = sales.filter((sale: any) => {
     const saleDate = jakartaDateKey(sale.createdAt);
-    return sale.status !== "voided" && saleDate >= dateFrom && saleDate <= dateTo;
+    return sale.status === "completed" && saleDate >= dateFrom && saleDate <= dateTo;
   });
   const salesTotal = selectedSales.reduce((sum: number, sale: any) => sum + Number(sale.total || 0), 0);
   const formatRangeDate = (value: string) => new Date(`${value}T00:00:00`).toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" });
@@ -3431,7 +3435,7 @@ function Sales({ data, variants, locations, open, cancel, detail, role, outletId
   });
 
   const totalSales = rows.length;
-  const totalRevenue = rows.reduce((acc: number, s: any) => acc + (s.status !== 'voided' ? s.total : 0), 0);
+  const totalRevenue = rows.reduce((acc: number, s: any) => acc + (s.status === 'completed' ? s.total : 0), 0);
 
   const sortedRows = [...rows].sort((a, b) => {
     let valA: any, valB: any;
@@ -3491,7 +3495,7 @@ function Sales({ data, variants, locations, open, cancel, detail, role, outletId
           const variant = variants[firstItem?.variantId];
           const itemCount = s.items?.length || 0;
           return <article className="record-card clickable-record-card" key={s.id} role="button" tabIndex={0} onClick={() => detail(s.id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); detail(s.id); } }}>
-            <div className="record-card-top"><div className="record-card-code"><span>TRANSAKSI PENJUALAN</span><b>{locations[s.locationId]?.name || "Lokasi tidak diketahui"}</b><time>{new Date(s.createdAt).toLocaleString("id-ID")}</time></div><div className="record-card-badges"><span className="status info">{s.channel}</span><span className={`status ${s.status === "voided" ? "danger" : "ok"}`}>{s.status === "voided" ? "Dibatalkan" : "Selesai"}</span></div></div>
+            <div className="record-card-top"><div className="record-card-code"><span>TRANSAKSI PENJUALAN</span><b>{locations[s.locationId]?.name || "Lokasi tidak diketahui"}</b><time>{new Date(s.createdAt).toLocaleString("id-ID")}</time></div><div className="record-card-badges"><span className="status info">{s.channel}</span><span className={`status ${s.status === "voided" ? "danger" : s.status === "pending_print" ? "warning" : "ok"}`}>{s.status === "voided" ? "Dibatalkan" : s.status === "pending_print" ? "Menunggu cetak" : "Selesai"}</span></div></div>
             <div className="record-card-body"><div className="record-detail"><small>ITEM TERJUAL</small><b>{variant?.productName} · {variant?.name}</b><span>{firstItem ? qty(firstItem.quantity, variant?.unit) : "Tidak ada item"}{itemCount > 1 ? ` +${itemCount - 1} item lainnya` : ""}</span></div><div className="record-detail"><small>PEMBAYARAN & TOTAL</small><b>{money(s.total)}</b><span>{s.payment || "Metode pembayaran tidak tercatat"}</span></div></div>
             {canCancel && s.status !== "voided" && <div className="record-card-actions"><button className="table-action danger-text" onClick={(event) => { event.stopPropagation(); cancel(s.id); }}>Batalkan</button></div>}
           </article>;
@@ -3790,7 +3794,7 @@ function Reports({ data, variants, locations, notify, role, outletId, canExport 
     ? data.balances.filter((item: any) => item.locationId === outletId)
     : data.balances;
   const saleMatchesScope = (s: any) =>
-        s.status !== "voided" && s.status !== "cancelled" &&
+        s.status === "completed" &&
         (!isPic || s.locationId === outletId) &&
         (location === "all" || s.locationId === location) &&
         (channel === "all" || s.channel === channel);
@@ -5610,7 +5614,7 @@ function PrinterConnectionPanel({ settings, setSettings, notify }: { settings: P
   </section>;
 }
 
-function SaleModal({ data, close, save, fixedLocation, notify }: any) {
+function SaleModal({ data, close, save, finalizePrint, abortPrint, fixedLocation, notify }: any) {
   const activeLocations=data.locations.filter((l:any)=>l.active),variants = data.products.filter((p:any)=>p.active).flatMap((p: any) =>
       p.variants.filter((item:any)=>item.active!==false).map((item: any) => ({
         ...item,
@@ -5629,6 +5633,8 @@ function SaleModal({ data, close, save, fixedLocation, notify }: any) {
     [printerSettings, setPrinterSettings] = useState<PrinterSettings>(() => loadPrinterSettings()),
     [printReceipt, setPrintReceipt] = useState(false),
     [saving, setSaving] = useState(false),
+    [pendingSale, setPendingSale] = useState<any>(null),
+    [printError, setPrintError] = useState(""),
     [cameraOpen, setCameraOpen] = useState(false),
     [cameraError, setCameraError] = useState(""),
     categories = Array.from(new Set(variants.map((item: any) => item.category).filter(Boolean))).sort() as string[],
@@ -5639,6 +5645,40 @@ function SaleModal({ data, close, save, fixedLocation, notify }: any) {
     sellableMatchingVariants = matchingVariants.filter((item: any) =>
       getBalance(data.balances, loc, item.id) > 0 || cart.some(c => c.variantId === item.id),
     );
+  const finishPendingSale = async () => {
+    if (!pendingSale) return;
+    await finalizePrint(pendingSale.sale.id);
+    notify("Struk sudah tercetak. Transaksi sekarang berstatus selesai.");
+    close();
+  };
+  const printPendingSale = async (result = pendingSale) => {
+    if (!result) return;
+    setPrintError("");
+    if (printerSettings.mode === "system") {
+      systemPrintSale(result.sale, result.data, printerSettings);
+      setPendingSale(result);
+      setSaving(false);
+      notify("Konfirmasi setelah struk benar-benar keluar dari printer.");
+      return;
+    }
+    await directPrintSale(result.sale, result.data, printerSettings);
+    setPendingSale(result);
+    await finalizePrint(result.sale.id);
+    notify("Data struk diterima printer. Transaksi berstatus selesai.");
+    close();
+  };
+  const cancelPendingSale = async () => {
+    if (!pendingSale || saving) return;
+    setSaving(true);
+    try {
+      await abortPrint(pendingSale.sale.id);
+      notify("Transaksi dibatalkan dan stok dikembalikan karena struk tidak tercetak.");
+      close();
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Transaksi menunggu cetak tidak dapat dibatalkan.", "error");
+      setSaving(false);
+    }
+  };
   const visibleProductGroups = Object.values(sellableMatchingVariants.reduce((groups: Record<string, any>, variant: any) => {
     if (!groups[variant.productName]) groups[variant.productName] = { name: variant.productName, imageUrl: variant.productImageUrl, variants: [] };
     groups[variant.productName].variants.push(variant);
@@ -5857,7 +5897,7 @@ function SaleModal({ data, close, save, fixedLocation, notify }: any) {
     <Modal
       title="Catat penjualan"
       desc="Catat penjualan untuk mengurangi stok dan mencatat riwayat transaksi."
-      close={close}
+      close={pendingSale ? () => notify("Selesaikan cetak atau batalkan transaksi terlebih dahulu.", "error") : close}
       className={isOffline ? "large pos-modal" : "large"}
     >
       <form
@@ -5867,15 +5907,18 @@ function SaleModal({ data, close, save, fixedLocation, notify }: any) {
           const shouldPrint = printReceipt;
           setSaving(true);
           try {
-            const result = await save(loc, channel, cart, payment);
+            const result = await save(loc, channel, cart, payment, shouldPrint);
             if (shouldPrint) {
               try {
-                if (printerSettings.mode === "system") systemPrintSale(result.sale, result.data, printerSettings);
-                else await directPrintSale(result.sale, result.data, printerSettings);
-                notify("Struk penjualan dikirim ke printer.");
+                setPendingSale(result);
+                await printPendingSale(result);
               } catch (printError) {
-                notify(`Penjualan sudah tersimpan, tetapi struk gagal dicetak: ${printError instanceof Error ? printError.message : "periksa koneksi printer"}`, "error");
+                const message = printError instanceof Error ? printError.message : "periksa koneksi printer";
+                setPrintError(message);
+                notify(`Struk gagal dicetak. Transaksi belum selesai: ${message}`, "error");
+                setSaving(false);
               }
+              return;
             }
             close();
           } catch (error) {
@@ -6026,12 +6069,19 @@ function SaleModal({ data, close, save, fixedLocation, notify }: any) {
           </Field>
           <div></div>
         </div>
+        {printError && <p className="form-error" role="alert">Struk belum tercetak: {printError}</p>}
         <footer className="modal-actions sale-print-actions">
-          <button type="button" className="secondary" onClick={close} disabled={saving}>Batal</button>
-          <button type="submit" className="primary" disabled={cart.length === 0 || saving || (printReceipt && printerSettings.mode !== "system" && !isPrinterConnected(printerSettings.mode))}>
-            {printReceipt ? <Printer size={17} /> : <Check size={17} />}
-            {saving ? "Memproses..." : printReceipt ? "Simpan & Cetak" : "Simpan Penjualan"}
-          </button>
+          {pendingSale ? <>
+            <button type="button" className="danger-button" onClick={() => void cancelPendingSale()} disabled={saving}>Batalkan transaksi</button>
+            <button type="button" className="secondary" onClick={() => void printPendingSale()} disabled={saving || (printerSettings.mode !== "system" && !isPrinterConnected(printerSettings.mode))}><Printer size={17} />Cetak ulang</button>
+            {printerSettings.mode === "system" && <button type="button" className="primary" onClick={() => void finishPendingSale()} disabled={saving}><Check size={17} />Struk sudah tercetak</button>}
+          </> : <>
+            <button type="button" className="secondary" onClick={close} disabled={saving}>Batal</button>
+            <button type="submit" className="primary" disabled={cart.length === 0 || saving || (printReceipt && printerSettings.mode !== "system" && !isPrinterConnected(printerSettings.mode))}>
+              {printReceipt ? <Printer size={17} /> : <Check size={17} />}
+              {saving ? "Memproses..." : printReceipt ? "Simpan & Cetak" : "Simpan Penjualan"}
+            </button>
+          </>}
         </footer>
       </form>
     </Modal>
@@ -6161,16 +6211,26 @@ function OpnameModal({ data, item, close, save, fixedLocation }: any) {
   );
 }
 function CancelModal({close,save}:any){const [isSaving, setIsSaving] = useState(false);const[reason,setReason]=useState("");return <Modal title="Batalkan transaksi" desc="Stok akan dikoreksi otomatis. Transaksi asli dan alasan tetap ada dalam histori." close={close}><form onSubmit={(e)=>{e.preventDefault();if(isSaving)return;setIsSaving(true);save(reason)}}><Field label="Alasan pembatalan / koreksi"><textarea required minLength={5} value={reason} onChange={(e)=>setReason(e.target.value)} placeholder="Contoh: Salah memilih produk atau jumlah"/></Field><footer className="modal-actions"><button type="button" className="secondary" onClick={close}>Kembali</button><button className="danger-button" type="submit" disabled={isSaving}><RotateCcw/>Batalkan transaksi</button></footer></form></Modal>}
-function SaleDetail({ item, data, variants, locations, close, notify }: any) {
+function SaleDetail({ item, data, variants, locations, close, notify, finalizePrint }: any) {
   const [printerSettings, setPrinterSettings] = useState<PrinterSettings>(() => loadPrinterSettings());
   const [printing, setPrinting] = useState(false);
+  const [awaitingSystemConfirmation, setAwaitingSystemConfirmation] = useState(false);
   if (!item) return null;
   const printReceipt = async () => {
     setPrinting(true);
     try {
       if (printerSettings.mode === "system") systemPrintSale(item, data, printerSettings);
       else await directPrintSale(item, data, printerSettings);
-      notify("Cetak ulang struk berhasil dikirim.");
+      if (item.status === "pending_print") {
+        if (printerSettings.mode === "system") {
+          setAwaitingSystemConfirmation(true);
+          notify("Konfirmasi setelah struk benar-benar keluar dari printer.");
+        } else {
+          await finalizePrint(item.id);
+          notify("Data struk diterima printer. Transaksi berstatus selesai.");
+          close();
+        }
+      } else notify("Cetak ulang struk berhasil dikirim.");
     } catch (error) {
       notify(error instanceof Error ? error.message : "Struk tidak dapat dicetak.", "error");
     } finally {
@@ -6213,9 +6273,9 @@ function SaleDetail({ item, data, variants, locations, close, notify }: any) {
         <p>
           <span>Status</span>
           <b>
-            {item.status === "cancelled"
+            {item.status === "voided"
               ? `Dibatalkan: ${item.cancelReason}`
-              : "Selesai"}
+              : item.status === "pending_print" ? "Menunggu cetak" : "Selesai"}
           </b>
         </p>
       </div>
@@ -6224,7 +6284,8 @@ function SaleDetail({ item, data, variants, locations, close, notify }: any) {
         <button type="button" className="secondary" onClick={close}>
           Tutup
         </button>
-        {item.status !== "voided" && <button type="button" className="primary" onClick={() => void printReceipt()} disabled={printing || (printerSettings.mode !== "system" && !isPrinterConnected(printerSettings.mode))}><Printer size={17} />{printing ? "Mencetak..." : "Cetak ulang struk"}</button>}
+        {item.status !== "voided" && <button type="button" className="primary" onClick={() => void printReceipt()} disabled={printing || (printerSettings.mode !== "system" && !isPrinterConnected(printerSettings.mode))}><Printer size={17} />{printing ? "Mencetak..." : item.status === "pending_print" ? "Cetak & selesaikan" : "Cetak ulang struk"}</button>}
+        {item.status === "pending_print" && awaitingSystemConfirmation && <button type="button" className="primary" onClick={async () => { setPrinting(true); try { await finalizePrint(item.id); notify("Struk sudah tercetak. Transaksi berstatus selesai."); close(); } catch (error) { notify(error instanceof Error ? error.message : "Transaksi tidak dapat diselesaikan.", "error"); setPrinting(false); } }} disabled={printing}><Check size={17} />Struk sudah tercetak</button>}
       </footer>
     </Modal>
   );
@@ -6946,7 +7007,7 @@ function AnalyticsPage({ data, canExport }: { data: AppData; canExport: boolean 
       const key = jakartaDateKey(createdAt);
       return key >= dateFrom && key <= dateTo;
     };
-    const filteredSales = data.sales.filter(sale => sale.status !== "voided" && isInRange(sale.createdAt));
+    const filteredSales = data.sales.filter(sale => sale.status === "completed" && isInRange(sale.createdAt));
     const filteredReceipts = (data.receipts || []).filter(receipt => receipt.status !== "cancelled" && isInRange(receipt.createdAt));
     const filteredTransfers = data.transfers.filter(transfer => transfer.status !== "cancelled" && isInRange(transfer.createdAt));
     
@@ -7113,7 +7174,7 @@ function AnalyticsPage({ data, canExport }: { data: AppData; canExport: boolean 
     >
       <div id="analytics-dashboard-content" style={{ padding: '4px', backgroundColor: 'var(--bg)' }}>
         <DateRangePicker from={dateFrom} to={dateTo} setFrom={setDateFrom} setTo={setDateTo} initialMode="realtime" />
-        <ChannelSalesSummary sales={data.sales.filter(sale => sale.status !== 'voided' && jakartaDateKey(sale.createdAt) >= dateFrom && jakartaDateKey(sale.createdAt) <= dateTo)} />
+        <ChannelSalesSummary sales={data.sales.filter(sale => sale.status === 'completed' && jakartaDateKey(sale.createdAt) >= dateFrom && jakartaDateKey(sale.createdAt) <= dateTo)} />
         <div className="dash-grid-top">
           {/* Aktivitas Terakhir */}
         <article className="dash-widget">

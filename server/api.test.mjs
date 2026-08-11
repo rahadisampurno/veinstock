@@ -267,6 +267,33 @@ describe('multi-tenant API', () => {
     expect(refreshed.body.data.balances.find(b => b.locationId === 'outlet-command' && b.variantId === 'variant-command').quantity).toBe(7);
   });
 
+  it('keeps printed sales pending until confirmation and safely restores stock when print is aborted', async () => {
+    const suffix = `${Date.now()}-print-flow`;
+    const owner = await post('/api/register', { organizationName: 'Print Flow', name: 'Owner', email: `owner-${suffix}@test.local`, password: 'Password123!' });
+    const state = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    state.body.data.products.push({ id: `product-${suffix}`, name: 'Produk Print', category: 'Test', unit: 'Pcs', active: true, variants: [{ id: `variant-${suffix}`, name: 'Varian', sku: `SKU-${suffix}`, cost: 100, price: 500, resellerPrice: 400, minStock: 1 }] });
+    state.body.data.balances.push({ locationId: 'loc-owner', variantId: `variant-${suffix}`, quantity: 10 });
+    expect((await request('/api/state', { method: 'PUT', headers: { 'content-type': 'application/json', authorization: `Bearer ${owner.body.token}` }, body: JSON.stringify({ data: state.body.data, version: state.body.version }) })).status).toBe(200);
+
+    expect((await post('/api/commands/sales', { locationId: 'loc-owner', channel: 'offline', payment: 'Tunai', requiresPrint: true, items: [{ variantId: `variant-${suffix}`, quantity: 2 }] }, owner.body.token)).status).toBe(201);
+    let refreshed = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    const firstSale = refreshed.body.data.sales[0];
+    expect(firstSale.status).toBe('pending_print');
+    expect(refreshed.body.data.balances.find(item => item.locationId === 'loc-owner' && item.variantId === `variant-${suffix}`).quantity).toBe(8);
+    expect((await post(`/api/commands/sales/${firstSale.id}/finalize-print`, {}, owner.body.token)).status).toBe(201);
+    refreshed = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    expect(refreshed.body.data.sales.find(item => item.id === firstSale.id)).toEqual(expect.objectContaining({ status: 'completed', printedBy: owner.body.user.id }));
+    expect((await post(`/api/commands/sales/${firstSale.id}/finalize-print`, {}, owner.body.token)).status).toBe(400);
+
+    await post('/api/commands/sales', { locationId: 'loc-owner', channel: 'offline', payment: 'Tunai', requiresPrint: true, items: [{ variantId: `variant-${suffix}`, quantity: 3 }] }, owner.body.token);
+    refreshed = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    const abortedSale = refreshed.body.data.sales.find(item => item.status === 'pending_print');
+    expect((await post(`/api/commands/sales/${abortedSale.id}/abort-print`, {}, owner.body.token)).status).toBe(201);
+    refreshed = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    expect(refreshed.body.data.sales.find(item => item.id === abortedSale.id).status).toBe('voided');
+    expect(refreshed.body.data.balances.find(item => item.locationId === 'loc-owner' && item.variantId === `variant-${suffix}`).quantity).toBe(8);
+  });
+
   it('commits employee, attendance, loan, and payroll commands without a browser snapshot', async () => {
     const suffix = `${Date.now()}-people`;
     const owner = await post('/api/register', { organizationName: 'SDM Command', name: 'Owner', email: `owner-${suffix}@test.local`, password: 'Password123!' });
