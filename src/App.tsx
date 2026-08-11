@@ -830,7 +830,7 @@ function App() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    const result = await response.json();
+    const result = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(result.message || "Autentikasi gagal");
     setHydrated(false);
     setAuthUser(result.user);
@@ -1746,6 +1746,7 @@ function App() {
           business={data.business}
           variants={variantMap}
           locations={locationMap}
+          users={data.users}
           close={() => setModal(null)}
           notify={notify}
         />
@@ -6279,12 +6280,15 @@ function TransferDetail({
   business,
   variants,
   locations,
+  users,
   close,
   notify,
 }: any) {
   if (!items?.length) return null;
   const item = items[0];
   const documentCode = transferDisplayCode(item);
+  const senderName = users?.find((user: any) => user.id === item.createdBy)?.name || item.createdBy || "Pengirim tidak tercatat";
+  const receiverName = users?.find((user: any) => user.id === item.receivedBy)?.name || item.receivedBy || (item.status === "received" ? "Penerima tidak tercatat" : "Belum diterima");
   const html = `<!doctype html><meta charset="utf-8"><title>Bukti ${
     documentCode
   }</title><style>body{font:16px Arial;max-width:700px;margin:50px auto;color:#10233b}h1{color:#063858}table{width:100%;border-collapse:collapse}td{padding:12px;border-bottom:1px solid #ddd}td:last-child{text-align:right;font-weight:bold}</style><h1>${
@@ -6295,7 +6299,7 @@ function TransferDetail({
     "id-ID",
   )}</td></tr><tr><td>Rute</td><td>${locations[item.fromId]?.name} &rarr; ${
     locations[item.toId]?.name
-  }</td></tr><tr><td>Varian</td><td>${items.map((line: any) => `${variants[line.variantId]?.productName} · ${variants[line.variantId]?.name} (${qty(line.quantity, variants[line.variantId]?.unit)})`).join("<br>")}</td></tr><tr><td>Status</td><td>${item.status}</td></tr></table>`;
+  }</td></tr><tr><td>Varian</td><td>${items.map((line: any) => `${variants[line.variantId]?.productName} · ${variants[line.variantId]?.name} (${qty(line.quantity, variants[line.variantId]?.unit)})`).join("<br>")}</td></tr><tr><td>Dikirim oleh</td><td>${senderName}</td></tr><tr><td>Diterima oleh</td><td>${receiverName}</td></tr><tr><td>Status</td><td>${item.status}</td></tr></table>`;
   const download = () => {
     const url = URL.createObjectURL(
       new Blob([html], { type: "text/html;charset=utf-8" }),
@@ -6337,6 +6341,8 @@ function TransferDetail({
           <span>Varian ditransfer</span>
           <b>{items.length} varian</b>
         </p>
+        <p><span>Dikirim oleh</span><b>{senderName}</b></p>
+        <p><span>Diterima oleh</span><b>{receiverName}</b></p>
         <div className="detail-transfer-items">{items.map((line: any) => <p key={line.id}><span>{variants[line.variantId]?.productName} · {variants[line.variantId]?.name}</span><b>{qty(line.quantity, variants[line.variantId]?.unit)}</b></p>)}</div>
         <p><span>Bukti saat dikirim</span><b>{item.sendProofUrl ? <a className="proof-link" href={item.sendProofUrl} target="_blank" rel="noreferrer">Lihat foto pengiriman</a> : "Tidak dilampirkan"}</b></p>
         <p><span>Bukti saat diterima</span><b>{item.receiveProofUrl ? <a className="proof-link" href={item.receiveProofUrl} target="_blank" rel="noreferrer">Lihat foto penerimaan</a> : "Tidak dilampirkan"}</b></p>

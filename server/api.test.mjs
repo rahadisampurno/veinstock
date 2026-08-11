@@ -23,6 +23,11 @@ beforeAll(async () => {
 afterAll(() => server?.kill('SIGTERM'));
 
 describe('multi-tenant API', () => {
+  it('allows same-origin camera and geolocation features required by stock evidence and attendance', async () => {
+    const response = await fetch(`${base}/api/health`);
+    expect(response.headers.get('permissions-policy')).toBe('camera=(self), microphone=(), geolocation=(self)');
+  });
+
   it('stores role menu and permission policies per organization and rejects non-owner changes', async () => {
     const suffix = `${Date.now()}-role-policy`;
     const owner = await post('/api/register', { organizationName: 'Role Policy', name: 'Owner', email: `owner-${suffix}@test.local`, password: 'Password123!' });
@@ -234,6 +239,7 @@ describe('multi-tenant API', () => {
     const afterSend = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
     const transferCode = afterSend.body.data.transfers[0].transferCode;
     expect(afterSend.body.data.transfers[0].sendProofUrl).toBe(sendProofUrl);
+    expect(afterSend.body.data.transfers[0].createdBy).toBe(owner.body.user.id);
     expect(afterSend.body.data.balances.find(b => b.locationId === 'loc-owner' && b.variantId === 'variant-command').quantity).toBe(10);
 
     const picEmail = `pic-command-${suffix}@test.local`;
@@ -243,6 +249,7 @@ describe('multi-tenant API', () => {
     const afterReceive = await request('/api/state', { headers: { authorization: `Bearer ${pic.body.token}` } });
     expect(afterReceive.body.data.balances.find(b => b.locationId === 'outlet-command' && b.variantId === 'variant-command').quantity).toBe(10);
     expect(afterReceive.body.data.transfers.find(item => item.transferCode === transferCode).receiveProofUrl).toBe(receiveProofUrl);
+    expect(afterReceive.body.data.transfers.find(item => item.transferCode === transferCode).receivedBy).toBe(pic.body.user.id);
 
     const sale = await post('/api/commands/sales', { locationId: 'outlet-command', channel: 'offline', payment: 'Tunai', items: [{ variantId: 'variant-command', quantity: 3 }] }, pic.body.token);
     expect(sale.status).toBe(201);

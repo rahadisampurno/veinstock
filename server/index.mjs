@@ -144,7 +144,7 @@ app.use((req, res, next) => {
     // `camera=()` memblokir getUserMedia sebelum Chrome sempat menampilkan
     // dialog izin; karena itu hanya self yang diizinkan, sementara fitur lain
     // yang tidak dipakai tetap tertutup.
-    'Permissions-Policy': 'camera=(self), microphone=(), geolocation=()'
+    'Permissions-Policy': 'camera=(self), microphone=(), geolocation=(self)'
   });
   if (isProduction) res.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   if (isProduction) res.set('Content-Security-Policy', "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https://res.cloudinary.com; connect-src 'self'; media-src 'self' blob:");
@@ -1731,6 +1731,7 @@ app.post('/api/commands/transfers/:code/receive', requireAuth, async (req, res) 
       balances = commandAdjustBalance(balances, line.toId, line.variantId, Number(line.quantity));
       line.status = 'received';
       line.receivedAt = receivedAt;
+      line.receivedBy = actor.id;
       line.receiveProofUrl = receiveProofUrl;
       state.movements.unshift(commandMovement(line.variantId, line.toId, 'Transfer diterima', Number(line.quantity), `Dari ${locations.get(line.fromId) || 'lokasi asal'} · ${transferCode}`, actor));
     }
