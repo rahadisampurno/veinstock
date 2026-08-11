@@ -278,10 +278,12 @@ const SidebarGlyph = ({ name, active = false }: { name: string; active?: boolean
     case "opname": art = <><rect {...props} x="5" y="4" width="14" height="17" rx="2"/><path {...props} d="M9 4.5h6v2H9zM8 12l2.1 2.1L16 8.5M9 17h6"/></>; break;
     case "history": art = <><path {...props} d="M4 12a8 8 0 1 0 2.3-5.7L4 8.5"/><path {...props} d="M4 4v4.5h4.5M12 7v5l3 2"/></>; break;
     case "sales": art = <><path {...props} d="M4 5h2l1.5 10.5h9.8L19 9H7"/><circle {...props} cx="9" cy="19" r="1.3"/><circle {...props} cx="17" cy="19" r="1.3"/></>; break;
+    case "shipping": art = <><path {...props} d="M3 6h11v11H3zM14 10h3l4 4v3h-7z"/><circle {...props} cx="7" cy="18" r="1.7"/><circle {...props} cx="18" cy="18" r="1.7"/><path {...props} d="M14 14h7"/></>; break;
     case "returns": art = <><path {...props} d="M19 8a7 7 0 1 0 1 6"/><path {...props} d="m19 4v4h-4"/></>; break;
     case "attendance": art = <><circle {...props} cx="12" cy="12" r="8"/><path {...props} d="M12 7v5l3 2"/></>; break;
     case "loans": art = <><rect {...props} x="3" y="6" width="18" height="13" rx="2"/><path {...props} d="M3 10h18M16 15h2"/></>; break;
     case "business": art = <><path {...props} d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1m0-12.8-2.1 2.1m-8.6 8.6-2.1 2.1"/><circle {...props} cx="12" cy="12" r="3.5"/></>; break;
+    case "role-access": art = <><path {...props} d="M12 3 20 6v5c0 5-3.2 8.3-8 10-4.8-1.7-8-5-8-10V6z"/><circle {...props} cx="12" cy="10" r="2"/><path {...props} d="M12 12v4"/></>; break;
     case "help": art = <><circle {...props} cx="12" cy="12" r="8"/><path {...props} d="M9.6 9.3a2.6 2.6 0 1 1 4.3 2c-.9.7-1.9 1.2-1.9 2.7M12 17h.01"/></>; break;
     default: art = <><path {...props} d="M5 5h14v14H5z"/><path {...props} d="M8 12h8"/></>;
   }
