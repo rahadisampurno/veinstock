@@ -28,6 +28,14 @@ describe('multi-tenant API', () => {
     expect(response.headers.get('permissions-policy')).toBe('camera=(self), microphone=(), geolocation=(self)');
   });
 
+  it('returns a readable JSON error when login rate limiting is reached', async () => {
+    const email = `rate-limit-${Date.now()}@test.local`;
+    let limited;
+    for (let attempt = 0; attempt < 11; attempt += 1) limited = await post('/api/login', { email, password: 'salah' });
+    expect(limited.status).toBe(429);
+    expect(limited.body.message).toMatch(/terlalu banyak percobaan/i);
+  });
+
   it('stores role menu and permission policies per organization and rejects non-owner changes', async () => {
     const suffix = `${Date.now()}-role-policy`;
     const owner = await post('/api/register', { organizationName: 'Role Policy', name: 'Owner', email: `owner-${suffix}@test.local`, password: 'Password123!' });
@@ -269,7 +277,12 @@ describe('multi-tenant API', () => {
     const employee = { id: `emp-${suffix}`, userId: createdUser.body.user.id, locationId: 'loc-owner', position: 'Kasir', monthlySalary: 3000000, active: true };
     expect((await post('/api/commands/employees', { employee }, owner.body.token)).status).toBe(201);
 
+    const secondWarehouse = { id: `warehouse-${suffix}`, name: 'Gudang Kedua', type: 'warehouse', active: true };
+    expect((await post('/api/commands/locations', { location: secondWarehouse }, owner.body.token)).status).toBe(201);
+    expect((await patch(`/api/commands/employees/${employee.id}`, { employee: { ...employee, locationId: secondWarehouse.id } }, owner.body.token)).status).toBe(201);
+
     const staff = await post('/api/login', { email: employeeEmail, password: 'Password123!' });
+    expect(staff.body.user.outletId).toBe(secondWarehouse.id);
     expect((await post('/api/commands/attendance', { kind: 'in', latitude: -6.2, longitude: 106.8, capturedAt: '2026-07-31T01:10:00.000Z' }, staff.body.token)).status).toBe(201);
     expect((await post('/api/commands/attendance', { kind: 'out', latitude: -6.2, longitude: 106.8, capturedAt: '2026-07-31T09:10:00.000Z' }, staff.body.token)).status).toBe(201);
     // Nilai cicilan dari browser tidak dipercaya. Server harus menghitung
@@ -292,7 +305,7 @@ describe('multi-tenant API', () => {
       grossAmount: 3000000,
       employeeName: 'Staf Gudang',
       positionSnapshot: 'Kasir',
-      locationNameSnapshot: 'Gudang SDM Command',
+      locationNameSnapshot: 'Gudang Kedua',
     }));
   });
 
@@ -301,13 +314,15 @@ describe('multi-tenant API', () => {
     const owner = await post('/api/register', { organizationName: 'Supplier Command', name: 'Owner', email: `owner-${suffix}@test.local`, password: 'Password123!' });
     const supplier = { id: `sup-${suffix}`, name: 'CV Bahan Snack', phone: '08123456789', active: true };
     expect((await post('/api/commands/suppliers', { supplier }, owner.body.token)).status).toBe(201);
+    const updatedSupplier = { ...supplier, name: 'CV Bahan Snack Terbarui', address: 'Bandung' };
+    expect((await patch(`/api/commands/suppliers/${supplier.id}`, { supplier: updatedSupplier }, owner.body.token)).status).toBe(201);
     const state = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
     state.body.data.products.push({ id: `prd-${suffix}`, name: 'Keripik', category: 'Snack', unit: 'Pcs', active: true, variants: [{ id: `var-${suffix}`, name: 'Original', sku: `SUP-${suffix}`, cost: 1000, price: 2000, resellerPrice: 1500, minStock: 1 }] });
     expect((await request('/api/state', { method: 'PUT', headers: { 'content-type': 'application/json', authorization: `Bearer ${owner.body.token}` }, body: JSON.stringify({ data: state.body.data, version: state.body.version }) })).status).toBe(200);
     const proofUrl = `https://example.test/receipts/${suffix}.webp`;
     expect((await post('/api/commands/receipts', { locationId: 'loc-owner', sourceType: 'supplier', supplierId: supplier.id, supplierName: supplier.name, proofUrl, items: [{ variantId: `var-${suffix}`, quantity: 4, unitCost: 1000 }] }, owner.body.token)).status).toBe(201);
     const refreshed = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
-    expect(refreshed.body.data.suppliers).toContainEqual(expect.objectContaining({ id: supplier.id, name: supplier.name }));
+    expect(refreshed.body.data.suppliers).toContainEqual(expect.objectContaining({ id: supplier.id, name: updatedSupplier.name, address: 'Bandung' }));
     expect(refreshed.body.data.receipts).toContainEqual(expect.objectContaining({ supplierId: supplier.id, variantId: `var-${suffix}`, proofUrl }));
   });
 

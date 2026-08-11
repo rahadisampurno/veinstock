@@ -977,7 +977,7 @@ async function executeCommand(req, res, mutate) {
     state.shipmentHandovers ||= [];
     for (const sale of state.sales) sale.cashierId ||= 'system-migration';
     assignMissingBarcodes(state, req.auth.org);
-    await mutate(state, actor);
+    await mutate(state, actor, connection);
     assignMissingBarcodes(state, req.auth.org);
     const invalid = validateState(state);
     if (invalid) throw invalidCommand(invalid);
@@ -1537,8 +1537,24 @@ app.patch('/api/commands/suppliers/:id', requireAuth, async (req, res) => {
 // People operations use the same server-side command boundary as inventory.
 // They must never be saved by shipping a full organization snapshot from a
 // browser because attendance/payroll is often entered from several devices.
+async function syncEmployeeAccountLocation(connection, organizationId, state, employee) {
+  const account = state.users.find(user => user.id === employee.userId);
+  if (!account || !['pic', 'warehouse', 'cashier'].includes(account.role)) return;
+  const location = state.locations.find(item => item.id === employee.locationId && item.active !== false);
+  if (!location) throw invalidCommand('Lokasi kerja untuk akun staf tidak valid atau belum aktif.');
+  if (account.role === 'warehouse' && location.type !== 'warehouse') throw invalidCommand('Staf Gudang harus ditempatkan di Gudang.');
+  if ((account.role === 'pic' || account.role === 'cashier') && location.type !== 'outlet') throw invalidCommand('PIC/Kasir harus ditempatkan di Outlet.');
+  account.outletId = employee.locationId;
+  if (connection) {
+    await connection.execute('UPDATE users SET outlet_id=? WHERE id=? AND organization_id=?', [employee.locationId, employee.userId, organizationId]);
+  } else {
+    const demoAccount = demoUsers.find(user => user.id === employee.userId && user.organization_id === organizationId);
+    if (demoAccount) demoAccount.outletId = employee.locationId;
+  }
+}
+
 app.post('/api/commands/employees', requireAuth, async (req, res) => {
-  await executeCommand(req, res, async (state, actor) => {
+  await executeCommand(req, res, async (state, actor, connection) => {
     if (!commandAuth(actor, 'user.create').allowed) throw forbiddenCommand('Akun Anda tidak memiliki izin menambah karyawan.');
     const employee = req.body?.employee;
     if (!employee?.id || !employee?.userId || !String(employee.position || '').trim()) throw invalidCommand('Data karyawan tidak valid.');
@@ -1546,16 +1562,18 @@ app.post('/api/commands/employees', requireAuth, async (req, res) => {
     if ((employee.locationId && !state.locations.some(location => location.id === employee.locationId && location.active !== false))) throw invalidCommand('Lokasi kerja karyawan tidak valid.');
     if (state.employees.some(item => item.id === employee.id || item.userId === employee.userId)) throw invalidCommand('Akun tersebut sudah terdaftar sebagai karyawan.');
     state.employees.push({ ...employee, position: String(employee.position).trim(), monthlySalary: Math.max(0, Number(employee.monthlySalary || 0)), active: employee.active !== false });
+    await syncEmployeeAccountLocation(connection, req.auth.org, state, employee);
   });
 });
 app.patch('/api/commands/employees/:id', requireAuth, async (req, res) => {
-  await executeCommand(req, res, async (state, actor) => {
+  await executeCommand(req, res, async (state, actor, connection) => {
     if (!commandAuth(actor, 'user.update').allowed) throw forbiddenCommand('Akun Anda tidak memiliki izin mengubah karyawan.');
     const index = state.employees.findIndex(item => item.id === req.params.id);
     const employee = req.body?.employee;
     if (index < 0 || !employee || employee.id !== req.params.id || !String(employee.position || '').trim()) throw invalidCommand('Data karyawan tidak valid.');
     if (employee.locationId && !state.locations.some(location => location.id === employee.locationId && location.active !== false)) throw invalidCommand('Lokasi kerja karyawan tidak valid.');
     state.employees[index] = { ...state.employees[index], ...employee, position: String(employee.position).trim(), monthlySalary: Math.max(0, Number(employee.monthlySalary || 0)), active: employee.active !== false };
+    await syncEmployeeAccountLocation(connection, req.auth.org, state, state.employees[index]);
   });
 });
 app.post('/api/commands/attendance', requireAuth, async (req, res) => {
