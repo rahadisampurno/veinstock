@@ -23,6 +23,17 @@ const statusListeners = new Set<() => void>();
 let usbDisconnectListenerInstalled = false;
 
 const emitStatus = () => statusListeners.forEach((listener) => listener());
+const withTimeout = async <T,>(operation: Promise<T>, message: string, timeoutMs = 8_000) => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(message)), timeoutMs); }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+};
 export function subscribePrinterStatus(listener: () => void) {
   statusListeners.add(listener);
   return () => { statusListeners.delete(listener); };
@@ -108,7 +119,7 @@ const BLE_PROFILES = [
 ];
 
 async function openBluetoothDevice(device: any) {
-  const server = await device.gatt?.connect();
+  const server = await withTimeout(Promise.resolve(device.gatt?.connect()), "Koneksi RPP02N tidak merespons. Matikan lalu hidupkan printer dan coba kembali.");
   if (!server) throw new Error("Printer Bluetooth tidak dapat dihubungkan.");
   for (const profile of BLE_PROFILES) {
     try {
@@ -227,17 +238,19 @@ async function writeBluetooth(bytes: Uint8Array) {
   // Paket 180 byte dapat resolve di browser tetapi diam-diam dibuang printer.
   for (let offset = 0; offset < bytes.length; offset += 20) {
     const chunk = bytes.slice(offset, offset + 20);
-    if (bluetoothCharacteristic.properties?.write && bluetoothCharacteristic.writeValueWithResponse) {
-      await bluetoothCharacteristic.writeValueWithResponse(chunk);
+    if (bluetoothCharacteristic.properties?.writeWithoutResponse && bluetoothCharacteristic.writeValueWithoutResponse) {
+      await withTimeout(bluetoothCharacteristic.writeValueWithoutResponse(chunk), "RPP02N tidak merespons data cetak.");
+    } else if (bluetoothCharacteristic.properties?.write && bluetoothCharacteristic.writeValueWithResponse) {
+      await withTimeout(bluetoothCharacteristic.writeValueWithResponse(chunk), "RPP02N tidak merespons data cetak.");
     } else if (bluetoothCharacteristic.writeValue) {
-      await bluetoothCharacteristic.writeValue(chunk);
-    } else if (bluetoothCharacteristic.properties?.writeWithoutResponse && bluetoothCharacteristic.writeValueWithoutResponse) {
-      await bluetoothCharacteristic.writeValueWithoutResponse(chunk);
+      await withTimeout(bluetoothCharacteristic.writeValue(chunk), "RPP02N tidak merespons data cetak.");
     } else {
       throw new Error("Printer Bluetooth tidak menyediakan jalur tulis yang didukung.");
     }
-    await new Promise((resolve) => setTimeout(resolve, 12));
+    // RPP02N membutuhkan waktu memproses setiap paket sebelum paket berikutnya.
+    await new Promise((resolve) => setTimeout(resolve, 30));
   }
+  await new Promise((resolve) => setTimeout(resolve, 120));
 }
 
 async function writeUsb(bytes: Uint8Array) {

@@ -5586,14 +5586,14 @@ function PrinterConnectionPanel({ settings, setSettings, notify }: { settings: P
   };
   if (!expanded) return <button type="button" className={`printer-status-link ${connected ? "connected" : settings.mode === "system" ? "system" : "disconnected"}`} onClick={() => setExpanded(true)} aria-label="Buka pengaturan printer struk">
     <Printer size={15} />
-    <span>{connected ? `Printer terhubung${settings.deviceName ? ` · ${settings.deviceName}` : ""}` : settings.mode === "system" ? "Cetak melalui printer sistem" : "Printer belum terhubung"}</span>
+    <span>{connected ? `Printer terhubung${settings.deviceName ? ` · ${settings.deviceName}` : ""}` : settings.mode === "system" ? "Cetak melalui printer sistem" : "Printer belum terhubung"} <small className="printer-beta">Beta</small></span>
     <small>· Klik untuk mengatur</small>
   </button>;
   return <section className="printer-panel expanded" aria-label="Status printer struk">
     <div className="printer-panel-head">
       <div className={`printer-indicator ${connected ? "connected" : settings.mode === "system" ? "system" : "disconnected"}`}>
         <Printer size={19} />
-        <span><b>{connected ? "Printer terhubung" : settings.mode === "system" ? "Cetak melalui sistem" : "Printer belum terhubung"}</b><small>{connected ? settings.deviceName || "ESC/POS siap" : settings.mode === "system" ? "Pilih printer saat dialog cetak terbuka" : "Hubungkan printer sebelum cetak langsung"}</small></span>
+        <span><b>{connected ? "Printer terhubung" : settings.mode === "system" ? "Cetak melalui sistem" : "Printer belum terhubung"} <small className="printer-beta">Beta</small></b><small>{connected ? settings.deviceName || "ESC/POS siap" : settings.mode === "system" ? "Pilih printer saat dialog cetak terbuka" : "Hubungkan printer sebelum cetak langsung"}</small></span>
       </div>
       <div className="printer-head-actions"><span className={`status ${connected ? "ok" : settings.mode === "system" ? "wait" : "danger"}`}>{connected ? "SIAP" : settings.mode === "system" ? "DIALOG" : "PUTUS"}</span><button type="button" className="table-action" onClick={() => setExpanded(false)}>Tutup pengaturan</button></div>
     </div>
@@ -5654,18 +5654,11 @@ function SaleModal({ data, close, save, finalizePrint, abortPrint, fixedLocation
   const printPendingSale = async (result = pendingSale) => {
     if (!result) return;
     setPrintError("");
-    if (printerSettings.mode === "system") {
-      systemPrintSale(result.sale, result.data, printerSettings);
-      setPendingSale(result);
-      setSaving(false);
-      notify("Konfirmasi setelah struk benar-benar keluar dari printer.");
-      return;
-    }
-    await directPrintSale(result.sale, result.data, printerSettings);
+    if (printerSettings.mode === "system") systemPrintSale(result.sale, result.data, printerSettings);
+    else await directPrintSale(result.sale, result.data, printerSettings);
     setPendingSale(result);
-    await finalizePrint(result.sale.id);
-    notify("Data struk diterima printer. Transaksi berstatus selesai.");
-    close();
+    setSaving(false);
+    notify("Data struk sudah dikirim. Konfirmasi hanya setelah kertas benar-benar keluar.");
   };
   const cancelPendingSale = async () => {
     if (!pendingSale || saving) return;
@@ -6074,7 +6067,7 @@ function SaleModal({ data, close, save, finalizePrint, abortPrint, fixedLocation
           {pendingSale ? <>
             <button type="button" className="danger-button" onClick={() => void cancelPendingSale()} disabled={saving}>Batalkan transaksi</button>
             <button type="button" className="secondary" onClick={() => void printPendingSale()} disabled={saving || (printerSettings.mode !== "system" && !isPrinterConnected(printerSettings.mode))}><Printer size={17} />Cetak ulang</button>
-            {printerSettings.mode === "system" && <button type="button" className="primary" onClick={() => void finishPendingSale()} disabled={saving}><Check size={17} />Struk sudah tercetak</button>}
+            <button type="button" className="primary" onClick={() => void finishPendingSale()} disabled={saving}><Check size={17} />Struk sudah tercetak</button>
           </> : <>
             <button type="button" className="secondary" onClick={close} disabled={saving}>Batal</button>
             <button type="submit" className="primary" disabled={cart.length === 0 || saving || (printReceipt && printerSettings.mode !== "system" && !isPrinterConnected(printerSettings.mode))}>
@@ -6222,14 +6215,8 @@ function SaleDetail({ item, data, variants, locations, close, notify, finalizePr
       if (printerSettings.mode === "system") systemPrintSale(item, data, printerSettings);
       else await directPrintSale(item, data, printerSettings);
       if (item.status === "pending_print") {
-        if (printerSettings.mode === "system") {
-          setAwaitingSystemConfirmation(true);
-          notify("Konfirmasi setelah struk benar-benar keluar dari printer.");
-        } else {
-          await finalizePrint(item.id);
-          notify("Data struk diterima printer. Transaksi berstatus selesai.");
-          close();
-        }
+        setAwaitingSystemConfirmation(true);
+        notify("Data struk sudah dikirim. Konfirmasi hanya setelah kertas benar-benar keluar.");
       } else notify("Cetak ulang struk berhasil dikirim.");
     } catch (error) {
       notify(error instanceof Error ? error.message : "Struk tidak dapat dicetak.", "error");

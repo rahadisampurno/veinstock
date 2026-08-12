@@ -916,6 +916,7 @@ body{font-size:16px;line-height:1.5}.brand small{font-size:12px}.workspace>span{
 
 .printer-status-link{display:inline-flex;align-items:center;gap:5px;margin:0 0 15px;padding:0;border:0;background:transparent;color:#9b2c2c;font:inherit;font-size:12px;font-weight:700;text-align:left;cursor:pointer;text-decoration:underline;text-decoration-color:transparent;text-underline-offset:3px;transition:color .16s ease,text-decoration-color .16s ease}
 .printer-status-link:hover,.printer-status-link:focus-visible{text-decoration-color:currentColor}.printer-status-link.connected{color:#177245}.printer-status-link.system{color:#93661b}.printer-status-link small{font-size:11px;font-weight:600;color:var(--muted)}
+.printer-status-link .printer-beta,.printer-indicator .printer-beta{display:inline;margin:0 0 0 4px;padding:1px 5px;border-radius:999px;background:#fff0c7;color:#805800;font-size:9px;font-weight:800;letter-spacing:.03em;text-transform:uppercase;vertical-align:1px}
 .printer-panel{margin:0 0 16px;padding:15px;border:1px solid #d9e5eb;border-radius:14px;background:#f8fbfc}
 .printer-panel-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.printer-panel.expanded .printer-panel-head{margin-bottom:12px}
 .printer-indicator{display:flex;align-items:center;gap:10px;min-width:0;color:#9b2c2c}
