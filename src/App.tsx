@@ -23,6 +23,8 @@ import {
   KeyRound,
   Menu,
   PackagePlus,
+  Pin,
+  PinOff,
   Printer,
   Usb,
   Bluetooth,
@@ -575,13 +577,20 @@ function App() {
   const [page, setPageState] = useState<Page>("dashboard");
   const [helpSection, setHelpSection] = useState<string | null>(null);
   const [sidebar, setSidebar] = useState(false);
-  // Desktop menggunakan rail ringkas secara konsisten; panel lengkap muncul
-  // saat pointer berada di rail sehingga tidak membutuhkan tombol ciutkan.
-  const desktopSidebar = false;
+  // Sidebar desktop/tablet lebar terbuka secara default. Preferensi pin
+  // disimpan per perangkat agar kasir tidak perlu membukanya berulang kali.
+  const [desktopSidebar, setDesktopSidebar] = useState(() => {
+    try {
+      const saved = window.localStorage.getItem("menengs_sidebar_pinned");
+      return saved === null ? true : saved === "true";
+    } catch {
+      return true;
+    }
+  });
   // Preview saat pointer berada di rail. Ini tidak mengubah preferensi
   // collapse yang disimpan pengguna.
   const [sidebarHoverPreview, setSidebarHoverPreview] = useState(false);
-  const [isMobileViewport, setIsMobileViewport] = useState(() => window.innerWidth <= 1024);
+  const [isMobileViewport, setIsMobileViewport] = useState(() => window.innerWidth <= 767);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [modal, setModalState] = useState<string | null>(null);
   const [notificationIntent, setNotificationIntent] = useState<NotificationIntent | null>(null);
@@ -671,11 +680,14 @@ function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => {
-    const updateViewport = () => setIsMobileViewport(window.innerWidth <= 1024);
+    const updateViewport = () => setIsMobileViewport(window.innerWidth <= 767);
     updateViewport();
     window.addEventListener("resize", updateViewport);
     return () => window.removeEventListener("resize", updateViewport);
   }, []);
+  useEffect(() => {
+    try { window.localStorage.setItem("menengs_sidebar_pinned", String(desktopSidebar)); } catch { /* Penyimpanan preferensi tidak tersedia. */ }
+  }, [desktopSidebar]);
   const applyLocalData = (update: AppData | ((current: AppData) => AppData)) => {
     const nextData = typeof update === "function" ? update(dataRef.current) : update;
     dataRef.current = nextData;
@@ -1124,6 +1136,9 @@ function App() {
                 </button>
               ))}
             </div>
+            <button className="rail-collapse" type="button" title="Pin sidebar terbuka" aria-label="Pin sidebar terbuka" onClick={() => { setDesktopSidebar(true); setSidebarHoverPreview(false); }}>
+              <Pin size={17} />
+            </button>
           </div>
         ) : (
           <div className="sidebar-panel">
@@ -1133,6 +1148,9 @@ function App() {
               <strong>MENENGS</strong>
               <small>Snack selalu ngangenin.</small>
             </div>
+            {!isMobileViewport && <button className={`sidebar-pin-button${desktopSidebar ? " active" : ""}`} type="button" title={desktopSidebar ? "Lepas pin sidebar" : "Pin sidebar terbuka"} aria-label={desktopSidebar ? "Lepas pin sidebar" : "Pin sidebar terbuka"} onClick={() => { setDesktopSidebar((current) => !current); setSidebarHoverPreview(false); }}>
+              {desktopSidebar ? <PinOff size={18} /> : <Pin size={18} />}
+            </button>}
             <button className="icon-btn close-mobile" aria-label="Tutup menu" onClick={() => setSidebar(false)}><X size={20} /></button>
           </div>
           <div className="workspace">
@@ -1675,18 +1693,22 @@ function App() {
         <SaleModal
           data={data}
           notify={notify}
-          fixedLocation={['pic', 'cashier'].includes(user.role) ? user.outletId : undefined}
+          fixedLocation={scope.scopeType === "specific" ? user.outletId : undefined}
+          defaultLocation={user.role === "owner"
+            ? data.locations.find((location: any) => location.active && location.isCentralWarehouse)?.id
+            : user.outletId}
           close={() => setModal(null)}
           save={async (
             loc: string,
             channel: Channel,
             cart: Array<{variantId: string, quantity: number}>,
             payment: string,
-            requiresPrint: boolean
+            requiresPrint: boolean,
+            note?: string
           ) => {
             if (!cart.some(item => isPositiveNumber(item.quantity))) return notify("Tidak ada produk valid di keranjang");
             const previousIds = new Set(data.sales.map((sale) => sale.id));
-            const updated = normalizeData(await runCommand("/api/commands/sales", { locationId: loc, channel, items: cart, payment, requiresPrint }));
+            const updated = normalizeData(await runCommand("/api/commands/sales", { locationId: loc, channel, items: cart, payment, requiresPrint, note }));
             const sale = updated.sales.find((item) => !previousIds.has(item.id)) || [...updated.sales].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
             if (!sale) throw new Error("Penjualan tersimpan, tetapi struk transaksi belum dapat ditemukan.");
             notify(requiresPrint ? "Transaksi menunggu struk tercetak." : "Penjualan tersimpan dan stok otomatis berkurang");
@@ -4301,6 +4323,9 @@ function ProductExportModal({ data, close, notify }: any) {
     { key: "productName", header: "Nama Produk", width: 28 },
     { key: "category", header: "Kategori", width: 18 },
     { key: "variantName", header: "Nama Varian", width: 24 },
+    { key: "packageWeight", header: "Berat / Kemasan", width: 18 },
+    { key: "flavor", header: "Varian Rasa", width: 18 },
+    { key: "spiceLevel", header: "Level Pedas", width: 16 },
     { key: "sku", header: "SKU", width: 20 },
     { key: "barcode", header: "Barcode EAN-13", width: 20 },
     { key: "unit", header: "Satuan", width: 12 },
@@ -4323,6 +4348,9 @@ function ProductExportModal({ data, close, notify }: any) {
     productName: product.name,
     category: product.category || "-",
     variantName: variant.name,
+    packageWeight: variant.packageWeight || "-",
+    flavor: variant.flavor || "-",
+    spiceLevel: variant.spiceLevel || "-",
     sku: variant.sku || "-",
     barcode: variant.barcode || "-",
     unit: product.unit || "Pcs",
@@ -4382,7 +4410,7 @@ function ProductModal({
 
   const [variants, setVariants] = useState<any[]>(
     product?.variants || [
-      { id: newId("v"), name: "", sku: "", cost: 0, price: 0, resellerPrice: 0, minStock: 0, active: true, initialStock: 0 }
+      { id: newId("v"), name: "", sku: "", packageWeight: "", flavor: "", spiceLevel: "", cost: 0, price: 0, resellerPrice: 0, minStock: 0, active: true, initialStock: 0 }
     ]
   );
   
@@ -4424,7 +4452,7 @@ function ProductModal({
     setVariants(variants.filter((_, i) => i !== index));
   };
   const addVariant = () => {
-    setVariants([...variants, { id: newId("v"), name: "", sku: "", cost: 0, price: 0, resellerPrice: 0, minStock: 0, active: true, initialStock: 0 }]);
+    setVariants([...variants, { id: newId("v"), name: "", sku: "", packageWeight: "", flavor: "", spiceLevel: "", cost: 0, price: 0, resellerPrice: 0, minStock: 0, active: true, initialStock: 0 }]);
   };
 
   return (
@@ -4577,6 +4605,21 @@ function ProductModal({
               </Field>
               <Field label="SKU (Otomatis jika kosong)">
                 <input value={v.sku} onChange={(e) => updateVariant(index, 'sku', e.target.value)} />
+              </Field>
+              <Field label="Berat / Kemasan (opsional)">
+                <input value={v.packageWeight || ""} onChange={(e) => updateVariant(index, 'packageWeight', e.target.value)} placeholder="Contoh: 150 gr, 1 kg, Toples 450 gr" />
+              </Field>
+              <Field label="Varian rasa (opsional)">
+                <input value={v.flavor || ""} onChange={(e) => updateVariant(index, 'flavor', e.target.value)} placeholder="Contoh: Balado, Keju, Asin Daun Jeruk" />
+              </Field>
+              <Field label="Level pedas (opsional)">
+                <select value={v.spiceLevel || ""} onChange={(e) => updateVariant(index, 'spiceLevel', e.target.value)}>
+                  <option value="">Tidak ditentukan</option>
+                  <option value="Original / Level 0">Original / Level 0</option>
+                  <option value="Sedang">Sedang</option>
+                  <option value="Pedas">Pedas</option>
+                  <option value="Extra Pedas">Extra Pedas</option>
+                </select>
               </Field>
               <Field label="Barcode (scan atau isi manual)">
                 <div className="barcode-field">
@@ -5614,21 +5657,26 @@ function PrinterConnectionPanel({ settings, setSettings, notify }: { settings: P
   </section>;
 }
 
-function SaleModal({ data, close, save, finalizePrint, abortPrint, fixedLocation, notify }: any) {
+function SaleModal({ data, close, save, finalizePrint, abortPrint, fixedLocation, defaultLocation, notify }: any) {
   const activeLocations=data.locations.filter((l:any)=>l.active),variants = data.products.filter((p:any)=>p.active).flatMap((p: any) =>
       p.variants.filter((item:any)=>item.active!==false).map((item: any) => ({
         ...item,
         unit: p.unit,
         productName: p.name,
+        category: p.category,
+        productImageUrl: p.imageUrl || p.image || item.imageUrl,
       })),
     ),
     [loc, setLoc] = useState(
-      fixedLocation || activeLocations[1]?.id || activeLocations[0]?.id || "",
+      fixedLocation || activeLocations.find((location: any) => location.id === defaultLocation)?.id || activeLocations[0]?.id || "",
     ),
     [channel, setChannel] = useState<Channel>("offline"),
     [skuSearch, setSkuSearch] = useState(""),
     [categoryFilter, setCategoryFilter] = useState("all"),
+    [selectedPosProduct, setSelectedPosProduct] = useState<string | null>(null),
     [payment, setPayment] = useState("QRIS"),
+    [buyerNote, setBuyerNote] = useState(""),
+    [transactionSettingsOpen, setTransactionSettingsOpen] = useState(false),
     [cart, setCart] = useState<Array<{ variantId: string; quantity: number }>>([]),
     [printerSettings, setPrinterSettings] = useState<PrinterSettings>(() => loadPrinterSettings()),
     [printReceipt, setPrintReceipt] = useState(false),
@@ -5640,16 +5688,27 @@ function SaleModal({ data, close, save, finalizePrint, abortPrint, fixedLocation
     categories = Array.from(new Set(variants.map((item: any) => item.category).filter(Boolean))).sort() as string[],
     matchingVariants = variants.filter((item: any) =>
       (categoryFilter === "all" || item.category === categoryFilter) &&
-      `${item.sku || ""} ${item.barcode || ""} ${item.productName} ${item.name}`.toLowerCase().includes(skuSearch.toLowerCase()),
+      `${item.sku || ""} ${item.barcode || ""} ${item.productName} ${item.name} ${item.packageWeight || ""} ${item.flavor || ""} ${item.spiceLevel || ""}`.toLowerCase().includes(skuSearch.toLowerCase()),
     ),
     sellableMatchingVariants = matchingVariants.filter((item: any) =>
       getBalance(data.balances, loc, item.id) > 0 || cart.some(c => c.variantId === item.id),
     );
+  const prepareNextSale = () => {
+    setCart([]);
+    setBuyerNote("");
+    setSkuSearch("");
+    setSelectedPosProduct(null);
+    setCameraError("");
+    setPrintError("");
+    setPendingSale(null);
+    setSaving(false);
+    requestAnimationFrame(() => scannerRef.current?.focus());
+  };
   const finishPendingSale = async () => {
     if (!pendingSale) return;
     await finalizePrint(pendingSale.sale.id);
-    notify("Struk sudah tercetak. Transaksi sekarang berstatus selesai.");
-    close();
+    notify("Struk sudah tercetak. POS siap untuk transaksi berikutnya.");
+    prepareNextSale();
   };
   const printPendingSale = async (result = pendingSale) => {
     if (!result) return;
@@ -5665,8 +5724,8 @@ function SaleModal({ data, close, save, finalizePrint, abortPrint, fixedLocation
     setSaving(true);
     try {
       await abortPrint(pendingSale.sale.id);
-      notify("Transaksi dibatalkan dan stok dikembalikan karena struk tidak tercetak.");
-      close();
+      notify("Transaksi dibatalkan dan stok dikembalikan. POS siap digunakan kembali.");
+      prepareNextSale();
     } catch (error) {
       notify(error instanceof Error ? error.message : "Transaksi menunggu cetak tidak dapat dibatalkan.", "error");
       setSaving(false);
@@ -5900,7 +5959,7 @@ function SaleModal({ data, close, save, finalizePrint, abortPrint, fixedLocation
           const shouldPrint = printReceipt;
           setSaving(true);
           try {
-            const result = await save(loc, channel, cart, payment, shouldPrint);
+            const result = await save(loc, channel, cart, payment, shouldPrint, buyerNote.trim() || undefined);
             if (shouldPrint) {
               try {
                 setPendingSale(result);
@@ -5913,13 +5972,18 @@ function SaleModal({ data, close, save, finalizePrint, abortPrint, fixedLocation
               }
               return;
             }
-            close();
+            prepareNextSale();
           } catch (error) {
             notify(error instanceof Error ? error.message : "Penjualan tidak dapat disimpan.", "error");
             setSaving(false);
           }
         }}
       >
+        <button type="button" className="pos-settings-toggle" aria-expanded={transactionSettingsOpen} onClick={() => setTransactionSettingsOpen((current) => !current)}>
+          <span><Settings size={17} /><span><b>Pengaturan Transaksi</b><small>{activeLocations.find((location: any) => location.id === loc)?.name || "Lokasi"} · {channel === "offline" ? "Offline" : channel === "online" ? "Online" : "Reseller"} · {printReceipt ? "Cetak resi" : "Tanpa resi"}</small></span></span>
+          {transactionSettingsOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+        </button>
+        {transactionSettingsOpen && <section className="pos-transaction-settings">
         <label className="receipt-print-toggle">
           <input type="checkbox" checked={printReceipt} onChange={(event) => setPrintReceipt(event.target.checked)} />
           <span><b>Cetak resi setelah disimpan</b><small>Default tidak mencetak. Aktifkan hanya jika pelanggan membutuhkan resi.</small></span>
@@ -5950,6 +6014,9 @@ function SaleModal({ data, close, save, finalizePrint, abortPrint, fixedLocation
             </select>
           </Field>
         </div>
+        </section>}
+        <div className={isOffline ? "pos-counter-workspace" : "pos-counter-workspace standard-sale"}>
+        <section className="pos-catalog-panel">
         <div className={isOffline ? "pos-product-picker" : ""} style={{ background: 'var(--bg)', padding: '16px', borderRadius: '8px', marginBottom: '16px', border: '1px solid var(--border)' }}>
           <h4 style={{ margin: '0 0 12px', fontSize: 13, color: 'var(--muted)' }}>TAMBAH PRODUK</h4>
           <Field label="">
@@ -5958,7 +6025,7 @@ function SaleModal({ data, close, save, finalizePrint, abortPrint, fixedLocation
                 ref={scannerRef}
                 value={skuSearch}
                 onChange={(e) => setSkuSearch(e.target.value)}
-                placeholder="Cari produk, varian, atau SKU"
+                placeholder={selectedPosProduct ? "Cari varian atau SKU" : "Cari produk"}
                 autoComplete="off"
                 inputMode="search"
                 onPointerDown={primeScanAudio}
@@ -5981,32 +6048,55 @@ function SaleModal({ data, close, save, finalizePrint, abortPrint, fixedLocation
               <video ref={scannerVideoRef} muted playsInline aria-label="Pratinjau kamera pemindai barcode" />
               <div><span>Arahkan kamera ke barcode produk</span><button type="button" onClick={stopCameraScanner}><X size={16} /> Tutup kamera</button></div>
             </div>}
-            <div className="pos-category-tabs" aria-label="Kategori produk">
+            {selectedPosProduct && isOffline && <div className="pos-variant-navigation">
+              <button type="button" onClick={() => { setSelectedPosProduct(null); setSkuSearch(""); }}><ChevronLeft size={18} /> Kembali</button>
+              <div><small>PRODUK TERPILIH</small><b>{selectedPosProduct}</b></div>
+            </div>}
+            {!selectedPosProduct && <div className="pos-category-tabs" aria-label="Kategori produk">
               <button type="button" className={categoryFilter === "all" ? "active" : ""} onClick={() => setCategoryFilter("all")}>Semua</button>
               {categories.map((category) => <button type="button" key={category} className={categoryFilter === category ? "active" : ""} onClick={() => setCategoryFilter(category)}>{category}</button>)}
-            </div>
-            <div className={isOffline ? "pos-product-results" : ""} style={{ maxHeight: 200, overflowY: 'auto', border: '1px solid var(--line)', borderRadius: 6, padding: 8, marginTop: 8, background: 'white' }}>
+            </div>}
+            <div className={`${isOffline ? "pos-product-results" : ""} ${selectedPosProduct ? "showing-variants" : "showing-products"}`} style={{ maxHeight: 200, overflowY: 'auto', border: '1px solid var(--line)', borderRadius: 6, padding: 8, marginTop: 8, background: 'white' }}>
               {visibleProductGroups.length === 0 && <p className="pos-empty-products">Tidak ada varian tersedia untuk lokasi ini. Tambahkan stok terlebih dahulu.</p>}
-              {visibleProductGroups.map((product: any) => <section className="pos-product-group" key={product.name}>
+              {visibleProductGroups.filter((product: any) => !selectedPosProduct || product.name === selectedPosProduct).map((product: any) => <section
+                className={`pos-product-group ${selectedPosProduct ? "variant-mode" : "product-mode"}`}
+                key={product.name}
+                role={!selectedPosProduct && isOffline ? "button" : undefined}
+                tabIndex={!selectedPosProduct && isOffline ? 0 : undefined}
+                aria-label={!selectedPosProduct && isOffline ? `Lihat varian ${product.name}` : undefined}
+                onClick={!selectedPosProduct && isOffline ? () => { setSelectedPosProduct(product.name); setSkuSearch(""); } : undefined}
+                onKeyDown={!selectedPosProduct && isOffline ? (event) => {
+                  if (event.key !== "Enter" && event.key !== " ") return;
+                  event.preventDefault();
+                  setSelectedPosProduct(product.name);
+                  setSkuSearch("");
+                } : undefined}
+              >
                 <header>
-                  <div className="pos-product-image">{product.imageUrl ? <img src={product.imageUrl} alt="" /> : product.name.slice(0, 2).toUpperCase()}</div>
+                  <div className="pos-product-image">
+                    <span>{product.name.slice(0, 2).toUpperCase()}</span>
+                    {product.imageUrl && <img src={product.imageUrl} alt={product.name} loading="lazy" onError={(event) => { event.currentTarget.style.display = "none"; }} />}
+                  </div>
                   <div><b>{product.name}</b><small>{product.variants.length} varian tersedia</small></div>
                 </header>
-                <div className="pos-variant-list">
+                {!selectedPosProduct && isOffline ? null : <div className="pos-variant-list">
                   {product.variants.map((v: any) => {
                     const checked = cart.some(c => c.variantId === v.id);
                     return <button type="button" className={isOffline ? "pos-product-button" : "sale-product-button"} key={v.id} onClick={() => addToCart(v.id)}>
-                      <span><b>{v.name}</b><small>Stok: {getBalance(data.balances, loc, v.id)} {v.unit} · {money(channel === "reseller" ? v.resellerPrice : v.price)}</small></span>
+                      <span><b>{v.name}</b>{(v.packageWeight || v.flavor || v.spiceLevel) && <small className="pos-variant-attributes">{[v.packageWeight, v.flavor, v.spiceLevel].filter(Boolean).join(" · ")}</small>}<small>Stok: {getBalance(data.balances, loc, v.id)} {v.unit} · {money(channel === "reseller" ? v.resellerPrice : v.price)}</small></span>
                       <strong>{checked ? '+1 lagi' : 'Tambah'}</strong>
                     </button>;
                   })}
-                </div>
+                </div>}
               </section>)}
             </div>
           </Field>
         </div>
-        
+        </section>
+        <aside className="pos-order-panel">
+          {isOffline && <div className="pos-order-heading"><div><small>PESANAN AKTIF</small><h3>Detail Pesanan</h3></div><span>{totalQty} item</span></div>}
         {cart.length > 0 && (
+          <>
           <div className="pos-cart-table" style={{ marginBottom: 16 }}>
             <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse', textAlign: 'left' }}>
               <thead>
@@ -6043,7 +6133,8 @@ function SaleModal({ data, close, save, finalizePrint, abortPrint, fixedLocation
                 })}
               </tbody>
             </table>
-            <div style={{ background: 'var(--navy)', color: 'white', padding: '12px 16px', borderRadius: '8px', marginTop: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          </div>
+            <div className="pos-cart-summary" style={{ background: 'var(--navy)', color: 'white', padding: '12px 16px', borderRadius: '8px', marginTop: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div>
                 <div style={{ fontSize: 11, opacity: 0.8 }}>TOTAL TAGIHAN</div>
                 <div style={{ fontSize: 16, fontWeight: 700 }}>{money(totalAmount)}</div>
@@ -6053,9 +6144,13 @@ function SaleModal({ data, close, save, finalizePrint, abortPrint, fixedLocation
                 <div style={{ fontSize: 14, fontWeight: 600 }}>{totalQty} item</div>
               </div>
             </div>
-          </div>
+          </>
         )}
 
+        <Field label="Catatan pesanan (opsional)">
+          <input className="pos-buyer-note" maxLength={300} value={buyerNote} onChange={(event) => setBuyerNote(event.target.value)} placeholder="Contoh: kurangi asin, bubuk cabai saja tanpa chili oil" />
+          <small className="pos-note-hint">Catatan akan tersimpan pada transaksi dan tercetak di struk.</small>
+        </Field>
         <div className={isOffline ? "pos-payment" : "form-grid"}>
           <Field label="Metode Pembayaran">
             {isOffline ? <div className="pos-payment-options">{['QRIS', 'Tunai', 'Transfer'].map(method => <button key={method} type="button" className={payment === method ? 'active' : ''} onClick={() => setPayment(method)}>{method}</button>)}</div> : <select value={payment} onChange={(e) => setPayment(e.target.value)}><option>QRIS</option><option>Tunai</option><option>Transfer</option></select>}
@@ -6076,6 +6171,8 @@ function SaleModal({ data, close, save, finalizePrint, abortPrint, fixedLocation
             </button>
           </>}
         </footer>
+        </aside>
+        </div>
       </form>
     </Modal>
   );
@@ -6245,6 +6342,12 @@ function SaleDetail({ item, data, variants, locations, close, notify, finalizePr
             {item.channel} &middot; {item.payment}
           </b>
         </p>
+        {item.note && (
+          <p className="sale-detail-note">
+            <span>Catatan pesanan</span>
+            <b>{item.note}</b>
+          </p>
+        )}
         {item.items.map((line: any) => (
           <p key={line.variantId}>
             <span>

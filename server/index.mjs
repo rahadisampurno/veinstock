@@ -424,6 +424,9 @@ async function db() {
       name VARCHAR(150) NOT NULL,
       sku VARCHAR(100) NOT NULL,
       barcode VARCHAR(20) NULL,
+      package_weight VARCHAR(100) NULL,
+      flavor VARCHAR(100) NULL,
+      spice_level VARCHAR(50) NULL,
       cost INT NOT NULL DEFAULT 0,
       price INT NOT NULL DEFAULT 0,
       reseller_price INT NOT NULL DEFAULT 0,
@@ -437,6 +440,13 @@ async function db() {
       await pool.execute('ALTER TABLE variants ADD COLUMN barcode VARCHAR(20) NULL AFTER sku');
     } catch (error) {
       if (error?.code !== 'ER_DUP_FIELDNAME') throw error;
+    }
+    for (const statement of [
+      'ALTER TABLE variants ADD COLUMN package_weight VARCHAR(100) NULL AFTER barcode',
+      'ALTER TABLE variants ADD COLUMN flavor VARCHAR(100) NULL AFTER package_weight',
+      'ALTER TABLE variants ADD COLUMN spice_level VARCHAR(50) NULL AFTER flavor',
+    ]) {
+      try { await pool.execute(statement); } catch (error) { if (error?.code !== 'ER_DUP_FIELDNAME') throw error; }
     }
     await backfillBarcodes(pool);
     await backfillRolePolicyDependencies(pool);
@@ -1662,7 +1672,7 @@ app.post('/api/commands/payrolls', requireAuth, async (req, res) => {
 
 app.post('/api/commands/sales', requireAuth, async (req, res) => {
   await executeCommand(req, res, async (state, actor) => {
-    const { locationId, channel, payment, items, requiresPrint = false } = req.body || {};
+    const { locationId, channel, payment, items, requiresPrint = false, note } = req.body || {};
     const authorization = commandAuth(actor, 'sale.create', locationId);
     if (!authorization.allowed) throw forbiddenCommand(authorization.reason);
     if (!state.locations.some(location => location.id === locationId && location.active !== false)) throw invalidCommand('Lokasi penjualan tidak aktif atau tidak ditemukan.');
@@ -1694,7 +1704,7 @@ app.post('/api/commands/sales', requireAuth, async (req, res) => {
       movements.push(commandMovement(variantId, locationId, `Penjualan ${channel}`, -quantity, `${quantity} ${variant.unit}`, actor));
     }
     state.balances = balances;
-    state.sales.unshift({ id: commandId('sale'), locationId, channel, total, payment: String(payment || 'Tunai'), cashierId: actor.id, createdAt: new Date().toISOString(), items: saleItems, status: requiresPrint === true ? 'pending_print' : 'completed' });
+    state.sales.unshift({ id: commandId('sale'), locationId, channel, total, payment: String(payment || 'Tunai'), note: String(note || '').trim().slice(0, 300) || undefined, cashierId: actor.id, createdAt: new Date().toISOString(), items: saleItems, status: requiresPrint === true ? 'pending_print' : 'completed' });
     state.movements.unshift(...movements);
   });
 });

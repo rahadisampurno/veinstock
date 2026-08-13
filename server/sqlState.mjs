@@ -22,8 +22,8 @@ export async function syncStateToSQL(conn, orgId, data) {
     );
     for (const v of prod.variants || []) {
       await conn.execute(
-        `INSERT INTO variants (id, product_id, organization_id, name, sku, barcode, cost, price, reseller_price, min_stock, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE name=VALUES(name), sku=VALUES(sku), barcode=VALUES(barcode), cost=VALUES(cost), price=VALUES(price), reseller_price=VALUES(reseller_price), min_stock=VALUES(min_stock), active=VALUES(active)`,
-        [v.id ?? 'unknown', prod.id ?? 'unknown', orgId, v.name ?? 'Unknown', v.sku ?? '', v.barcode ?? null, v.cost ?? 0, v.price ?? 0, v.resellerPrice ?? 0, v.minStock ?? 0, v.active !== false]
+        `INSERT INTO variants (id, product_id, organization_id, name, sku, barcode, package_weight, flavor, spice_level, cost, price, reseller_price, min_stock, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE name=VALUES(name), sku=VALUES(sku), barcode=VALUES(barcode), package_weight=VALUES(package_weight), flavor=VALUES(flavor), spice_level=VALUES(spice_level), cost=VALUES(cost), price=VALUES(price), reseller_price=VALUES(reseller_price), min_stock=VALUES(min_stock), active=VALUES(active)`,
+        [v.id ?? 'unknown', prod.id ?? 'unknown', orgId, v.name ?? 'Unknown', v.sku ?? '', v.barcode ?? null, v.packageWeight ?? null, v.flavor ?? null, v.spiceLevel ?? null, v.cost ?? 0, v.price ?? 0, v.resellerPrice ?? 0, v.minStock ?? 0, v.active !== false]
       );
     }
   }
@@ -87,7 +87,7 @@ export async function syncStateToSQL(conn, orgId, data) {
 export async function getStateFromSQL(conn, orgId) {
   const [locations] = await conn.execute('SELECT id, name, type, address, active, is_central_warehouse as isCentralWarehouse FROM locations WHERE organization_id = ?', [orgId]);
   const [products] = await conn.execute('SELECT id, name, category, unit, active, image_url as imageUrl FROM products WHERE organization_id = ?', [orgId]);
-  const [variants] = await conn.execute('SELECT id, product_id, name, sku, barcode, cost, price, reseller_price as resellerPrice, min_stock as minStock, active FROM variants WHERE organization_id = ?', [orgId]);
+  const [variants] = await conn.execute('SELECT id, product_id, name, sku, barcode, package_weight as packageWeight, flavor, spice_level as spiceLevel, cost, price, reseller_price as resellerPrice, min_stock as minStock, active FROM variants WHERE organization_id = ?', [orgId]);
   
   for (const p of products) {
     p.active = p.active === 1;
