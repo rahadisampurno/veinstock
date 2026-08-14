@@ -24,7 +24,8 @@ export function resolveUserScope(user) {
      'transfer.view', 'transfer.create', 'transfer.send', 'transfer.receive', 'transfer.cancel',
      'sale.view', 'sale.create', 'sale.void', 'shipping.view', 'shipping.manage',
      'report.view', 'report.export', 'audit.view', 'supplier.view', 'supplier.manage',
-     'pricing.view', 'pricing.manage', 'attendance.view', 'attendance.record', 'attendance.manage', 'payroll.view', 'payroll.manage'].forEach(p => permissions.add(p));
+     'pricing.view', 'pricing.manage', 'attendance.view', 'attendance.record', 'attendance.manage', 'payroll.view', 'payroll.manage',
+     'cashbook.view', 'cashbook.manage'].forEach(p => permissions.add(p));
   } else if (role === 'admin') {
     ['product.view', 'product.create', 'product.update',
      'location.view', 'location.create', 'location.update',
@@ -32,9 +33,10 @@ export function resolveUserScope(user) {
      'stock.view', 'stock.initial_balance', 'stock.in', 'stock.out', 'stock.adjust', 'stock.opname',
      'transfer.view', 'transfer.create', 'transfer.send', 'transfer.receive', 'transfer.cancel',
      'sale.view', 'sale.create', 'sale.void', 'shipping.view', 'shipping.manage',
-     'report.view', 'report.export', 'audit.view', 'supplier.view', 'supplier.manage', 'pricing.view', 'pricing.manage', 'attendance.view', 'attendance.record'].forEach(p => permissions.add(p));
+     'report.view', 'report.export', 'audit.view', 'supplier.view', 'supplier.manage', 'pricing.view', 'pricing.manage', 'attendance.view', 'attendance.record',
+     'cashbook.view', 'cashbook.manage'].forEach(p => permissions.add(p));
   } else if (role === 'finance') {
-    ['stock.view', 'report.view', 'report.export', 'pricing.view'].forEach(p => permissions.add(p));
+    ['stock.view', 'report.view', 'report.export', 'pricing.view', 'cashbook.view', 'cashbook.manage'].forEach(p => permissions.add(p));
   } else if (role === 'warehouse') {
     ['product.view', 'location.view', 'stock.view', 'stock.in', 'stock.out', 'stock.opname',
      'transfer.view', 'transfer.create', 'transfer.send', 'shipping.view', 'shipping.manage', 'report.view', 'report.export', 'audit.view', 'attendance.view', 'attendance.record'].forEach(p => permissions.add(p));

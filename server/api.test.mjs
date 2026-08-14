@@ -11,6 +11,7 @@ const request = async (path, options = {}) => {
 };
 const post = (path, body, token) => request(path, { method: 'POST', headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body) });
 const patch = (path, body, token) => request(path, { method: 'PATCH', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: JSON.stringify(body) });
+const decodeJwtPayload = token => JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'));
 
 beforeAll(async () => {
   server = spawn(process.execPath, ['server/index.mjs'], { cwd: process.cwd(), env: { ...process.env, PORT: String(port), DB_HOST: '', JWT_SECRET: 'integration-test-secret', ALLOW_SELF_REGISTRATION: 'true', ALLOW_LEGACY_SNAPSHOT: 'true' }, stdio: 'ignore' });
@@ -23,6 +24,25 @@ beforeAll(async () => {
 afterAll(() => server?.kill('SIGTERM'));
 
 describe('multi-tenant API', () => {
+  it('keeps remembered devices signed in substantially longer than a normal session', async () => {
+    const suffix = `${Date.now()}-remember-session`;
+    const email = `owner-${suffix}@test.local`;
+    const password = 'Password123!';
+    expect((await post('/api/register', { organizationName: 'Remember Session', name: 'Owner', email, password })).status).toBe(201);
+
+    const normal = await post('/api/login', { email, password, remember: false });
+    const remembered = await post('/api/login', { email, password, remember: true });
+    expect(normal.status).toBe(200);
+    expect(remembered.status).toBe(200);
+
+    const normalPayload = decodeJwtPayload(normal.body.token);
+    const rememberedPayload = decodeJwtPayload(remembered.body.token);
+    expect(normalPayload.remembered).toBe(false);
+    expect(rememberedPayload.remembered).toBe(true);
+    expect(normalPayload.exp - normalPayload.iat).toBe(12 * 60 * 60);
+    expect(rememberedPayload.exp - rememberedPayload.iat).toBe(90 * 24 * 60 * 60);
+  });
+
   it('allows same-origin camera and geolocation features required by stock evidence and attendance', async () => {
     const response = await fetch(`${base}/api/health`);
     expect(response.headers.get('permissions-policy')).toBe('camera=(self), microphone=(), geolocation=(self)');
@@ -312,6 +332,13 @@ describe('multi-tenant API', () => {
     expect(staff.body.user.outletId).toBe(secondWarehouse.id);
     expect((await post('/api/commands/attendance', { kind: 'in', latitude: -6.2, longitude: 106.8, capturedAt: '2026-07-31T01:10:00.000Z' }, staff.body.token)).status).toBe(201);
     expect((await post('/api/commands/attendance', { kind: 'out', latitude: -6.2, longitude: 106.8, capturedAt: '2026-07-31T09:10:00.000Z' }, staff.body.token)).status).toBe(201);
+    expect((await post('/api/commands/live-sessions', { session: { name: 'Live tanpa jadwal pasti', platform: 'TikTok', locationId: secondWarehouse.id, hostEmployeeIds: [employee.id], note: 'Uji sesi aktual' } }, owner.body.token)).status).toBe(201);
+    let liveState = await request('/api/state', { headers: { authorization: `Bearer ${staff.body.token}` } });
+    const liveSession = liveState.body.data.liveSessions.find(item => item.name === 'Live tanpa jadwal pasti');
+    expect(liveSession).toEqual(expect.objectContaining({ status: 'scheduled', hostEmployeeIds: [employee.id] }));
+    expect(liveSession.scheduledAt).toBeUndefined();
+    expect((await post(`/api/commands/live-sessions/${liveSession.id}/start`, { capturedAt: '2026-07-31T10:00:00.000Z' }, staff.body.token)).status).toBe(201);
+    expect((await post(`/api/commands/live-sessions/${liveSession.id}/end`, { capturedAt: '2026-07-31T11:20:00.000Z' }, staff.body.token)).status).toBe(201);
     // Nilai cicilan dari browser tidak dipercaya. Server harus menghitung
     // ulang Rp2.000 / 3 menjadi Rp667 dan mengabaikan nilai kiriman yang salah.
     const loan = { id: `loan-${suffix}`, employeeId: employee.id, loanDate: '2026-07-31', amount: 2000, installmentCount: 3, installmentAmount: 1, paidInstallments: 0, status: 'active' };
@@ -325,6 +352,12 @@ describe('multi-tenant API', () => {
     const refreshed = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
     expect(refreshed.body.data.employees).toContainEqual(expect.objectContaining({ id: employee.id }));
     expect(refreshed.body.data.attendances).toContainEqual(expect.objectContaining({ employeeId: employee.id, checkInAt: expect.any(String), checkOutAt: expect.any(String) }));
+    expect(refreshed.body.data.liveSessions).toContainEqual(expect.objectContaining({
+      id: liveSession.id,
+      status: 'completed',
+      startedAt: '2026-07-31T10:00:00.000Z',
+      endedAt: '2026-07-31T11:20:00.000Z',
+    }));
     expect(refreshed.body.data.loans).toContainEqual(expect.objectContaining({ id: loan.id, amount: 2000, installmentCount: 3, installmentAmount: 667, paidInstallments: 1, status: 'active' }));
     expect(refreshed.body.data.payrolls).toContainEqual(expect.objectContaining({
       id: payroll.id,
@@ -395,6 +428,56 @@ describe('multi-tenant API', () => {
     const refreshed = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
     const updatedProduct = refreshed.body.data.products.find(item => item.id === product.id);
     expect(updatedProduct.variants.map(item => item.cost)).toEqual([500, 500]);
+  });
+
+  it('publishes an HPP profile to Product & Variant and stores an explicit link atomically', async () => {
+    const suffix = `${Date.now()}-hpp-publish`;
+    const owner = await post('/api/register', { organizationName: 'HPP Publish', name: 'Owner', email: `owner-${suffix}@test.local`, password: 'Password123!' });
+    const profileId = `profile-${suffix}`;
+    const batchId = `batch-${suffix}`;
+    const packageId = `package-${suffix}`;
+    const profile = {
+      id: profileId, name: 'Mie Kremes', masterItems: [{ id: `master-${suffix}`, name: 'Mie', unit: 'Gram', unitCost: 32 }],
+      packages: [{ id: packageId, name: '150 gram', contentWeight: 150, packagingCost: 400, targetProfit: 3000 }],
+      operations: { packingCost: 1000, employeeCost: 500, onlineAdsCost: 2000, tiktokAdditionalCost: 1250, tiktokNetRate: 0.7 },
+      batches: [{ id: batchId, name: 'Balado - Pedas', flavor: 'Balado', spiceLevel: 'Pedas', ingredients: [{ id: `line-${suffix}`, masterItemId: `master-${suffix}`, quantity: 3600 }], updatedAt: new Date().toISOString() }],
+      updatedAt: new Date().toISOString(),
+    };
+    expect((await post('/api/commands/pricing', { pricing: { hppProductProfiles: [profile], hppRecipes: [], marketplaceConfigs: [] } }, owner.body.token)).status).toBe(201);
+
+    const product = {
+      id: `product-${suffix}`, name: 'Mie Kremes', category: 'Makanan', unit: 'Pcs', active: true,
+      imageUrl: 'https://res.cloudinary.com/demo/image/upload/mie-kremes.webp',
+      variants: [{
+        id: `variant-${suffix}`, name: 'Balado · Pedas · 150 gram', sku: `HPP-${suffix}`,
+        cost: 6700, price: 9700, resellerPrice: 9700, minStock: 0, active: true,
+        hppProfileId: profileId, hppBatchId: batchId, hppPackageId: packageId,
+      }],
+    };
+    const published = await post('/api/commands/pricing/publish-product', { profileId, product }, owner.body.token);
+    expect(published.status).toBe(201);
+
+    const refreshed = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    expect(refreshed.body.data.products).toContainEqual(expect.objectContaining({
+      id: product.id,
+      name: product.name,
+      imageUrl: product.imageUrl,
+    }));
+    const publishedProduct = refreshed.body.data.products.find(item => item.id === product.id);
+    expect(publishedProduct.variants).toContainEqual(expect.objectContaining({
+      id: product.variants[0].id,
+      hppProfileId: profileId,
+      hppBatchId: batchId,
+      hppPackageId: packageId,
+      active: true,
+    }));
+    expect(refreshed.body.data.pricing.hppProductProfiles[0].productId).toBe(product.id);
+    expect(refreshed.body.data.pricing.hppRecipes).toContainEqual(expect.objectContaining({
+      profileId,
+      variantId: product.variants[0].id,
+      batchId,
+      packageId,
+    }));
   });
 
   it('serializes concurrent sales so the last unit cannot be oversold', async () => {

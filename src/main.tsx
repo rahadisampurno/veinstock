@@ -1,7 +1,9 @@
-import { Component, StrictMode, type ErrorInfo, type ReactNode } from 'react'
+import { Component, lazy, StrictMode, Suspense, useState, type ErrorInfo, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
-import App from './App.tsx'
+import LoginEntry from './LoginEntry.tsx'
+
+const App = lazy(() => import('./App.tsx'))
 
 document.addEventListener('keydown', (e) => {
   const target = e.target as HTMLInputElement;
@@ -46,8 +48,10 @@ window.addEventListener('error', (event) => {
   console.error('Unhandled browser error', event.error);
 });
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <AppErrorBoundary><App /></AppErrorBoundary>
-  </StrictMode>,
-)
+export function Bootstrap() {
+  const [authenticated, setAuthenticated] = useState(() => Boolean(sessionStorage.getItem('veinstock_saved_session') || localStorage.getItem('veinstock_saved_session')))
+  if (!authenticated) return <LoginEntry onAuthenticated={() => setAuthenticated(true)} />
+  return <Suspense fallback={<main style={{minHeight:'100vh',display:'grid',placeItems:'center',fontFamily:'system-ui'}}>Memuat aplikasi MENENGS...</main>}><App /></Suspense>
+}
+
+createRoot(document.getElementById('root')!).render(<StrictMode><AppErrorBoundary><Bootstrap /></AppErrorBoundary></StrictMode>)

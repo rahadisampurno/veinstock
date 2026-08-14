@@ -1,4 +1,4 @@
-html,body,#root{min-width:320px;min-height:100%;margin:0}button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid #f6a60988;outline-offset:2px}
+html,body,#root{min-width:320px;min-height:100%;margin:0}button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid #079bc366;outline-offset:2px}
 
 .input-readonly { background: var(--surface-2, #f4f6f8); color: var(--text, #222); border: 1.5px solid var(--border, #e2e8f0); border-radius: 8px; padding: 10px 14px; width: 100%; cursor: not-allowed; opacity: 0.8; font-size: inherit; }
 

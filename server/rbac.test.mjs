@@ -14,6 +14,14 @@ describe('server RBAC policy', () => {
     expect(authorizeAction({ user: user('finance'), action: 'sale.create', locationId: 'outlet-a' }).allowed).toBe(false);
   });
 
+  it('allows Owner, Admin, and Finance to manage the cashbook', () => {
+    for (const role of ['owner', 'admin', 'finance']) {
+      expect(authorizeAction({ user: user(role), action: 'cashbook.view' }).allowed).toBe(true);
+      expect(authorizeAction({ user: user(role), action: 'cashbook.manage' }).allowed).toBe(true);
+    }
+    expect(authorizeAction({ user: user('cashier'), action: 'cashbook.view' }).allowed).toBe(false);
+  });
+
   it('limits Warehouse, PIC, and Cashier to their assigned location', () => {
     for (const role of ['warehouse', 'pic', 'cashier']) {
       expect(authorizeAction({ user: user(role), action: 'stock.view', locationId: 'outlet-b' }).allowed).toBe(false);

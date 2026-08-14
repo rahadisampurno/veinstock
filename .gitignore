@@ -11,6 +11,12 @@ node_modules
 dist
 dist-ssr
 *.local
+
+# Local QA and generated inspection artifacts
+QA-Handover/
+QA-Handover.zip
+output/
+tmp/
 .env
 .env.*
 !.env.example
