@@ -13905,7 +13905,11 @@ function ReceiptModal({
             }
           : {},
     ),
-    [note, setNote] = useState(receipt?.note || "");
+    [note, setNote] = useState(receipt?.note || ""),
+    [variantSearch, setVariantSearch] = useState(""),
+    [variantPackageFilter, setVariantPackageFilter] = useState("all"),
+    [variantFlavorFilter, setVariantFlavorFilter] = useState("all"),
+    [variantLevelFilter, setVariantLevelFilter] = useState("all");
   const selectedProduct = products.find(
     (product: any) => product.id === selectedProductId,
   );
@@ -13915,6 +13919,84 @@ function ReceiptModal({
       unit: selectedProduct.unit,
       productName: selectedProduct.name,
     })) || [];
+  const variantFilterOptions = (field: string) =>
+    Array.from(
+      new Set(
+        visibleVariants
+          .map((variant: any) => String(variant[field] || "").trim())
+          .filter(Boolean),
+      ),
+    ).sort((a: any, b: any) =>
+      String(a).localeCompare(String(b), "id", {
+        numeric: true,
+        sensitivity: "base",
+      }),
+    );
+  const variantPackageOptions = variantFilterOptions("packageWeight");
+  const variantFlavorOptions = variantFilterOptions("flavor");
+  const variantLevelOptions = variantFilterOptions("spiceLevel");
+  const normalizedVariantSearch = variantSearch
+    .trim()
+    .toLocaleLowerCase("id-ID");
+  const filteredVisibleVariants = visibleVariants.filter((variant: any) => {
+    if (
+      variantPackageFilter !== "all" &&
+      variant.packageWeight !== variantPackageFilter
+    ) {
+      return false;
+    }
+    if (
+      variantFlavorFilter !== "all" &&
+      variant.flavor !== variantFlavorFilter
+    ) {
+      return false;
+    }
+    if (
+      variantLevelFilter !== "all" &&
+      variant.spiceLevel !== variantLevelFilter
+    ) {
+      return false;
+    }
+    if (!normalizedVariantSearch) return true;
+    return `${variant.name || ""} ${variant.sku || ""} ${
+      variant.barcode || ""
+    } ${variant.packageWeight || ""} ${variant.flavor || ""} ${
+      variant.spiceLevel || ""
+    }`
+      .toLocaleLowerCase("id-ID")
+      .includes(normalizedVariantSearch);
+  });
+  const selectedFilteredVariantCount = filteredVisibleVariants.filter(
+    (variant: any) => Boolean(selectedItems[variant.id]),
+  ).length;
+  const allFilteredVariantsSelected =
+    filteredVisibleVariants.length > 0 &&
+    selectedFilteredVariantCount === filteredVisibleVariants.length;
+  const someFilteredVariantsSelected = selectedFilteredVariantCount > 0;
+  const resetVariantFilters = () => {
+    setVariantSearch("");
+    setVariantPackageFilter("all");
+    setVariantFlavorFilter("all");
+    setVariantLevelFilter("all");
+  };
+  const toggleFilteredVariants = () => {
+    setSelectedItems((current) => {
+      const next = { ...current };
+      if (allFilteredVariantsSelected) {
+        filteredVisibleVariants.forEach((variant: any) => {
+          delete next[variant.id];
+        });
+      } else {
+        filteredVisibleVariants.forEach((variant: any) => {
+          next[variant.id] = next[variant.id] || {
+            quantity: 1,
+            unitCost: variant.cost || 0,
+          };
+        });
+      }
+      return next;
+    });
+  };
   const matchingProducts = products.filter((product: any) =>
     product.name.toLowerCase().includes(productSearch.toLowerCase()),
   );
@@ -14070,6 +14152,7 @@ function ReceiptModal({
                 );
                 if (!product) return false;
                 setSelectedProductId(product.id);
+                resetVariantFilters();
                 setProductPickerOpen(false);
                 setSelectedItems((current) => ({
                   ...current,
@@ -14172,6 +14255,7 @@ function ReceiptModal({
                             }
                             onClick={() => {
                               setSelectedProductId(product.id);
+                              resetVariantFilters();
                               setProductPickerOpen(false);
                               setProductSearch("");
                             }}
@@ -14192,59 +14276,130 @@ function ReceiptModal({
               </div>
             </Field>
             {selectedProduct && (
-              <Field label={`Pilih varian ${selectedProduct.name}`}>
-                <div
-                  style={{
-                    maxHeight: 200,
-                    overflowY: "auto",
-                    border: "1px solid var(--line)",
-                    borderRadius: 6,
-                    padding: 8,
-                    marginTop: 8,
-                  }}
-                >
-                  {visibleVariants.map((v: any) => (
-                    <label
-                      key={v.id}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 8,
-                        padding: "4px 0",
-                        cursor: "pointer",
-                      }}
-                    >
+              <div className="field stock-variant-field">
+                <span>{`Pilih varian ${selectedProduct.name}`}</span>
+                <div className="stock-variant-picker">
+                  <div className="stock-variant-tools">
+                    <ListSearch
+                      value={variantSearch}
+                      setValue={setVariantSearch}
+                      placeholder="Cari nama varian, SKU, barcode, rasa, level, atau kemasan"
+                    />
+                    <div className="stock-variant-filters">
+                      <select
+                        aria-label="Filter berat atau kemasan"
+                        value={variantPackageFilter}
+                        onChange={(event) =>
+                          setVariantPackageFilter(event.target.value)
+                        }
+                      >
+                        <option value="all">Semua berat / kemasan</option>
+                        {variantPackageOptions.map((value: any) => (
+                          <option key={value} value={value}>
+                            {value}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        aria-label="Filter varian rasa"
+                        value={variantFlavorFilter}
+                        onChange={(event) =>
+                          setVariantFlavorFilter(event.target.value)
+                        }
+                      >
+                        <option value="all">Semua rasa</option>
+                        {variantFlavorOptions.map((value: any) => (
+                          <option key={value} value={value}>
+                            {value}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        aria-label="Filter level"
+                        value={variantLevelFilter}
+                        onChange={(event) =>
+                          setVariantLevelFilter(event.target.value)
+                        }
+                      >
+                        <option value="all">Semua level</option>
+                        {variantLevelOptions.map((value: any) => (
+                          <option key={value} value={value}>
+                            {value}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                  <div className="stock-variant-bulk">
+                    <label>
                       <input
                         type="checkbox"
-                        checked={!!selectedItems[v.id]}
-                        style={{ width: "auto", padding: 0, margin: 0 }}
-                        onChange={(e) => {
-                          if (e.target.checked) {
-                            setSelectedItems({
-                              ...selectedItems,
-                              [v.id]: { quantity: 1, unitCost: v.cost || 0 },
-                            });
-                          } else {
-                            const next = { ...selectedItems };
-                            delete next[v.id];
-                            setSelectedItems(next);
+                        checked={allFilteredVariantsSelected}
+                        disabled={filteredVisibleVariants.length === 0}
+                        ref={(input) => {
+                          if (input) {
+                            input.indeterminate =
+                              someFilteredVariantsSelected &&
+                              !allFilteredVariantsSelected;
                           }
                         }}
+                        onChange={toggleFilteredVariants}
                       />
-                      <span>
-                        {v.name}{" "}
-                        <small className="variant-stock">
-                          Stok saat ini:{" "}
-                          {qty(
-                            getBalance(data.balances, locationId, v.id),
-                            v.unit,
-                          )}
-                        </small>
-                      </span>
+                      <b>
+                        {allFilteredVariantsSelected
+                          ? "Batalkan semua hasil filter"
+                          : "Pilih semua hasil filter"}
+                      </b>
                     </label>
-                  ))}
+                    <small>
+                      {filteredVisibleVariants.length} dari {visibleVariants.length}{" "}
+                      varian ditampilkan · {selectedFilteredVariantCount} dipilih
+                    </small>
+                  </div>
+                  <div className="stock-variant-list">
+                    {filteredVisibleVariants.length ? (
+                      filteredVisibleVariants.map((v: any) => (
+                        <label className="variant-picker-option" key={v.id}>
+                          <input
+                            type="checkbox"
+                            checked={!!selectedItems[v.id]}
+                            onChange={(e) => {
+                              setSelectedItems((current) => {
+                                const next = { ...current };
+                                if (e.target.checked) {
+                                  next[v.id] = {
+                                    quantity: 1,
+                                    unitCost: v.cost || 0,
+                                  };
+                                } else {
+                                  delete next[v.id];
+                                }
+                                return next;
+                              });
+                            }}
+                          />
+                          <span>
+                            <b>{v.name}</b>
+                            <small className="variant-stock">
+                              Stok saat ini:{" "}
+                              {qty(
+                                getBalance(data.balances, locationId, v.id),
+                                v.unit,
+                              )}
+                            </small>
+                          </span>
+                        </label>
+                      ))
+                    ) : (
+                      <div className="stock-variant-empty">
+                        <Search size={20} />
+                        <b>Varian tidak ditemukan</b>
+                        <span>Ubah kata pencarian atau filter yang dipilih.</span>
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </Field>
+              </div>
             )}
             {!selectedProduct && (
               <p className="variant-picker-hint">
@@ -14774,6 +14929,10 @@ function TransferModal({
     [selectedItems, setSelectedItems] = useState<
       Record<string, { quantity: number }>
     >(initialVariantId ? { [initialVariantId]: { quantity: 1 } } : {}),
+    [transferVariantSearch, setTransferVariantSearch] = useState(""),
+    [transferPackageFilter, setTransferPackageFilter] = useState("all"),
+    [transferFlavorFilter, setTransferFlavorFilter] = useState("all"),
+    [transferLevelFilter, setTransferLevelFilter] = useState("all"),
     filteredVariants = variants.filter((v: any) => {
       return getBalance(data.balances, from, v.id) > 0 || selectedItems[v.id];
     });
@@ -14800,6 +14959,92 @@ function TransferModal({
   const visibleTransferVariants = filteredVariants.filter(
     (variant: any) => variant.productName === selectedTransferProduct,
   );
+  const transferVariantFilterOptions = (field: string) =>
+    Array.from(
+      new Set(
+        visibleTransferVariants
+          .map((variant: any) => String(variant[field] || "").trim())
+          .filter(Boolean),
+      ),
+    ).sort((a: any, b: any) =>
+      String(a).localeCompare(String(b), "id", {
+        numeric: true,
+        sensitivity: "base",
+      }),
+    );
+  const transferPackageOptions =
+    transferVariantFilterOptions("packageWeight");
+  const transferFlavorOptions = transferVariantFilterOptions("flavor");
+  const transferLevelOptions = transferVariantFilterOptions("spiceLevel");
+  const normalizedTransferVariantSearch = transferVariantSearch
+    .trim()
+    .toLocaleLowerCase("id-ID");
+  const filteredVisibleTransferVariants = visibleTransferVariants.filter(
+    (variant: any) => {
+      if (
+        transferPackageFilter !== "all" &&
+        variant.packageWeight !== transferPackageFilter
+      ) {
+        return false;
+      }
+      if (
+        transferFlavorFilter !== "all" &&
+        variant.flavor !== transferFlavorFilter
+      ) {
+        return false;
+      }
+      if (
+        transferLevelFilter !== "all" &&
+        variant.spiceLevel !== transferLevelFilter
+      ) {
+        return false;
+      }
+      if (!normalizedTransferVariantSearch) return true;
+      return `${variant.name || ""} ${variant.sku || ""} ${
+        variant.barcode || ""
+      } ${variant.packageWeight || ""} ${variant.flavor || ""} ${
+        variant.spiceLevel || ""
+      }`
+        .toLocaleLowerCase("id-ID")
+        .includes(normalizedTransferVariantSearch);
+    },
+  );
+  const selectableFilteredTransferVariants =
+    filteredVisibleTransferVariants.filter(
+      (variant: any) => getBalance(data.balances, from, variant.id) > 0,
+    );
+  const selectedFilteredTransferVariantCount =
+    filteredVisibleTransferVariants.filter((variant: any) =>
+      Boolean(selectedItems[variant.id]),
+    ).length;
+  const allFilteredTransferVariantsSelected =
+    selectableFilteredTransferVariants.length > 0 &&
+    selectableFilteredTransferVariants.every((variant: any) =>
+      Boolean(selectedItems[variant.id]),
+    );
+  const someFilteredTransferVariantsSelected =
+    selectedFilteredTransferVariantCount > 0;
+  const resetTransferVariantFilters = () => {
+    setTransferVariantSearch("");
+    setTransferPackageFilter("all");
+    setTransferFlavorFilter("all");
+    setTransferLevelFilter("all");
+  };
+  const toggleFilteredTransferVariants = () => {
+    setSelectedItems((current) => {
+      const next = { ...current };
+      if (allFilteredTransferVariantsSelected) {
+        filteredVisibleTransferVariants.forEach((variant: any) => {
+          delete next[variant.id];
+        });
+      } else {
+        selectableFilteredTransferVariants.forEach((variant: any) => {
+          next[variant.id] = next[variant.id] || { quantity: 1 };
+        });
+      }
+      return next;
+    });
+  };
   const invalidTransferItems = Object.entries(selectedItems).filter(
     ([variantId, item]) =>
       item.quantity < 1 ||
@@ -14866,6 +15111,7 @@ function TransferModal({
               onChange={(e) => {
                 const next = e.target.value;
                 setFrom(next);
+                resetTransferVariantFilters();
                 if (to === next)
                   setTo(
                     activeLocations.find((l: any) => l.id !== next)?.id || "",
@@ -14899,6 +15145,7 @@ function TransferModal({
               if (!variant || getBalance(data.balances, from, variant.id) <= 0)
                 return false;
               setSelectedTransferProduct(variant.productName);
+              resetTransferVariantFilters();
               setSelectedItems((current) => ({
                 ...current,
                 [variant.id]: current[variant.id] || { quantity: 1 },
@@ -14914,7 +15161,10 @@ function TransferModal({
         <Field label="Pilih produk">
           <AppSelect
             value={selectedTransferProduct}
-            onChange={(e: any) => setSelectedTransferProduct(e.target.value)}
+            onChange={(e: any) => {
+              setSelectedTransferProduct(e.target.value);
+              resetTransferVariantFilters();
+            }}
             placeholder="Pilih nama produk"
           >
             <option value="" disabled>
@@ -14932,53 +15182,129 @@ function TransferModal({
           </AppSelect>
         </Field>
         {selectedTransferProduct && (
-          <Field label={`Pilih varian ${selectedTransferProduct}`}>
-            <div
-              style={{
-                maxHeight: 200,
-                overflowY: "auto",
-                border: "1px solid var(--line)",
-                borderRadius: 6,
-                padding: 8,
-                marginTop: 8,
-              }}
-            >
-              {visibleTransferVariants.map((v: any) => (
-                <label
-                  key={v.id}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 8,
-                    padding: "4px 0",
-                    cursor: "pointer",
-                  }}
-                >
+          <div className="field stock-variant-field">
+            <span>{`Pilih varian ${selectedTransferProduct}`}</span>
+            <div className="stock-variant-picker">
+              <div className="stock-variant-tools">
+                <ListSearch
+                  value={transferVariantSearch}
+                  setValue={setTransferVariantSearch}
+                  placeholder="Cari nama varian, SKU, barcode, rasa, level, atau kemasan"
+                />
+                <div className="stock-variant-filters">
+                  <select
+                    aria-label="Filter berat atau kemasan"
+                    value={transferPackageFilter}
+                    onChange={(event) =>
+                      setTransferPackageFilter(event.target.value)
+                    }
+                  >
+                    <option value="all">Semua berat / kemasan</option>
+                    {transferPackageOptions.map((value: any) => (
+                      <option key={value} value={value}>
+                        {value}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    aria-label="Filter varian rasa"
+                    value={transferFlavorFilter}
+                    onChange={(event) =>
+                      setTransferFlavorFilter(event.target.value)
+                    }
+                  >
+                    <option value="all">Semua rasa</option>
+                    {transferFlavorOptions.map((value: any) => (
+                      <option key={value} value={value}>
+                        {value}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    aria-label="Filter level"
+                    value={transferLevelFilter}
+                    onChange={(event) =>
+                      setTransferLevelFilter(event.target.value)
+                    }
+                  >
+                    <option value="all">Semua level</option>
+                    {transferLevelOptions.map((value: any) => (
+                      <option key={value} value={value}>
+                        {value}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div className="stock-variant-bulk">
+                <label>
                   <input
                     type="checkbox"
-                    checked={!!selectedItems[v.id]}
-                    style={{ width: "auto", padding: 0, margin: 0 }}
-                    onChange={(e) => {
-                      if (e.target.checked) {
-                        setSelectedItems({
-                          ...selectedItems,
-                          [v.id]: { quantity: 1 },
-                        });
-                      } else {
-                        const next = { ...selectedItems };
-                        delete next[v.id];
-                        setSelectedItems(next);
+                    checked={allFilteredTransferVariantsSelected}
+                    disabled={selectableFilteredTransferVariants.length === 0}
+                    ref={(input) => {
+                      if (input) {
+                        input.indeterminate =
+                          someFilteredTransferVariantsSelected &&
+                          !allFilteredTransferVariantsSelected;
                       }
                     }}
+                    onChange={toggleFilteredTransferVariants}
                   />
-                  <span>
-                    {v.name} (Stok: {getBalance(data.balances, from, v.id)}{" "}
-                    {v.unit})
-                  </span>
+                  <b>
+                    {allFilteredTransferVariantsSelected
+                      ? "Batalkan semua hasil filter"
+                      : "Pilih semua hasil filter"}
+                  </b>
                 </label>
-              ))}
+                <small>
+                  {filteredVisibleTransferVariants.length} dari{" "}
+                  {visibleTransferVariants.length} varian ditampilkan ·{" "}
+                  {selectedFilteredTransferVariantCount} dipilih
+                </small>
+              </div>
+              <div className="stock-variant-list">
+                {filteredVisibleTransferVariants.length ? (
+                  filteredVisibleTransferVariants.map((v: any) => {
+                    const available = getBalance(data.balances, from, v.id);
+                    return (
+                      <label className="variant-picker-option" key={v.id}>
+                        <input
+                          type="checkbox"
+                          checked={!!selectedItems[v.id]}
+                          onChange={(e) => {
+                            setSelectedItems((current) => {
+                              const next = { ...current };
+                              if (e.target.checked && available > 0) {
+                                next[v.id] = { quantity: 1 };
+                              } else {
+                                delete next[v.id];
+                              }
+                              return next;
+                            });
+                          }}
+                        />
+                        <span>
+                          <b>{v.name}</b>
+                          <small className="variant-stock">
+                            Stok tersedia: {qty(available, v.unit)}
+                          </small>
+                        </span>
+                      </label>
+                    );
+                  })
+                ) : (
+                  <div className="stock-variant-empty">
+                    <Search size={20} />
+                    <b>Varian tidak ditemukan</b>
+                    <span>
+                      Ubah pencarian, filter, atau periksa stok lokasi asal.
+                    </span>
+                  </div>
+                )}
+              </div>
             </div>
-          </Field>
+          </div>
         )}
         {Object.keys(selectedItems).length > 0 && (
           <div style={{ marginTop: 16, marginBottom: 16 }}>
@@ -15368,6 +15694,9 @@ function SaleModal({
     [skuSearch, setSkuSearch] = useState(""),
     [categoryFilter, setCategoryFilter] = useState("all"),
     [selectedPosProduct, setSelectedPosProduct] = useState<string | null>(null),
+    [posPackageFilter, setPosPackageFilter] = useState("all"),
+    [posFlavorFilter, setPosFlavorFilter] = useState("all"),
+    [posLevelFilter, setPosLevelFilter] = useState("all"),
     [payment, setPayment] = useState("QRIS"),
     [buyerNote, setBuyerNote] = useState(""),
     [transactionSettingsOpen, setTransactionSettingsOpen] = useState(false),
@@ -15386,9 +15715,39 @@ function SaleModal({
     categories = Array.from(
       new Set(variants.map((item: any) => item.category).filter(Boolean)),
     ).sort() as string[],
+    selectedPosProductVariants = selectedPosProduct
+      ? variants.filter(
+          (item: any) =>
+            item.productName === selectedPosProduct &&
+            (getBalance(data.balances, loc, item.id) > 0 ||
+              cart.some((cartItem) => cartItem.variantId === item.id)),
+        )
+      : [],
+    posVariantFilterOptions = (field: string) =>
+      Array.from(
+        new Set(
+          selectedPosProductVariants
+            .map((item: any) => String(item[field] || "").trim())
+            .filter(Boolean),
+        ),
+      ).sort((a: any, b: any) =>
+        String(a).localeCompare(String(b), "id", {
+          numeric: true,
+          sensitivity: "base",
+        }),
+      ),
+    posPackageOptions = posVariantFilterOptions("packageWeight"),
+    posFlavorOptions = posVariantFilterOptions("flavor"),
+    posLevelOptions = posVariantFilterOptions("spiceLevel"),
     matchingVariants = variants.filter(
       (item: any) =>
         (categoryFilter === "all" || item.category === categoryFilter) &&
+        (!selectedPosProduct ||
+          (posPackageFilter === "all" ||
+            item.packageWeight === posPackageFilter) &&
+            (posFlavorFilter === "all" || item.flavor === posFlavorFilter) &&
+            (posLevelFilter === "all" ||
+              item.spiceLevel === posLevelFilter)) &&
         `${item.sku || ""} ${item.barcode || ""} ${item.productName} ${item.name} ${item.packageWeight || ""} ${item.flavor || ""} ${item.spiceLevel || ""}`
           .toLowerCase()
           .includes(skuSearch.toLowerCase()),
@@ -15398,11 +15757,17 @@ function SaleModal({
         getBalance(data.balances, loc, item.id) > 0 ||
         cart.some((c) => c.variantId === item.id),
     );
+  const resetPosVariantFilters = () => {
+    setPosPackageFilter("all");
+    setPosFlavorFilter("all");
+    setPosLevelFilter("all");
+  };
   const prepareNextSale = () => {
     setCart([]);
     setBuyerNote("");
     setSkuSearch("");
     setSelectedPosProduct(null);
+    resetPosVariantFilters();
     setCameraError("");
     setPrintError("");
     setPendingSale(null);
@@ -15994,6 +16359,7 @@ function SaleModal({
                       onClick={() => {
                         setSelectedPosProduct(null);
                         setSkuSearch("");
+                        resetPosVariantFilters();
                       }}
                     >
                       <ChevronLeft size={18} /> Kembali
@@ -16001,6 +16367,53 @@ function SaleModal({
                     <div>
                       <small>PRODUK TERPILIH</small>
                       <b>{selectedPosProduct}</b>
+                    </div>
+                    <div
+                      className="pos-selected-variant-filters"
+                      aria-label="Filter varian produk terpilih"
+                    >
+                      <select
+                        aria-label="Filter berat atau kemasan"
+                        value={posPackageFilter}
+                        onChange={(event) =>
+                          setPosPackageFilter(event.target.value)
+                        }
+                      >
+                        <option value="all">Semua kemasan</option>
+                        {posPackageOptions.map((value: any) => (
+                          <option key={value} value={value}>
+                            {value}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        aria-label="Filter varian rasa"
+                        value={posFlavorFilter}
+                        onChange={(event) =>
+                          setPosFlavorFilter(event.target.value)
+                        }
+                      >
+                        <option value="all">Semua rasa</option>
+                        {posFlavorOptions.map((value: any) => (
+                          <option key={value} value={value}>
+                            {value}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        aria-label="Filter level"
+                        value={posLevelFilter}
+                        onChange={(event) =>
+                          setPosLevelFilter(event.target.value)
+                        }
+                      >
+                        <option value="all">Semua level</option>
+                        {posLevelOptions.map((value: any) => (
+                          <option key={value} value={value}>
+                            {value}
+                          </option>
+                        ))}
+                      </select>
                     </div>
                   </div>
                 )}
@@ -16042,8 +16455,9 @@ function SaleModal({
                 >
                   {visibleProductGroups.length === 0 && (
                     <p className="pos-empty-products">
-                      Tidak ada varian tersedia untuk lokasi ini. Tambahkan stok
-                      terlebih dahulu.
+                      {selectedPosProduct
+                        ? "Varian tidak ditemukan. Ubah pencarian atau filter yang dipilih."
+                        : "Tidak ada varian tersedia untuk lokasi ini. Tambahkan stok terlebih dahulu."}
                     </p>
                   )}
                   {visibleProductGroups
@@ -16074,6 +16488,7 @@ function SaleModal({
                             ? () => {
                                 setSelectedPosProduct(product.name);
                                 setSkuSearch("");
+                                resetPosVariantFilters();
                               }
                             : undefined
                         }
@@ -16085,6 +16500,7 @@ function SaleModal({
                                 event.preventDefault();
                                 setSelectedPosProduct(product.name);
                                 setSkuSearch("");
+                                resetPosVariantFilters();
                               }
                             : undefined
                         }
