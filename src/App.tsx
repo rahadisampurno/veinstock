@@ -402,7 +402,34 @@ const blurFocusedTextInput = () => {
   }
 };
 
+let _touchStartY = 0;
+let _touchStartX = 0;
+let _isTouchScrolling = false;
+
+if (typeof window !== "undefined") {
+  window.addEventListener(
+    "touchstart",
+    (e) => {
+      _touchStartY = e.touches[0].clientY;
+      _touchStartX = e.touches[0].clientX;
+      _isTouchScrolling = false;
+    },
+    { passive: true },
+  );
+  window.addEventListener(
+    "touchmove",
+    (e) => {
+      if (_isTouchScrolling) return;
+      const dy = Math.abs(e.touches[0].clientY - _touchStartY);
+      const dx = Math.abs(e.touches[0].clientX - _touchStartX);
+      if (dy > 10 || dx > 10) _isTouchScrolling = true;
+    },
+    { passive: true },
+  );
+}
+
 const selectFromTouch = (event: any, select: () => void) => {
+  if (_isTouchScrolling) return;
   event.preventDefault();
   event.stopPropagation();
   blurFocusedTextInput();
