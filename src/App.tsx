@@ -3397,8 +3397,12 @@ function App() {
               const err = await res.json().catch(() => ({}));
               throw new Error(err.message || "Gagal menyimpan profil usaha");
             }
-            // Update user organizationName if ownerName changed
-            setAuthUser((u: any) => ({ ...u, organizationName: profile.name }));
+            // Update user organizationName and name if ownerName changed
+            setAuthUser((u: any) => ({
+              ...u,
+              organizationName: profile.name,
+              ...(u?.role === "owner" && profile.ownerName ? { name: profile.ownerName } : {})
+            }));
             applyLocalData((d) => ({ ...d, business: profile }));
             setModal(null);
             notify("Profil usaha berhasil diperbarui");

@@ -1960,6 +1960,14 @@ app.put("/api/organization", requireAuth, async (req, res) => {
       req.auth.org,
     ],
   );
+
+  if (ownerName && actor.id) {
+    await conn.execute("UPDATE users SET name=? WHERE id=? AND role='owner'", [
+      ownerName,
+      actor.id,
+    ]);
+  }
+
   res.json({ message: "Profil usaha diperbarui" });
 });
 app.post("/api/users", requireAuth, async (req, res) => {
