@@ -7455,6 +7455,7 @@ th {
   display: grid;
   grid-template-columns: 190px minmax(0, 1fr);
   align-items: start;
+  align-self: start;
 }
 .pos-counter-workspace .pos-product-group.variant-mode > header {
   border-right: 1px solid #edf1f3;
