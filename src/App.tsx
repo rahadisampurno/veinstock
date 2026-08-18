@@ -382,6 +382,61 @@ const isPageAllowedForUser = (page: Page, user: SessionUser, data: AppData) => {
   return false;
 };
 
+const isTouchFirstDevice = () =>
+  typeof window !== "undefined" &&
+  (window.innerWidth <= 1024 ||
+    window.matchMedia?.("(pointer: coarse)").matches ||
+    navigator.maxTouchPoints > 0 ||
+    "ontouchstart" in window);
+
+const shouldAutoFocusTextInput = () => !isTouchFirstDevice();
+
+const blurFocusedTextInput = () => {
+  if (typeof document === "undefined") return;
+  const activeElement = document.activeElement;
+  if (
+    activeElement instanceof HTMLElement &&
+    activeElement.matches("input, textarea, [contenteditable='true']")
+  ) {
+    activeElement.blur();
+  }
+};
+
+const selectFromTouch = (event: any, select: () => void) => {
+  event.preventDefault();
+  event.stopPropagation();
+  blurFocusedTextInput();
+  select();
+};
+
+function useDismissiblePopover(
+  open: boolean,
+  setOpen: (next: boolean) => void,
+) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const closeOutside = (event: Event) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeWithEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOutside, true);
+    document.addEventListener("touchstart", closeOutside, {
+      capture: true,
+      passive: true,
+    });
+    document.addEventListener("keydown", closeWithEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOutside, true);
+      document.removeEventListener("touchstart", closeOutside, true);
+      document.removeEventListener("keydown", closeWithEscape);
+    };
+  }, [open, setOpen]);
+  return rootRef;
+}
+
 const normalizeNumberInput = (input: HTMLInputElement) => {
   input.value = normalizeDecimalDraft(input.value);
   return input.value;
@@ -5269,7 +5324,7 @@ function Products({
                     setBarcodeProductSearch(event.target.value)
                   }
                   placeholder="Cari nama atau kategori produk"
-                  autoFocus
+                  autoFocus={shouldAutoFocusTextInput()}
                 />
               </div>
             </label>
@@ -6549,7 +6604,7 @@ function LiveSessionForm({ data, editing, runCommand, notify, close }: any) {
               value={name}
               onChange={(event) => setName(event.target.value)}
               placeholder="Contoh: Live TikTok malam"
-              autoFocus
+              autoFocus={shouldAutoFocusTextInput()}
             />
           </label>
           <label className="field">
@@ -8044,7 +8099,9 @@ function LoansPage({
               ))}
             </AppSelect>
           </div>
-          <div className="table-wrap">
+          <div
+            className={`table-wrap payroll-table-wrap${payRows.length ? "" : " is-empty"}`}
+          >
             <table>
               <thead>
                 <tr>
@@ -10758,14 +10815,7 @@ function Reports({
       secondaryAction={canExport ? "Unduh PDF" : undefined}
       onSecondaryAction={canExport ? downloadPDF : undefined}
     >
-      <div
-        id="report-content"
-        style={{
-          padding: "16px",
-          backgroundColor: "#fff",
-          borderRadius: "8px",
-        }}
-      >
+      <div id="report-content" className="report-content">
         <div data-pdf-section>
           <DateRangePicker
             from={dateFrom}
@@ -11789,7 +11839,7 @@ const PageBlock = ({
         <h2>{title}</h2>
         <p>{desc}</p>
       </div>
-      <div style={{ display: "flex", gap: "8px" }}>
+      <div className="page-head-actions">
         {secondaryAction && onSecondaryAction && (
           <button className="secondary" onClick={onSecondaryAction}>
             {secondaryAction}
@@ -11852,27 +11902,9 @@ const AppSelect = ({
 }: any) => {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const rootRef = useRef<HTMLDivElement>(null);
+  const rootRef = useDismissiblePopover(open, setOpen);
   useEffect(() => {
-    if (!open) return;
-    const closeOutside = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) {
-        setOpen(false);
-        setQuery("");
-      }
-    };
-    const closeWithEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setOpen(false);
-        setQuery("");
-      }
-    };
-    document.addEventListener("pointerdown", closeOutside);
-    document.addEventListener("keydown", closeWithEscape);
-    return () => {
-      document.removeEventListener("pointerdown", closeOutside);
-      document.removeEventListener("keydown", closeWithEscape);
-    };
+    if (!open) setQuery("");
   }, [open]);
   const options = Children.toArray(children)
     .filter(isValidElement)
@@ -11886,6 +11918,13 @@ const AppSelect = ({
   const visibleOptions = options.filter((option: any) =>
     String(option.label).toLowerCase().includes(query.toLowerCase()),
   );
+  const selectOption = (option: any) => {
+    if (option.disabled) return;
+    onChange({ target: { value: option.value } });
+    setOpen(false);
+    setQuery("");
+    blurFocusedTextInput();
+  };
   return (
     <div ref={rootRef} className={`app-select ${className}`}>
       <button
@@ -11907,7 +11946,7 @@ const AppSelect = ({
             <label className="app-select-search">
               <Search size={16} />
               <input
-                autoFocus
+                autoFocus={shouldAutoFocusTextInput()}
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="Cari opsi"
@@ -11921,11 +11960,10 @@ const AppSelect = ({
                 type="button"
                 disabled={option.disabled}
                 className={option.value === String(value) ? "selected" : ""}
-                onClick={() => {
-                  onChange({ target: { value: option.value } });
-                  setOpen(false);
-                  setQuery("");
-                }}
+                onTouchEnd={(event) =>
+                  selectFromTouch(event, () => selectOption(option))
+                }
+                onClick={() => selectOption(option)}
               >
                 <span>{option.label}</span>
                 {option.meta && <small>{option.meta}</small>}
@@ -13910,6 +13948,10 @@ function ReceiptModal({
     [variantPackageFilter, setVariantPackageFilter] = useState("all"),
     [variantFlavorFilter, setVariantFlavorFilter] = useState("all"),
     [variantLevelFilter, setVariantLevelFilter] = useState("all");
+  const productPickerRef = useDismissiblePopover(
+    productPickerOpen,
+    setProductPickerOpen,
+  );
   const selectedProduct = products.find(
     (product: any) => product.id === selectedProductId,
   );
@@ -13978,6 +14020,13 @@ function ReceiptModal({
     setVariantPackageFilter("all");
     setVariantFlavorFilter("all");
     setVariantLevelFilter("all");
+  };
+  const selectProduct = (product: any) => {
+    setSelectedProductId(product.id);
+    resetVariantFilters();
+    setProductPickerOpen(false);
+    setProductSearch("");
+    blurFocusedTextInput();
   };
   const toggleFilteredVariants = () => {
     setSelectedItems((current) => {
@@ -14223,7 +14272,7 @@ function ReceiptModal({
         ) : (
           <>
             <Field label="Pilih produk">
-              <div className="product-picker">
+              <div ref={productPickerRef} className="product-picker">
                 <button
                   type="button"
                   className={`product-picker-trigger ${productPickerOpen ? "open" : ""}`}
@@ -14238,7 +14287,7 @@ function ReceiptModal({
                     <label className="product-picker-search">
                       <Search size={17} />
                       <input
-                        autoFocus
+                        autoFocus={shouldAutoFocusTextInput()}
                         value={productSearch}
                         onChange={(e) => setProductSearch(e.target.value)}
                         placeholder="Cari nama produk"
@@ -14253,12 +14302,12 @@ function ReceiptModal({
                             className={
                               product.id === selectedProductId ? "selected" : ""
                             }
-                            onClick={() => {
-                              setSelectedProductId(product.id);
-                              resetVariantFilters();
-                              setProductPickerOpen(false);
-                              setProductSearch("");
-                            }}
+                            onTouchEnd={(event) =>
+                              selectFromTouch(event, () =>
+                                selectProduct(product),
+                              )
+                            }
+                            onClick={() => selectProduct(product)}
                           >
                             <span>{product.name}</span>
                             <small>{product.variants.length} varian</small>
@@ -15772,7 +15821,8 @@ function SaleModal({
     setPrintError("");
     setPendingSale(null);
     setSaving(false);
-    requestAnimationFrame(() => scannerRef.current?.focus());
+    if (shouldAutoFocusPosSearch)
+      requestAnimationFrame(() => scannerRef.current?.focus());
   };
   const finishPendingSale = async () => {
     if (!pendingSale) return;
@@ -15834,7 +15884,17 @@ function SaleModal({
   const isOffline = channel === "offline";
   const isTouchDevice =
     typeof window !== "undefined" &&
-    window.matchMedia?.("(pointer: coarse)").matches;
+    (window.matchMedia?.("(pointer: coarse)").matches ||
+      navigator.maxTouchPoints > 0 ||
+      "ontouchstart" in window);
+  const shouldAutoFocusPosSearch =
+    typeof window !== "undefined" &&
+    !isTouchDevice &&
+    window.innerWidth > 1024;
+  const releasePosSearchFocus = () => {
+    blurFocusedTextInput();
+    requestAnimationFrame(() => scannerRef.current?.blur());
+  };
   const findScannedVariant = (rawValue: string) => {
     const value = rawValue.trim().toLowerCase();
     if (!value) return undefined;
@@ -16028,9 +16088,9 @@ function SaleModal({
     );
   };
   useEffect(() => {
-    if (isOffline && !isTouchDevice)
+    if (isOffline && shouldAutoFocusPosSearch)
       requestAnimationFrame(() => scannerRef.current?.focus());
-  }, [isOffline, isTouchDevice]);
+  }, [isOffline, shouldAutoFocusPosSearch]);
   // Izin kamera diminta dari handler klik; effect ini hanya memasang stream ke
   // video dan menjalankan pembacaan barcode agar Android tidak menolak izin.
   useEffect(() => {
@@ -16360,6 +16420,7 @@ function SaleModal({
                         setSelectedPosProduct(null);
                         setSkuSearch("");
                         resetPosVariantFilters();
+                        releasePosSearchFocus();
                       }}
                     >
                       <ChevronLeft size={18} /> Kembali
@@ -16483,12 +16544,18 @@ function SaleModal({
                             ? `Lihat varian ${product.name}`
                             : undefined
                         }
+                        onPointerDown={
+                          !selectedPosProduct && isOffline
+                            ? releasePosSearchFocus
+                            : undefined
+                        }
                         onClick={
                           !selectedPosProduct && isOffline
                             ? () => {
                                 setSelectedPosProduct(product.name);
                                 setSkuSearch("");
                                 resetPosVariantFilters();
+                                releasePosSearchFocus();
                               }
                             : undefined
                         }
@@ -16501,6 +16568,7 @@ function SaleModal({
                                 setSelectedPosProduct(product.name);
                                 setSkuSearch("");
                                 resetPosVariantFilters();
+                                releasePosSearchFocus();
                               }
                             : undefined
                         }
@@ -16880,6 +16948,10 @@ function OpnameModal({ data, item, close, save, fixedLocation }: any) {
           }
         : {},
     );
+  const productPickerRef = useDismissiblePopover(
+    productPickerOpen,
+    setProductPickerOpen,
+  );
   const selectedProduct = products.find(
     (product: any) => product.id === selectedProductId,
   );
@@ -16899,6 +16971,12 @@ function OpnameModal({ data, item, close, save, fixedLocation }: any) {
       Number(selectedItem.actualQty) < 0 ||
       selectedItem.reason.trim().length < 3,
   );
+  const selectProduct = (product: any) => {
+    setSelectedProductId(product.id);
+    setProductPickerOpen(false);
+    setProductSearch("");
+    blurFocusedTextInput();
+  };
 
   return (
     <Modal
@@ -16973,7 +17051,7 @@ function OpnameModal({ data, item, close, save, fixedLocation }: any) {
           </Field>
         )}
         <Field label="Pilih produk">
-          <div className="product-picker">
+          <div ref={productPickerRef} className="product-picker">
             <button
               type="button"
               className={`product-picker-trigger ${productPickerOpen ? "open" : ""}`}
@@ -16988,7 +17066,7 @@ function OpnameModal({ data, item, close, save, fixedLocation }: any) {
                 <label className="product-picker-search">
                   <Search size={17} />
                   <input
-                    autoFocus
+                    autoFocus={shouldAutoFocusTextInput()}
                     value={productSearch}
                     onChange={(e) => setProductSearch(e.target.value)}
                     placeholder="Cari nama produk"
@@ -17003,11 +17081,10 @@ function OpnameModal({ data, item, close, save, fixedLocation }: any) {
                         className={
                           product.id === selectedProductId ? "selected" : ""
                         }
-                        onClick={() => {
-                          setSelectedProductId(product.id);
-                          setProductPickerOpen(false);
-                          setProductSearch("");
-                        }}
+                        onTouchEnd={(event) =>
+                          selectFromTouch(event, () => selectProduct(product))
+                        }
+                        onClick={() => selectProduct(product)}
                       >
                         <span>{product.name}</span>
                         <small>{product.variants.length} varian</small>
@@ -22826,7 +22903,7 @@ function HppMarketplaceCalculator({
                 <label className="field">
                   <span>Nama Produk HPP baru</span>
                   <input
-                    autoFocus
+                    autoFocus={shouldAutoFocusTextInput()}
                     value={duplicateHppName}
                     placeholder="Contoh: Mie Kremes Premium"
                     onChange={(event) =>

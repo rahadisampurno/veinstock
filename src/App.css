@@ -12793,3 +12793,149 @@ td.cashbook-amount-column.out {
     width: 100%;
   }
 }
+
+/* Mobile containment: keep drawers and dense operational pages inside viewport. */
+.page-head-actions {
+  display: flex;
+  min-width: 0;
+  gap: 8px;
+}
+
+.report-content {
+  width: 100%;
+  min-width: 0;
+  padding: 16px;
+  border-radius: 8px;
+  background: #fff;
+}
+
+@media (max-width: 767px) {
+  html,
+  body,
+  #root,
+  .app-shell,
+  main,
+  .content {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  main {
+    overflow-x: clip;
+  }
+
+  .sidebar.sidebar-drawer {
+    inset: 0 auto 0 0;
+    display: block;
+    width: min(82vw, 320px);
+    max-width: calc(100vw - 54px);
+    height: 100dvh;
+    max-height: 100dvh;
+    overflow: hidden;
+    border-radius: 0 18px 18px 0;
+    transform: translateX(-100%);
+  }
+
+  .sidebar.sidebar-drawer.open {
+    transform: translateX(0);
+  }
+
+  .sidebar.sidebar-drawer .sidebar-panel {
+    display: flex;
+    width: 100%;
+    min-width: 0;
+    height: 100%;
+    min-height: 0;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .sidebar.sidebar-drawer .brand,
+  .sidebar.sidebar-drawer .workspace {
+    flex: 0 0 auto;
+  }
+
+  .sidebar.sidebar-drawer nav {
+    min-height: 0;
+    flex: 1 1 auto;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding-bottom: max(18px, env(safe-area-inset-bottom));
+  }
+
+  .sidebar-overlay {
+    touch-action: none;
+  }
+
+  .page-head-actions {
+    display: grid;
+    width: 100%;
+    grid-template-columns: 1fr;
+  }
+
+  .page-head-actions > button {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .report-content {
+    overflow: hidden;
+    padding: 12px;
+  }
+
+  .report-period-picker,
+  .report-period-picker .period-trigger,
+  .report-filters,
+  .report-filter-field,
+  .report-filter-field > select {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .report-filters {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .report-section-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .report-section-heading > span {
+    align-self: flex-start;
+  }
+
+  .payroll-table-wrap.is-empty {
+    overflow: hidden;
+  }
+
+  .payroll-table-wrap.is-empty table {
+    width: 100%;
+    min-width: 0;
+    table-layout: fixed;
+  }
+
+  .payroll-table-wrap.is-empty thead {
+    display: none;
+  }
+
+  .payroll-table-wrap.is-empty td {
+    width: 100%;
+    padding: 0;
+  }
+
+  .payroll-table-wrap.is-empty .empty {
+    display: grid;
+    min-height: 250px;
+    width: 100%;
+    padding: 30px 16px;
+    place-content: center;
+    place-items: center;
+    text-align: center;
+  }
+}
