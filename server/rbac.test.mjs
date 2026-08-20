@@ -31,6 +31,16 @@ describe('server RBAC policy', () => {
     expect(authorizeAction({ user: user('cashier'), action: 'sale.create', locationId: 'outlet-a' }).allowed).toBe(true);
   });
 
+  it('gives operational roles local history without financial or organization-wide access', () => {
+    for (const role of ['warehouse', 'pic']) {
+      for (const action of ['report.view', 'report.export', 'audit.view', 'pricing.view']) {
+        expect(authorizeAction({ user: user(role), action, locationId: 'outlet-a' }).allowed).toBe(false);
+      }
+      expect(authorizeAction({ user: user(role), action: 'audit.location.view', locationId: 'outlet-a' }).allowed).toBe(true);
+      expect(authorizeAction({ user: user(role), action: 'audit.location.view', locationId: 'outlet-b' }).allowed).toBe(false);
+    }
+  });
+
   it('does not grant Cashier stock adjustment, void, or transfer permissions', () => {
     for (const action of ['stock.adjust', 'sale.void', 'stock.in', 'stock.opname', 'transfer.create']) {
       expect(authorizeAction({ user: user('cashier'), action, locationId: 'outlet-a' }).allowed).toBe(false);

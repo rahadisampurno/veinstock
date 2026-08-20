@@ -15,7 +15,7 @@ const decodeJwtPayload = token => JSON.parse(Buffer.from(token.split('.')[1], 'b
 
 beforeAll(async () => {
   server = spawn(process.execPath, ['server/index.mjs'], { cwd: process.cwd(), env: { ...process.env, PORT: String(port), DB_HOST: '', JWT_SECRET: 'integration-test-secret', ALLOW_SELF_REGISTRATION: 'true', ALLOW_LEGACY_SNAPSHOT: 'true' }, stdio: 'ignore' });
-  for (let attempt = 0; attempt < 40; attempt += 1) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
     try { if ((await fetch(`${base}/api/health`)).ok) return; } catch { /* server belum siap */ }
     await new Promise(resolve => setTimeout(resolve, 50));
   }
@@ -162,6 +162,8 @@ describe('multi-tenant API', () => {
     expect((await post('/api/users', { name: 'Kasir', email: cashierEmail, password: 'Password123!', role: 'cashier', outletId: 'outlet-kasir' }, owner.body.token)).status).toBe(201);
     const cashier = await post('/api/login', { email: cashierEmail, password: 'Password123!' });
     const cashierState = await request('/api/state', { headers: { authorization: `Bearer ${cashier.body.token}` } });
+    expect(cashierState.body.data.products[0].variants[0].cost).toBeUndefined();
+    expect(cashierState.body.data.products[0].variants[0].price).toBe(10000);
 
     const forged = structuredClone(cashierState.body.data);
     forged.balances[0].quantity += 99;
@@ -542,5 +544,25 @@ describe('multi-tenant API', () => {
     expect(state.body.data.transfers).toHaveLength(0);
     expect(state.body.data.returns).toHaveLength(0);
     expect(state.body.data.stockCounts).toHaveLength(0);
+  });
+
+  it('blocks POS oversell even when the organization uses a warning policy', async () => {
+    const suffix = `${Date.now()}-oversell-warning`;
+    const owner = await post('/api/register', { organizationName: 'POS Tanpa Minus', name: 'Owner', email: `owner-${suffix}@test.local`, password: 'Password123!' });
+    const state = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    state.body.data.business.negativeStockPolicy = 'WARN';
+    state.body.data.products.push({
+      id: `product-${suffix}`, name: 'Stok Terbatas', category: 'Uji', unit: 'Kg', active: true,
+      variants: [{ id: `variant-${suffix}`, name: 'Reguler', sku: `LIMIT-${suffix}`, cost: 1000, price: 2000, resellerPrice: 1500, minStock: 0 }],
+    });
+    state.body.data.balances.push({ locationId: 'loc-owner', variantId: `variant-${suffix}`, quantity: 2 });
+    expect((await request('/api/state', { method: 'PUT', headers: { 'content-type': 'application/json', authorization: `Bearer ${owner.body.token}` }, body: JSON.stringify({ data: state.body.data, version: state.body.version }) })).status).toBe(200);
+
+    const oversell = await post('/api/commands/sales', { locationId: 'loc-owner', channel: 'offline', payment: 'Tunai', items: [{ variantId: `variant-${suffix}`, quantity: 3 }] }, owner.body.token);
+    expect(oversell.status).toBe(400);
+    expect(oversell.body.message).toMatch(/tidak mencukupi.*tersedia 2/i);
+    const unchanged = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    expect(unchanged.body.data.balances.find(item => item.variantId === `variant-${suffix}`).quantity).toBe(2);
+    expect(unchanged.body.data.sales).toHaveLength(0);
   });
 });

@@ -7,13 +7,14 @@ describe('SQL state synchronization', () => {
     const connection = {
       execute: async (query) => {
         if (query.startsWith('SELECT name, owner_name')) return [[{ name: 'Test' }], []];
-        if (query.startsWith('SELECT version, payload')) return [[{ version: 1, payload: { rolePolicies: { pic: policy } } }], []];
+        if (query.startsWith('SELECT version, payload')) return [[{ version: 1, payload: { rolePolicies: { pic: policy }, securityMigrations: { operationalRoleScopeV1: true } } }], []];
         return [[], []];
       },
       query: async () => [[], []],
     };
     const result = await getStateFromSQL(connection, 'org-test');
     expect(result.data.rolePolicies.pic).toEqual(policy);
+    expect(result.data.securityMigrations.operationalRoleScopeV1).toBe(true);
   });
   it('stores product image URLs using the frontend imageUrl field', async () => {
     const calls = [];

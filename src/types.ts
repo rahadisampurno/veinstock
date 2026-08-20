@@ -70,6 +70,7 @@ export interface Product {
   unit: StockUnit;
   active: boolean;
   imageUrl?: string;
+  imageUrls?: string[];
   variants: Variant[];
 }
 export interface Balance {

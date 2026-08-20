@@ -9,7 +9,7 @@ export type ActionType =
   | 'sale.view' | 'sale.create' | 'sale.void'
   | 'shipping.view' | 'shipping.manage'
   | 'report.view' | 'report.export'
-  | 'audit.view'
+  | 'audit.location.view' | 'audit.view'
   | 'supplier.view' | 'supplier.manage'
   | 'pricing.view' | 'pricing.manage'
   | 'attendance.view' | 'attendance.record' | 'attendance.manage'
@@ -48,7 +48,7 @@ export function resolveUserScope(user?: SessionUser | null, policies?: RolePolic
      'stock.view', 'stock.initial_balance', 'stock.in', 'stock.out', 'stock.adjust', 'stock.opname',
      'transfer.view', 'transfer.create', 'transfer.send', 'transfer.receive', 'transfer.cancel',
      'sale.view', 'sale.create', 'sale.void', 'shipping.view', 'shipping.manage',
-     'report.view', 'report.export', 'audit.view', 'supplier.view', 'supplier.manage',
+     'report.view', 'report.export', 'audit.location.view', 'audit.view', 'supplier.view', 'supplier.manage',
      'pricing.view', 'pricing.manage', 'attendance.view', 'attendance.record', 'attendance.manage', 'payroll.view', 'payroll.manage',
      'cashbook.view', 'cashbook.manage'].forEach(p => permissions.add(p as ActionType));
   } else if (role === 'admin') {
@@ -58,16 +58,16 @@ export function resolveUserScope(user?: SessionUser | null, policies?: RolePolic
      'stock.view', 'stock.initial_balance', 'stock.in', 'stock.out', 'stock.adjust', 'stock.opname',
      'transfer.view', 'transfer.create', 'transfer.send', 'transfer.receive', 'transfer.cancel',
      'sale.view', 'sale.create', 'sale.void', 'shipping.view', 'shipping.manage',
-     'report.view', 'report.export', 'audit.view', 'supplier.view', 'supplier.manage', 'pricing.view', 'pricing.manage', 'attendance.view', 'attendance.record',
+     'report.view', 'report.export', 'audit.location.view', 'audit.view', 'supplier.view', 'supplier.manage', 'pricing.view', 'pricing.manage', 'attendance.view', 'attendance.record',
      'cashbook.view', 'cashbook.manage'].forEach(p => permissions.add(p as ActionType));
   } else if (role === 'finance') {
     ['stock.view', 'report.view', 'report.export', 'pricing.view', 'cashbook.view', 'cashbook.manage'].forEach(p => permissions.add(p as ActionType));
   } else if (role === 'warehouse') {
     ['product.view', 'location.view', 'stock.view', 'stock.in', 'stock.out', 'stock.opname',
-     'transfer.view', 'transfer.create', 'transfer.send', 'shipping.view', 'shipping.manage', 'report.view', 'report.export', 'audit.view', 'attendance.view', 'attendance.record'].forEach(p => permissions.add(p as ActionType));
+     'transfer.view', 'transfer.create', 'transfer.send', 'shipping.view', 'shipping.manage', 'audit.location.view', 'attendance.view', 'attendance.record'].forEach(p => permissions.add(p as ActionType));
   } else if (role === 'pic') {
     ['product.view', 'location.view', 'stock.view', 'stock.opname',
-     'transfer.view', 'transfer.receive', 'transfer.create', 'transfer.send', 'sale.view', 'sale.create', 'sale.void', 'shipping.view', 'shipping.manage', 'report.view', 'report.export', 'audit.view', 'attendance.view', 'attendance.record'].forEach(p => permissions.add(p as ActionType));
+     'transfer.view', 'transfer.receive', 'transfer.create', 'transfer.send', 'sale.view', 'sale.create', 'sale.void', 'shipping.view', 'shipping.manage', 'audit.location.view', 'attendance.view', 'attendance.record'].forEach(p => permissions.add(p as ActionType));
   } else if (role === 'cashier') {
     ['product.view', 'location.view', 'stock.view', 'sale.create', 'sale.view', 'attendance.view', 'attendance.record'].forEach(p => permissions.add(p as ActionType));
   } else if (role === 'employee') {

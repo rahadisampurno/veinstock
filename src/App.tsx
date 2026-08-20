@@ -254,7 +254,12 @@ const permissionOptions: Array<{
   { id: "shipping.manage", label: "Kelola pengiriman", group: "Pengiriman" },
   { id: "report.view", label: "Lihat laporan", group: "Laporan" },
   { id: "report.export", label: "Ekspor laporan", group: "Laporan" },
-  { id: "audit.view", label: "Lihat audit", group: "Audit" },
+  {
+    id: "audit.location.view",
+    label: "Lihat histori operasional lokasi sendiri",
+    group: "Audit",
+  },
+  { id: "audit.view", label: "Lihat audit seluruh organisasi", group: "Audit" },
   { id: "supplier.view", label: "Lihat supplier", group: "Supplier" },
   { id: "supplier.manage", label: "Kelola supplier", group: "Supplier" },
   { id: "pricing.view", label: "Lihat HPP", group: "HPP" },
@@ -288,7 +293,7 @@ const menuPermissionRequirement: Partial<Record<Page, ActionType>> = {
   stock: "stock.view",
   transfers: "transfer.view",
   opname: "stock.view",
-  history: "audit.view",
+  history: "audit.location.view",
   sales: "sale.view",
   shipping: "shipping.view",
   returns: "stock.view",
@@ -313,7 +318,6 @@ const defaultRoleMenus: Record<ConfigurableRole, string[]> = {
     "history",
     "sales",
     "shipping",
-    "reports",
     "attendance",
     "help",
   ],
@@ -328,7 +332,6 @@ const defaultRoleMenus: Record<ConfigurableRole, string[]> = {
     "opname",
     "history",
     "shipping",
-    "reports",
     "attendance",
     "help",
   ],
@@ -830,6 +833,18 @@ const excelNumber = (n?: number | null) =>
   });
 const qty = (n?: number | null, unit?: StockUnit) =>
   `${(n || 0).toLocaleString("id-ID")} ${unit === "pcs" ? "pcs" : unit || "unit"}`;
+const jakartaDateTime = (value: Date | string | number) =>
+  `${new Intl.DateTimeFormat("id-ID", {
+    timeZone: "Asia/Jakarta",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  })
+    .format(new Date(value))
+    .replace(".", ":")} WIB`;
 const jakartaDateKey = (value: Date | string | number = new Date()) => {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: "Asia/Jakarta",
@@ -4917,6 +4932,7 @@ function Products({
   const [packageFilter, setPackageFilter] = useState("all");
   const [flavorFilter, setFlavorFilter] = useState("all");
   const [levelFilter, setLevelFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("active");
   const [downloadingBarcodes, setDownloadingBarcodes] = useState(false);
   const [barcodeExportOpen, setBarcodeExportOpen] = useState(false);
   const [barcodeProductSearch, setBarcodeProductSearch] = useState("");
@@ -4964,6 +4980,8 @@ function Products({
       .toLocaleLowerCase("id-ID")
       .includes(normalizedSearch);
   const filteredProducts = scopedProducts.filter((product: any) => {
+    if (statusFilter === "active" && product.active === false) return false;
+    if (statusFilter === "inactive" && product.active !== false) return false;
     if (categoryFilter !== "all" && product.category !== categoryFilter) {
       return false;
     }
@@ -5109,6 +5127,17 @@ function Products({
           <BarcodeScanControl label="Scan" onDetected={scanProduct} />
         </div>
         <div className="product-filter-grid">
+          <label>
+            <span>Status</span>
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+            >
+              <option value="active">Aktif</option>
+              <option value="all">Semua Status</option>
+              <option value="inactive">Arsip</option>
+            </select>
+          </label>
           <label>
             <span>Kategori</span>
             <select
@@ -5722,7 +5751,7 @@ function ReceiptsPage({
                     <span>DOKUMEN STOK MASUK</span>
                     <b>{group.code}</b>
                     <time>
-                      {new Date(group.createdAt).toLocaleString("id-ID")}
+                      {jakartaDateTime(group.createdAt)}
                     </time>
                   </div>
                   <span className={`status ${isCancelled ? "danger" : "ok"}`}>
@@ -5986,7 +6015,7 @@ function ReturnsPage({
                       : "Retur ke supplier"}
                   </b>
                   <time>
-                    {new Date(item.createdAt).toLocaleString("id-ID")}
+                    {jakartaDateTime(item.createdAt)}
                   </time>
                 </div>
                 <span
@@ -9528,7 +9557,7 @@ function Sales({
                       {locations[s.locationId]?.name ||
                         "Lokasi tidak diketahui"}
                     </b>
-                    <time>{new Date(s.createdAt).toLocaleString("id-ID")}</time>
+                    <time>{jakartaDateTime(s.createdAt)}</time>
                   </div>
                   <div className="record-card-badges">
                     <span className="status info">{s.channel}</span>
@@ -9780,7 +9809,7 @@ function Opname({
                     {locations[o.locationId]?.name || "Lokasi tidak diketahui"}
                   </b>
                   <time>
-                    {new Date(o.createdAt).toLocaleString("id-ID")} ·{" "}
+                    {jakartaDateTime(o.createdAt)} ·{" "}
                     {data.users.find((user: any) => user.id === o.createdBy)
                       ?.name ||
                       o.createdBy ||
@@ -10016,7 +10045,7 @@ function HistoryPage({ data, variants, locations, role, outletId }: any) {
                 <div className="record-card-code">
                   <span>JEJAK PERGERAKAN STOK</span>
                   <b>{m.type === "INITIAL_BALANCE" ? "Saldo awal" : m.type}</b>
-                  <time>{new Date(m.createdAt).toLocaleString("id-ID")}</time>
+                  <time>{jakartaDateTime(m.createdAt)}</time>
                 </div>
                 <strong className={m.quantity >= 0 ? "positive" : "negative"}>
                   {m.quantity > 0 ? "+" : ""}
@@ -12149,12 +12178,20 @@ function ProductModal({
     [category, setCategory] = useState(product?.category || "Umum"),
     [unit, setUnit] = useState<StockUnit>(product?.unit || "Pcs"),
     [active, setActive] = useState(product?.active ?? true),
-    [file, setFile] = useState<File | null>(null),
-    [imagePreview, setImagePreview] = useState(
-      product?.imageUrl || product?.image || "",
-    ),
+    [images, setImages] = useState<Array<{ id: string; file?: File; url: string }>>(() => {
+      const existing = product?.imageUrls || (product?.imageUrl || product?.image ? [product?.imageUrl || product?.image] : []);
+      return existing.map((url: string, i: number) => ({ id: `exist-${i}`, url }));
+    }),
     [error, setError] = useState(""),
     [loading, setLoading] = useState(false);
+
+  const objectUrls = useRef<string[]>([]);
+  useEffect(() => {
+    const urls = objectUrls.current;
+    return () => urls.forEach(URL.revokeObjectURL);
+  }, []);
+
+  const [draggedIdx, setDraggedIdx] = useState<number | null>(null);
 
   const [variants, setVariants] = useState<any[]>(
     product?.variants || [
@@ -12184,13 +12221,6 @@ function ProductModal({
   const [bulkPrice, setBulkPrice] = useState("");
   const [bulkReseller, setBulkReseller] = useState("");
   const [bulkMinStock, setBulkMinStock] = useState("");
-
-  useEffect(() => {
-    if (!file) return;
-    const objectUrl = URL.createObjectURL(file);
-    setImagePreview(objectUrl);
-    return () => URL.revokeObjectURL(objectUrl);
-  }, [file]);
 
   const applyBulk = () => {
     setVariants(
@@ -12265,14 +12295,20 @@ function ProductModal({
           setError("");
           setLoading(true);
           try {
-            const uploadedUrl = file ? await uploadImage(file) : undefined;
+            const finalImageUrls = await Promise.all(
+              images.map(async (img) => {
+                if (img.file) return await uploadImage(img.file);
+                return img.url;
+              })
+            );
             const updatedProduct: Product = {
               id: product?.id || newId("prod"),
               name,
               category,
               unit,
               active,
-              imageUrl: uploadedUrl || product?.imageUrl,
+              imageUrl: finalImageUrls[0] || undefined,
+              imageUrls: finalImageUrls.length ? finalImageUrls : undefined,
               variants: variants.map((v, index) => {
                 const { initialStock, ...rest } = v;
                 void initialStock;
@@ -12316,25 +12352,107 @@ function ProductModal({
           <h3 style={{ margin: "0 0 16px", fontSize: "16px" }}>
             Informasi Produk
           </h3>
-          <Field label="Gambar produk (opsional)">
+          <Field label="Gambar produk (opsional, maks 5)">
             <input
               type="file"
+              multiple
               accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
               onChange={(e) => {
-                const nextFile = e.target.files?.[0] || null;
-                setFile(nextFile);
+                if (e.target.files) {
+                  const newFiles = Array.from(e.target.files);
+                  const newImages = newFiles.map(file => {
+                    const url = URL.createObjectURL(file);
+                    objectUrls.current.push(url);
+                    return { id: Math.random().toString(36).slice(2), file, url };
+                  });
+                  setImages((prev) =>
+                    [...prev, ...newImages].slice(0, 5)
+                  );
+                }
               }}
+              disabled={images.length >= 5}
             />
-            {imagePreview && (
-              <img
-                className="product-image-preview"
-                src={imagePreview}
-                alt="Pratinjau gambar produk"
-              />
-            )}
+            <div style={{ display: "flex", gap: "12px", flexWrap: "wrap", marginTop: "12px" }}>
+              {images.map((img, i) => (
+                <div
+                  key={img.id}
+                  style={{ position: "relative", cursor: "grab", opacity: draggedIdx === i ? 0.5 : 1 }}
+                  draggable
+                  onDragStart={(e) => {
+                    setDraggedIdx(i);
+                    e.dataTransfer.effectAllowed = "move";
+                  }}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = "move";
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    if (draggedIdx === null || draggedIdx === i) return;
+                    setImages(prev => {
+                      const clone = [...prev];
+                      const [removed] = clone.splice(draggedIdx, 1);
+                      clone.splice(i, 0, removed);
+                      return clone;
+                    });
+                    setDraggedIdx(null);
+                  }}
+                  onDragEnd={() => setDraggedIdx(null)}
+                >
+                  <img
+                    className="product-image-preview"
+                    src={img.url}
+                    alt={`Gambar produk ${i + 1}`}
+                    style={{ margin: 0 }}
+                  />
+                  {i === 0 && (
+                    <div
+                      style={{
+                        position: "absolute",
+                        bottom: 0,
+                        left: 0,
+                        right: 0,
+                        background: "rgba(0,0,0,0.6)",
+                        color: "white",
+                        fontSize: "10px",
+                        textAlign: "center",
+                        padding: "2px 0",
+                        borderBottomLeftRadius: "11px",
+                        borderBottomRightRadius: "11px",
+                        pointerEvents: "none"
+                      }}
+                    >
+                      Sampul
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setImages((prev) => prev.filter((_, idx) => idx !== i))}
+                    style={{
+                      position: "absolute",
+                      top: -6,
+                      right: -6,
+                      background: "#ef4444",
+                      color: "white",
+                      borderRadius: "50%",
+                      border: "none",
+                      width: "20px",
+                      height: "20px",
+                      cursor: "pointer",
+                      fontSize: "12px",
+                      lineHeight: "20px",
+                      padding: 0,
+                      zIndex: 10
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
             <span className="upload-hint" style={{ marginTop: "10px" }}>
               Rekomendasi: Gambar persegi (1:1), ukuran maksimal 2MB, format
-              JPG/PNG/WEBP.
+              JPG/PNG/WEBP. Geser gambar untuk mengubah urutan.
             </span>
           </Field>
           <div className="form-grid">
@@ -12634,7 +12752,7 @@ function ProductModal({
                   <option value="Extra Pedas">Extra Pedas</option>
                 </select>
               </Field>
-              <Field label="Barcode (scan atau isi manual)">
+              <Field label="Barcode (scan atau isi manual, opsional)">
                 <div className="barcode-field">
                   <input
                     value={v.barcode || ""}
@@ -12827,7 +12945,7 @@ function ProductModal({
           </button>
           {onDelete && (
             <button type="button" className="danger-button" onClick={onDelete}>
-              <Trash2 size={16} /> Hapus Produk
+              <Trash2 size={16} /> Arsipkan Produk
             </button>
           )}
           <button className="primary" disabled={loading}>
@@ -14080,6 +14198,22 @@ function ReceiptModal({
   const matchingProducts = products.filter((product: any) =>
     product.name.toLowerCase().includes(productSearch.toLowerCase()),
   );
+  const invalidQuantities = Object.entries(selectedItems).filter(
+    ([, item]) =>
+      !Number.isInteger(Number(item.quantity)) || Number(item.quantity) < 1,
+  );
+  const invalidCosts = Object.entries(selectedItems).filter(
+    ([, item]) =>
+      !Number.isFinite(Number(item.unitCost)) || Number(item.unitCost) < 0,
+  );
+  const formInvalid =
+    !locationId ||
+    Object.keys(selectedItems).length === 0 ||
+    invalidQuantities.length > 0 ||
+    invalidCosts.length > 0 ||
+    (sourceType === "supplier" &&
+      !(data.suppliers?.find((supplier: any) => supplier.id === supplierId)
+        ?.name || supplierName).trim());
   return (
     <Modal
       title={receipt ? "Edit stok masuk" : "Catat stok masuk"}
@@ -14280,7 +14414,15 @@ function ReceiptModal({
                     },
                   }));
                 }}
+                aria-invalid={
+                  Number(selectedItems[receipt.variantId]?.quantity) < 1
+                }
               />
+              {Number(selectedItems[receipt.variantId]?.quantity) < 1 && (
+                <small className="form-error" role="alert">
+                  Jumlah minimal 1
+                </small>
+              )}
             </Field>
             <Field
               label={`Harga modal per ${variants.find((v: any) => v.id === receipt.variantId)?.unit || "unit"}`}
@@ -14534,7 +14676,13 @@ function ReceiptModal({
                             }));
                           }}
                           style={{ background: "white" }}
+                          aria-invalid={Number(item.quantity) < 1}
                         />
+                        {Number(item.quantity) < 1 && (
+                          <small className="form-error" role="alert">
+                            Jumlah minimal 1
+                          </small>
+                        )}
                       </Field>
                       <Field label="Harga Modal">
                         <RupiahInput
@@ -14578,7 +14726,7 @@ function ReceiptModal({
             : ""}
         </small>
         {uploadError && <p className="login-error">{uploadError}</p>}
-        <ModalActions close={close} disabled={isSaving} />
+        <ModalActions close={close} disabled={isSaving || formInvalid} />
       </form>
     </Modal>
   );
@@ -15939,6 +16087,8 @@ function SaleModal({
   const addToCart = (variantId: string) => {
     setCart((current) => {
       const found = current.find((item) => item.variantId === variantId);
+      const available = getBalance(data.balances, loc, variantId);
+      if ((found?.quantity || 0) >= available) return current;
       return found
         ? current.map((item) =>
             item.variantId === variantId
@@ -16112,9 +16262,12 @@ function SaleModal({
       );
       return;
     }
+    const available = getBalance(data.balances, loc, variantId);
     setCart((current) =>
       current.map((item) =>
-        item.variantId === variantId ? { ...item, quantity } : item,
+        item.variantId === variantId
+          ? { ...item, quantity: Math.min(quantity, available) }
+          : item,
       ),
     );
   };
@@ -16197,6 +16350,9 @@ function SaleModal({
   );
 
   const totalQty = cart.reduce((acc, c) => acc + c.quantity, 0);
+  const stockErrors = cart.filter(
+    (item) => item.quantity > getBalance(data.balances, loc, item.variantId),
+  );
   const totalAmount = cart.reduce((acc, c) => {
     const varDetail = variants.find((item: any) => item.id === c.variantId);
     const price =
@@ -16630,9 +16786,13 @@ function SaleModal({
                         {!selectedPosProduct && isOffline ? null : (
                           <div className="pos-variant-list">
                             {product.variants.map((v: any) => {
-                              const checked = cart.some(
+                              const cartItem = cart.find(
                                 (c) => c.variantId === v.id,
                               );
+                              const checked = Boolean(cartItem);
+                              const stockLimitReached =
+                                (cartItem?.quantity || 0) >=
+                                getBalance(data.balances, loc, v.id);
                               return (
                                 <button
                                   type="button"
@@ -16643,6 +16803,7 @@ function SaleModal({
                                   }
                                   key={v.id}
                                   onClick={() => addToCart(v.id)}
+                                  disabled={stockLimitReached}
                                 >
                                   <span>
                                     <b>{v.name}</b>
@@ -16671,7 +16832,11 @@ function SaleModal({
                                     </small>
                                   </span>
                                   <strong>
-                                    {checked ? "+1 lagi" : "Tambah"}
+                                    {stockLimitReached
+                                      ? "Stok maksimal"
+                                      : checked
+                                        ? "+1 lagi"
+                                        : "Tambah"}
                                   </strong>
                                 </button>
                               );
@@ -16754,6 +16919,10 @@ function SaleModal({
                                     updateQuantity(c.variantId, c.quantity + 1)
                                   }
                                   aria-label={`Tambah ${varDetail.name}`}
+                                  disabled={
+                                    c.quantity >=
+                                    getBalance(data.balances, loc, c.variantId)
+                                  }
                                 >
                                   +
                                 </button>
@@ -16858,6 +17027,12 @@ function SaleModal({
                 Struk belum tercetak: {printError}
               </p>
             )}
+            {stockErrors.length > 0 && (
+              <p className="form-error" role="alert">
+                Jumlah penjualan melebihi stok tersedia. Kurangi jumlah item
+                sebelum menyimpan.
+              </p>
+            )}
             <footer className="modal-actions sale-print-actions">
               {pendingSale ? (
                 <>
@@ -16907,6 +17082,7 @@ function SaleModal({
                     className="primary"
                     disabled={
                       cart.length === 0 ||
+                      stockErrors.length > 0 ||
                       saving ||
                       (printReceipt &&
                         printerSettings.mode !== "system" &&
@@ -17352,7 +17528,7 @@ function SaleDetail({
       <div className="detail-list">
         <p>
           <span>Waktu</span>
-          <b>{new Date(item.createdAt).toLocaleString("id-ID")}</b>
+          <b>{jakartaDateTime(item.createdAt)}</b>
         </p>
         <p>
           <span>Lokasi</span>
@@ -17476,7 +17652,7 @@ function ReceiptDetail({ items, variants, locations, close }: any) {
       <div className="detail-list">
         <p>
           <span>Tanggal</span>
-          <b>{new Date(receipt.createdAt).toLocaleString("id-ID")}</b>
+          <b>{jakartaDateTime(receipt.createdAt)}</b>
         </p>
         <p>
           <span>Sumber</span>
@@ -17573,7 +17749,7 @@ function OpnameDetail({ item, variants, locations, close }: any) {
       <div className="detail-list">
         <p>
           <span>Waktu</span>
-          <b>{new Date(item.createdAt).toLocaleString("id-ID")}</b>
+          <b>{jakartaDateTime(item.createdAt)}</b>
         </p>
         <p>
           <span>Lokasi</span>
@@ -17633,7 +17809,7 @@ function ReturnDetail({ item, variants, locations, close }: any) {
       <div className="detail-list">
         <p>
           <span>Waktu</span>
-          <b>{new Date(item.createdAt).toLocaleString("id-ID")}</b>
+          <b>{jakartaDateTime(item.createdAt)}</b>
         </p>
         <p>
           <span>Jenis retur</span>

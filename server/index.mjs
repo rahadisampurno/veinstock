@@ -127,7 +127,7 @@ async function backfillRolePolicyDependencies(pool) {
     stock: "stock.view",
     transfers: "transfer.view",
     opname: "stock.view",
-    history: "audit.view",
+    history: "audit.location.view",
     sales: "sale.view",
     shipping: "shipping.view",
     returns: "stock.view",
@@ -167,6 +167,34 @@ async function backfillRolePolicyDependencies(pool) {
           changed = true;
         }
       }
+    }
+    state.securityMigrations ||= {};
+    if (!state.securityMigrations.operationalRoleScopeV1) {
+      for (const role of ["warehouse", "pic"]) {
+        const policy = state.rolePolicies[role];
+        if (!policy) continue;
+        const restrictedMenus = new Set(["reports", "analytics", "pricing"]);
+        const restrictedPermissions = new Set([
+          "report.view",
+          "report.export",
+          "audit.view",
+          "pricing.view",
+          "pricing.manage",
+        ]);
+        const menus = (policy.menus || []).filter(
+          (menu) => !restrictedMenus.has(menu),
+        );
+        const permissions = (policy.permissions || []).filter(
+          (permission) => !restrictedPermissions.has(permission),
+        );
+        if (!menus.includes("history")) menus.push("history");
+        if (!permissions.includes("audit.location.view"))
+          permissions.push("audit.location.view");
+        policy.menus = menus;
+        policy.permissions = permissions;
+      }
+      state.securityMigrations.operationalRoleScopeV1 = true;
+      changed = true;
     }
     for (const policy of Object.values(state?.rolePolicies || {})) {
       policy.permissions ||= [];
@@ -218,7 +246,6 @@ const defaultRoleMenusById = {
     "history",
     "sales",
     "shipping",
-    "reports",
     "attendance",
     "help",
   ],
@@ -233,7 +260,6 @@ const defaultRoleMenusById = {
     "opname",
     "history",
     "shipping",
-    "reports",
     "attendance",
     "help",
   ],
@@ -1710,6 +1736,7 @@ const configurablePermissions = new Set([
   "shipping.manage",
   "report.view",
   "report.export",
+  "audit.location.view",
   "audit.view",
   "supplier.view",
   "supplier.manage",
@@ -1755,7 +1782,7 @@ const menuPermissionRequirements = {
   stock: "stock.view",
   transfers: "transfer.view",
   opname: "stock.view",
-  history: "audit.view",
+  history: "audit.location.view",
   sales: "sale.view",
   shipping: "shipping.view",
   returns: "stock.view",
@@ -1773,6 +1800,19 @@ const validateCommandProduct = (product) => {
     !product.variants.length
   )
     return "Produk atau varian tidak valid.";
+  if (
+    product.imageUrls !== undefined &&
+    (!Array.isArray(product.imageUrls) ||
+      product.imageUrls.length > 5 ||
+      product.imageUrls.some(
+        (url) =>
+          typeof url !== "string" ||
+          !url.trim() ||
+          url.length > 2048 ||
+          !/^https:\/\//i.test(url),
+      ))
+  )
+    return "Galeri produk maksimal berisi 5 URL gambar HTTPS yang valid.";
   const skuSet = new Set();
   for (const variant of product.variants) {
     const cost = Number(variant?.cost),
@@ -2459,6 +2499,34 @@ app.get("/api/state", requireAuth, async (req, res) => {
     actor.rolePermissions = data.rolePolicies?.[actor.role]?.permissions;
     const permissions = resolveUserScope(actor).permissions;
     const hasAny = (...items) => items.some((item) => permissions.has(item));
+    const canViewCosts = hasAny("pricing.view", "pricing.manage");
+    const visibleProducts = (products = []) => products.map((product) => ({
+      ...product,
+      variants: (product.variants || []).map((variant) => {
+        if (canViewCosts) return variant;
+        const {
+          cost: _cost,
+          hppProfileId: _profile,
+          hppBatchId: _batch,
+          hppPackageId: _package,
+          ...operationalVariant
+        } = variant;
+        return operationalVariant;
+      }),
+    }));
+    const visibleSales = (sales = []) => sales.map((sale) => ({
+      ...sale,
+      items: (sale.items || []).map((item) => {
+        if (canViewCosts) return item;
+        const { unitCost: _unitCost, ...operationalItem } = item;
+        return operationalItem;
+      }),
+    }));
+    const visibleReceipts = (receipts = []) => receipts.map((receipt) => {
+      if (canViewCosts) return receipt;
+      const { unitCost: _unitCost, ...operationalReceipt } = receipt;
+      return operationalReceipt;
+    });
     const reportCashEntries = hasAny("cashbook.view", "cashbook.manage")
       ? data.cashEntries || []
       : hasAny("report.view")
@@ -2492,7 +2560,7 @@ app.get("/api/state", requireAuth, async (req, res) => {
               "pricing.manage",
               "report.view",
             )
-              ? source.products
+              ? visibleProducts(source.products)
               : [],
             locations: hasAny(
               "location.view",
@@ -2536,7 +2604,7 @@ app.get("/api/state", requireAuth, async (req, res) => {
               "shipping.manage",
               "report.view",
             )
-              ? source.sales
+              ? visibleSales(source.sales)
               : [],
             transfers: hasAny(
               "transfer.view",
@@ -2548,7 +2616,12 @@ app.get("/api/state", requireAuth, async (req, res) => {
             )
               ? source.transfers
               : [],
-            movements: hasAny("audit.view", "stock.view", "report.view")
+            movements: hasAny(
+              "audit.location.view",
+              "audit.view",
+              "stock.view",
+              "report.view",
+            )
               ? source.movements
               : [],
             stockCounts: hasAny(
@@ -2560,7 +2633,7 @@ app.get("/api/state", requireAuth, async (req, res) => {
               ? source.stockCounts
               : [],
             receipts: hasAny("stock.view", "stock.in", "report.view")
-              ? source.receipts
+              ? visibleReceipts(source.receipts)
               : [],
             returns: hasAny("stock.view", "stock.out", "report.view")
               ? source.returns
@@ -4260,7 +4333,6 @@ app.post("/api/commands/sales", requireAuth, async (req, res) => {
       );
     }
 
-    const policy = state.business?.negativeStockPolicy || "BLOCK";
     const saleItems = [];
     let balances = state.balances;
     let total = 0;
@@ -4272,7 +4344,7 @@ app.post("/api/commands/sales", requireAuth, async (req, res) => {
           "Salah satu varian tidak aktif atau tidak ditemukan.",
         );
       const available = commandBalance(balances, locationId, variantId);
-      if (policy === "BLOCK" && available < quantity)
+      if (available < quantity)
         throw invalidCommand(
           `Stok ${variant.productName} ${variant.name} tidak mencukupi. Tersedia ${available} ${variant.unit}.`,
         );

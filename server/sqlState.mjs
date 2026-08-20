@@ -351,6 +351,7 @@ export async function getStateFromSQL(conn, orgId) {
     version,
     data: {
       business,
+      securityMigrations: rawState.securityMigrations || {},
       locations: mergeLegacy(sqlLocations, rawState.locations),
       products: mergeProducts(products, rawState.products),
       balances: mergeLegacyBalances(balances, rawState.balances),
