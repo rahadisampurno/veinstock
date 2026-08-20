@@ -12752,7 +12752,7 @@ function ProductModal({
                   <option value="Extra Pedas">Extra Pedas</option>
                 </select>
               </Field>
-              <Field label="Barcode (scan atau isi manual, opsional)">
+              <Field label="Barcode (opsional)">
                 <div className="barcode-field">
                   <input
                     value={v.barcode || ""}
@@ -12760,13 +12760,6 @@ function ProductModal({
                       updateVariant(index, "barcode", e.target.value)
                     }
                     placeholder="Barcode akan dibuat otomatis bila kosong"
-                  />
-                  <BarcodeScanControl
-                    label="Scan barcode"
-                    onDetected={(value) => {
-                      updateVariant(index, "barcode", value);
-                      return true;
-                    }}
                   />
                   <BarcodeGraphic value={v.barcode} />
                   {v.barcode && (
