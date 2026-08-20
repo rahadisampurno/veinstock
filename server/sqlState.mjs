@@ -361,6 +361,7 @@ export async function getStateFromSQL(conn, orgId) {
       stockCounts: mergeLegacy(stockCounts, rawState.stockCounts),
       receipts: rawState.receipts || [],
       returns: rawState.returns || [],
+      stockOuts: rawState.stockOuts || [],
       suppliers: rawState.suppliers || [],
       employees: rawState.employees || [],
       attendanceSettings: rawState.attendanceSettings || [],

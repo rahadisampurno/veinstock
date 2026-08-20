@@ -183,6 +183,22 @@ export interface StockReturn {
   cancelledAt?: string;
   cancelReason?: string;
 }
+export interface StockOut {
+  id: string;
+  stockOutCode?: string;
+  category: "affiliate_sample" | "promotion" | "damaged" | "internal" | "other";
+  locationId: string;
+  variantId: string;
+  quantity: number;
+  unitCost?: number;
+  note: string;
+  proofUrl?: string;
+  createdBy?: string;
+  createdAt: string;
+  status: "completed" | "cancelled";
+  cancelledAt?: string;
+  cancelReason?: string;
+}
 export interface Employee {
   id: string;
   userId: string;
@@ -422,6 +438,7 @@ export interface AppData {
   suppliers?: Supplier[];
   receipts?: StockReceipt[];
   returns?: StockReturn[];
+  stockOuts?: StockOut[];
   employees?: Employee[];
   attendanceSettings?: AttendanceSetting[];
   attendances?: Attendance[];

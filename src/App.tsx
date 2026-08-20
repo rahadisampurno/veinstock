@@ -55,6 +55,7 @@ import {
   KeyRound,
   Menu,
   PackagePlus,
+  PackageOpen,
   Pin,
   PinOff,
   Printer,
@@ -161,6 +162,7 @@ type Page =
   | "locations"
   | "receipts"
   | "stock"
+  | "stock-outs"
   | "transfers"
   | "sales"
   | "shipping"
@@ -206,6 +208,7 @@ const roleMenuOptions: Array<{ id: Page; label: string }> = [
   { id: "suppliers", label: "Supplier" },
   { id: "receipts", label: "Stok Masuk" },
   { id: "stock", label: "Stok per Lokasi" },
+  { id: "stock-outs", label: "Stok Keluar" },
   { id: "transfers", label: "Transfer Stok" },
   { id: "opname", label: "Stok Opname" },
   { id: "history", label: "Riwayat Stok" },
@@ -291,6 +294,7 @@ const menuPermissionRequirement: Partial<Record<Page, ActionType>> = {
   suppliers: "supplier.view",
   receipts: "stock.view",
   stock: "stock.view",
+  "stock-outs": "stock.out",
   transfers: "transfer.view",
   opname: "stock.view",
   history: "audit.location.view",
@@ -313,6 +317,7 @@ const defaultRoleMenus: Record<ConfigurableRole, string[]> = {
     "products",
     "locations",
     "stock",
+    "stock-outs",
     "transfers",
     "opname",
     "history",
@@ -328,6 +333,7 @@ const defaultRoleMenus: Record<ConfigurableRole, string[]> = {
     "locations",
     "receipts",
     "stock",
+    "stock-outs",
     "transfers",
     "opname",
     "history",
@@ -833,6 +839,13 @@ const excelNumber = (n?: number | null) =>
   });
 const qty = (n?: number | null, unit?: StockUnit) =>
   `${(n || 0).toLocaleString("id-ID")} ${unit === "pcs" ? "pcs" : unit || "unit"}`;
+const stockOutCategoryLabels: Record<string, string> = {
+  affiliate_sample: "Sampel affiliate",
+  promotion: "Promosi",
+  damaged: "Barang rusak",
+  internal: "Konsumsi internal",
+  other: "Lainnya",
+};
 const jakartaDateTime = (value: Date | string | number) =>
   `${new Intl.DateTimeFormat("id-ID", {
     timeZone: "Asia/Jakarta",
@@ -2255,6 +2268,7 @@ function App() {
       items: [
         ["receipts", "Stok Masuk", ArrowDownToLine],
         ["stock", "Stok per Lokasi", Boxes],
+        ["stock-outs", "Stok Keluar", PackageOpen],
         ["transfers", "Transfer Stok", ArrowRightLeft],
         ["opname", "Stok Opname", ClipboardCheck],
         ["history", "Riwayat Stok", History],
@@ -2299,6 +2313,7 @@ function App() {
     locations: "Lokasi Usaha",
     receipts: "Stok Masuk",
     stock: "Stok per Lokasi",
+    "stock-outs": "Stok Keluar Operasional",
     transfers: "Transfer Stok",
     sales: "Penjualan Multi-Kanal",
     shipping: "Pengiriman Pesanan",
@@ -2737,6 +2752,19 @@ function App() {
               uploadImage={uploadImage}
               notify={notify}
               canManage={can("shipping.manage")}
+            />
+          )}
+          {page === "stock-outs" && (
+            <StockOutsPage
+              data={data}
+              variants={variantMap}
+              locations={locationMap}
+              canManage={can("stock.out")}
+              open={() => setModal("stock-out")}
+              detail={(id: string) => setModal(`stock-out-detail:${id}`)}
+              cancel={(id: string) =>
+                checkAuth("stock.out") && setModal(`cancel:stock-out:${id}`)
+              }
             />
           )}
           {page === "returns" && (
@@ -3392,6 +3420,36 @@ function App() {
               );
             }
           }}
+        />
+      )}
+      {modal === "stock-out" && (
+        <StockOutModal
+          data={data}
+          uploadImage={uploadImage}
+          close={() => setModal(null)}
+          save={async (form: any) => {
+            try {
+              await runCommand("/api/commands/stock-outs", form);
+              setModal(null);
+              notify("Stok keluar berhasil dicatat");
+            } catch (error) {
+              notify(
+                error instanceof Error
+                  ? error.message
+                  : "Stok keluar tidak dapat disimpan",
+                "error",
+              );
+            }
+          }}
+        />
+      )}
+      {modal?.startsWith("stock-out-detail:") && (
+        <StockOutDetail
+          itemId={modal.slice("stock-out-detail:".length)}
+          data={data}
+          variants={variantMap}
+          locations={locationMap}
+          close={() => setModal(null)}
         />
       )}
       {modal === "business" && (
@@ -4933,6 +4991,8 @@ function Products({
   const [flavorFilter, setFlavorFilter] = useState("all");
   const [levelFilter, setLevelFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("active");
+  const [page, setPage] = useState(1);
+  const ITEMS_PER_PAGE = 10;
   const [downloadingBarcodes, setDownloadingBarcodes] = useState(false);
   const [barcodeExportOpen, setBarcodeExportOpen] = useState(false);
   const [barcodeProductSearch, setBarcodeProductSearch] = useState("");
@@ -4993,6 +5053,10 @@ function Products({
       .includes(normalizedSearch);
     return productMatches || filteredVariants.some(variantMatchesSearch);
   });
+  useEffect(() => setPage(1), [search, categoryFilter, packageFilter, flavorFilter, levelFilter, statusFilter]);
+  const totalPages = Math.max(1, Math.ceil(filteredProducts.length / ITEMS_PER_PAGE));
+  const currentPage = Math.min(page, totalPages);
+  const visibleProducts = filteredProducts.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE);
   const previewVariants = (product: any) => {
     const filteredVariants = product.variants.filter(variantMatchesFilters);
     if (!normalizedSearch) return filteredVariants.slice(0, 5);
@@ -5216,7 +5280,7 @@ function Products({
         </div>
       </div>
       <div className="product-grid">
-        {filteredProducts.map((p: any) => {
+        {visibleProducts.map((p: any) => {
           const variantsToShow = previewVariants(p);
           return (
             <article
@@ -5339,6 +5403,7 @@ function Products({
           );
         })}
       </div>
+      <TablePagination page={currentPage} total={filteredProducts.length} size={ITEMS_PER_PAGE} setPage={setPage} />
       {filteredProducts.length === 0 && (
         <div className="empty">
           <PackagePlus />
@@ -5494,9 +5559,15 @@ function Products({
 }
 function LocationsPage({ data, open, edit, canCreate, canEdit }: any) {
   const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const ITEMS_PER_PAGE = 10;
+  useEffect(() => setPage(1), [search]);
   const rows = data.locations.filter((x: any) =>
     `${x.name} ${x.address || ""}`.toLowerCase().includes(search.toLowerCase()),
   );
+  const totalPages = Math.max(1, Math.ceil(rows.length / ITEMS_PER_PAGE));
+  const currentPage = Math.min(page, totalPages);
+  const visibleRows = rows.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE);
   return (
     <PageBlock
       title="Lokasi usaha"
@@ -5510,7 +5581,7 @@ function LocationsPage({ data, open, edit, canCreate, canEdit }: any) {
         placeholder="Cari lokasi atau alamat"
       />
       <div className="user-grid">
-        {rows.map((location: any) => (
+        {visibleRows.map((location: any) => (
           <article
             className={canEdit ? "clickable-card" : ""}
             key={location.id}
@@ -5545,6 +5616,7 @@ function LocationsPage({ data, open, edit, canCreate, canEdit }: any) {
           </article>
         ))}
       </div>
+      <TablePagination page={currentPage} total={rows.length} size={ITEMS_PER_PAGE} setPage={setPage} />
     </PageBlock>
   );
 }
@@ -5858,6 +5930,119 @@ function ReceiptsPage({
     </PageBlock>
   );
 }
+function StockOutsPage({ data, variants, locations, open, cancel, detail, canManage }: any) {
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const ITEMS_PER_PAGE = 10;
+  useEffect(() => setPage(1), [search]);
+  const lines = [...(data.stockOuts || [])].sort(
+      (a: any, b: any) =>
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    );
+  const groups = Object.values(
+    lines.reduce((result: Record<string, any>, item: any) => {
+      const key =
+        item.stockOutCode ||
+        `legacy:${item.createdBy || ""}:${item.locationId}:${item.category}:${item.note}:${String(item.createdAt).slice(0, 19)}`;
+      if (!result[key]) result[key] = { ...item, key, items: [] };
+      result[key].items.push(item);
+      return result;
+    }, {}),
+  ).sort(
+    (a: any, b: any) =>
+      new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+  ).filter((group: any) =>
+    group.items.some((item: any) =>
+      `${stockOutCategoryLabels[item.category] || item.category} ${item.note} ${locations[item.locationId]?.name || ""} ${variants[item.variantId]?.productName || ""} ${variants[item.variantId]?.name || ""}`
+        .toLowerCase()
+        .includes(search.toLowerCase()),
+    ),
+  );
+  const activeLines = groups.flatMap((group: any) => group.items).filter((item: any) => item.status !== "cancelled");
+  const totalPages = Math.max(1, Math.ceil(groups.length / ITEMS_PER_PAGE));
+  const currentPage = Math.min(page, totalPages);
+  const visibleGroups = groups.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE);
+  return (
+    <PageBlock
+      title="Stok keluar"
+      desc="Catat sampel, promosi, barang rusak, atau pemakaian internal tanpa mencampurkannya dengan penjualan dan retur."
+      action={canManage ? "Catat Stok Keluar" : undefined}
+      onAction={canManage ? open : undefined}
+    >
+      <div className="stats-grid compact">
+        <Stat label="Total Dokumen" value={groups.length.toString()} sub="Sesuai pencarian" />
+        <Stat
+          label="Total Item Keluar"
+          value={activeLines.reduce((sum: number, item: any) => sum + item.quantity, 0).toLocaleString("id-ID")}
+          sub="Tidak termasuk pembatalan"
+        />
+      </div>
+      <div className="filters">
+        <ListSearch
+          value={search}
+          setValue={setSearch}
+          placeholder="Cari kategori, produk, lokasi, atau keterangan"
+        />
+      </div>
+      <div className="record-card-list">
+        {visibleGroups.length ? (
+          visibleGroups.map((group: any) => {
+            const cancelled = group.items.every((item: any) => item.status === "cancelled");
+            const totalQuantity = group.items.reduce((sum: number, item: any) => sum + item.quantity, 0);
+            return <article
+              className="record-card clickable-record-card"
+              key={group.key}
+              role="button"
+              tabIndex={0}
+              onClick={() => detail(group.items[0].id)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  detail(group.items[0].id);
+                }
+              }}
+            >
+              <div className="record-card-top">
+                <div className="record-card-code">
+                  <span>STOK KELUAR OPERASIONAL</span>
+                  <b>{stockOutCategoryLabels[group.category] || "Lainnya"}</b>
+                  <time>{jakartaDateTime(group.createdAt)} · {group.items.length} varian</time>
+                </div>
+                <span className={`status ${cancelled ? "danger" : "ok"}`}>
+                  {cancelled ? "Dibatalkan" : "Selesai"}
+                </span>
+              </div>
+              <div className="record-card-body">
+                <div className="record-detail">
+                  <small>PRODUK & JUMLAH</small>
+                  <b>{variants[group.items[0]?.variantId]?.productName}</b>
+                  <span>{group.items.map((item: any) => `${variants[item.variantId]?.name} (${qty(item.quantity, variants[item.variantId]?.unit)})`).join(" · ")}</span>
+                  <small>{totalQuantity.toLocaleString("id-ID")} item total</small>
+                </div>
+                <div className="record-detail">
+                  <small>LOKASI & KETERANGAN</small>
+                  <b>{locations[group.locationId]?.name || "Lokasi tidak diketahui"}</b>
+                  <span>{cancelled ? `Dibatalkan: ${group.items[0]?.cancelReason || group.note}` : group.note}</span>
+                </div>
+              </div>
+              {canManage && !cancelled && (
+                <div className="record-card-actions">
+                  <button className="table-action danger-text" onClick={(event) => { event.stopPropagation(); cancel(group.items[0].id); }}>
+                    Batalkan dokumen
+                  </button>
+                </div>
+              )}
+            </article>;
+          })
+        ) : (
+          <Empty standalone text="Belum ada stok keluar operasional." />
+        )}
+      </div>
+      <TablePagination page={currentPage} total={groups.length} size={ITEMS_PER_PAGE} setPage={setPage} />
+    </PageBlock>
+  );
+}
+
 function ReturnsPage({
   data,
   variants,
@@ -6136,11 +6321,17 @@ function BusinessPage({ data, open }: any) {
 }
 function SuppliersPage({ data, open, edit, canManage }: any) {
   const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const ITEMS_PER_PAGE = 10;
+  useEffect(() => setPage(1), [search]);
   const suppliers = (data.suppliers || []).filter((supplier: any) =>
     `${supplier.name} ${supplier.phone || ""} ${supplier.address || ""}`
       .toLowerCase()
       .includes(search.toLowerCase()),
   );
+  const totalPages = Math.max(1, Math.ceil(suppliers.length / ITEMS_PER_PAGE));
+  const currentPage = Math.min(page, totalPages);
+  const visibleSuppliers = suppliers.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE);
   const receiptCount = (supplierId: string) =>
     (data.receipts || []).filter(
       (receipt: any) =>
@@ -6188,8 +6379,8 @@ function SuppliersPage({ data, open, edit, canManage }: any) {
             </tr>
           </thead>
           <tbody>
-            {suppliers.length ? (
-              suppliers.map((supplier: any) => (
+            {visibleSuppliers.length ? (
+              visibleSuppliers.map((supplier: any) => (
                 <tr key={supplier.id}>
                   <td>
                     <b>{supplier.name}</b>
@@ -6220,6 +6411,7 @@ function SuppliersPage({ data, open, edit, canManage }: any) {
           </tbody>
         </table>
       </div>
+      <TablePagination page={currentPage} total={suppliers.length} size={ITEMS_PER_PAGE} setPage={setPage} />
     </PageBlock>
   );
 }
@@ -6233,11 +6425,20 @@ function EmployeesPage({
   canCreate,
   canEdit,
 }: any) {
-  const accounts = data.users.filter(
-    (account: any) => account.role !== "owner",
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const ITEMS_PER_PAGE = 10;
+  const allAccounts = data.users.filter((account: any) => account.role !== "owner");
+  const accounts = allAccounts.filter(
+    (account: any) =>
+      `${account.name} ${account.email} ${accessRoleLabel(account.role)}`.toLowerCase().includes(search.toLowerCase()),
   );
+  useEffect(() => setPage(1), [search]);
+  const totalPages = Math.max(1, Math.ceil(accounts.length / ITEMS_PER_PAGE));
+  const currentPage = Math.min(page, totalPages);
+  const visibleAccounts = accounts.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE);
   const employees = data.employees || [];
-  const linkedCount = accounts.filter((account: any) =>
+  const linkedCount = allAccounts.filter((account: any) =>
     employees.some((employee: any) => employee.userId === account.id),
   ).length;
   const payrollEstimate = employees
@@ -6253,24 +6454,27 @@ function EmployeesPage({
       <div className="stats-grid compact">
         <Stat
           label="Akun staf aktif"
-          value={accounts.filter((account: any) => account.active).length}
+          value={allAccounts.filter((account: any) => account.active).length}
           sub="Dapat masuk sesuai hak akses"
         />
         <Stat
           label="Data kerja lengkap"
-          value={`${linkedCount}/${accounts.length}`}
+          value={`${linkedCount}/${allAccounts.length}`}
           sub={
-            linkedCount === accounts.length
+            linkedCount === allAccounts.length
               ? "Semua staf masuk penggajian"
-              : `${accounts.length - linkedCount} staf perlu dilengkapi`
+              : `${allAccounts.length - linkedCount} staf perlu dilengkapi`
           }
-          tone={linkedCount === accounts.length ? "blue" : "amber"}
+          tone={linkedCount === allAccounts.length ? "blue" : "amber"}
         />
         <Stat
           label="Estimasi gaji"
           value={money(payrollEstimate)}
           sub="Per bulan · staf aktif"
         />
+      </div>
+      <div className="table-controls">
+        <ListSearch value={search} setValue={setSearch} placeholder="Cari nama, email, atau peran staf" />
       </div>
       <div className="table-wrap">
         <table>
@@ -6285,8 +6489,8 @@ function EmployeesPage({
             </tr>
           </thead>
           <tbody>
-            {accounts.length ? (
-              accounts.map((account: any) => {
+            {visibleAccounts.length ? (
+              visibleAccounts.map((account: any) => {
                 const employee = employees.find(
                     (item: any) => item.userId === account.id,
                   ),
@@ -6380,6 +6584,7 @@ function EmployeesPage({
           </tbody>
         </table>
       </div>
+      <TablePagination page={currentPage} total={accounts.length} size={ITEMS_PER_PAGE} setPage={setPage} />
     </PageBlock>
   );
 }
@@ -6766,6 +6971,8 @@ function LiveSessionsPage({
   const [showCreate, setShowCreate] = useState(false);
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
+  const [page, setPage] = useState(1);
+  const ITEMS_PER_PAGE = 10;
   const [busyId, setBusyId] = useState("");
   const [nowTick, setNowTick] = useState(Date.now());
   const currentEmployee = (data.employees || []).find(
@@ -6806,6 +7013,10 @@ function LiveSessionsPage({
           String(a.startedAt || a.scheduledAt || a.createdAt),
         );
     });
+  useEffect(() => setPage(1), [search, status]);
+  const totalPages = Math.max(1, Math.ceil(sessions.length / ITEMS_PER_PAGE));
+  const currentPage = Math.min(page, totalPages);
+  const visibleSessions = sessions.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE);
   const running = available.filter((session: any) => session.status === "live").length;
   const ready = available.filter((session: any) => session.status === "scheduled").length;
   const completedToday = available.filter(
@@ -6860,7 +7071,7 @@ function LiveSessionsPage({
           </AppSelect>
         </div>
         <div className="live-session-cards">
-          {sessions.length ? sessions.map((session: any) => {
+          {visibleSessions.length ? visibleSessions.map((session: any) => {
             const location = (data.locations || []).find((item: any) => item.id === session.locationId);
             const hostNames = (session.hostEmployeeIds || []).map((id: string) => {
               const employee = (data.employees || []).find((item: any) => item.id === id);
@@ -6915,6 +7126,7 @@ function LiveSessionsPage({
             />
           )}
         </div>
+        <TablePagination page={currentPage} total={sessions.length} size={ITEMS_PER_PAGE} setPage={setPage} />
       </section>
       {showCreate && (
         <LiveSessionForm
@@ -6941,6 +7153,8 @@ function AttendancePage({
   const [attendanceMode, setAttendanceMode] = useState<"regular" | "live">(
     "regular",
   );
+  const [historyPage, setHistoryPage] = useState(1);
+  const ATTENDANCE_ITEMS_PER_PAGE = 10;
   if (attendanceMode === "live")
     return (
       <LiveSessionsPage
@@ -6984,8 +7198,10 @@ function AttendancePage({
     ? (data.attendances || [])
         .filter((item: any) => item.employeeId === employee.id)
         .sort((a: any, b: any) => b.date.localeCompare(a.date))
-        .slice(0, 20)
     : [];
+  const historyTotalPages = Math.max(1, Math.ceil(history.length / ATTENDANCE_ITEMS_PER_PAGE));
+  const currentHistoryPage = Math.min(historyPage, historyTotalPages);
+  const visibleHistory = history.slice((currentHistoryPage - 1) * ATTENDANCE_ITEMS_PER_PAGE, currentHistoryPage * ATTENDANCE_ITEMS_PER_PAGE);
   const setting = (employee &&
     (data.attendanceSettings || []).find(
       (item: any) => item.locationId === employee.locationId,
@@ -7141,7 +7357,7 @@ function AttendancePage({
       <section className="payroll-section">
         <div className="card-head">
           <h3>Riwayat absensi</h3>
-          <span>20 data terbaru</span>
+          <span>{history.length} data</span>
         </div>
         <div className="table-wrap">
           <table>
@@ -7154,8 +7370,8 @@ function AttendancePage({
               </tr>
             </thead>
             <tbody>
-              {history.length ? (
-                history.map((item: any) => (
+              {visibleHistory.length ? (
+                visibleHistory.map((item: any) => (
                   <tr key={item.id}>
                     <td>
                       {new Date(`${item.date}T00:00:00`).toLocaleDateString(
@@ -7187,6 +7403,7 @@ function AttendancePage({
             </tbody>
           </table>
         </div>
+        <TablePagination page={currentHistoryPage} total={history.length} size={ATTENDANCE_ITEMS_PER_PAGE} setPage={setHistoryPage} />
       </section>
       {user.role === "owner" && (
         <section className="attendance-settings">
@@ -7275,14 +7492,18 @@ function AttendancePage({
   );
 }
 function AttendanceHistoryModal({ data, employee, account, close }: any) {
+  const [page, setPage] = useState(1);
+  const ITEMS_PER_PAGE = 10;
   const history = (data.attendances || [])
     .filter((item: any) => item.employeeId === employee.id)
-    .sort((a: any, b: any) => b.date.localeCompare(a.date))
-    .slice(0, 30);
+    .sort((a: any, b: any) => b.date.localeCompare(a.date));
+  const totalPages = Math.max(1, Math.ceil(history.length / ITEMS_PER_PAGE));
+  const currentPage = Math.min(page, totalPages);
+  const visibleHistory = history.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE);
   return (
     <Modal
       title={`Riwayat Kehadiran`}
-      desc={`Riwayat absensi untuk ${account?.name || "Karyawan"} (30 data terbaru)`}
+      desc={`Seluruh riwayat absensi untuk ${account?.name || "Karyawan"}`}
       close={close}
       wide
     >
@@ -7297,8 +7518,8 @@ function AttendanceHistoryModal({ data, employee, account, close }: any) {
             </tr>
           </thead>
           <tbody>
-            {history.length ? (
-              history.map((item: any) => (
+            {visibleHistory.length ? (
+              visibleHistory.map((item: any) => (
                 <tr key={item.id}>
                   <td>
                     {new Date(`${item.date}T00:00:00`).toLocaleDateString(
@@ -7335,6 +7556,9 @@ function AttendanceHistoryModal({ data, employee, account, close }: any) {
             )}
           </tbody>
         </table>
+      </div>
+      <div style={{ padding: "0 22px 22px" }}>
+        <TablePagination page={currentPage} total={history.length} size={ITEMS_PER_PAGE} setPage={setPage} />
       </div>
     </Modal>
   );
@@ -14724,6 +14948,239 @@ function ReceiptModal({
     </Modal>
   );
 }
+function StockOutDetail({ itemId, data, variants, locations, close }: any) {
+  const selected = (data.stockOuts || []).find((item: any) => item.id === itemId);
+  if (!selected) return null;
+  const items = selected.stockOutCode
+    ? (data.stockOuts || []).filter(
+        (item: any) => item.stockOutCode === selected.stockOutCode,
+      )
+    : (data.stockOuts || []).filter(
+        (item: any) =>
+          !item.stockOutCode &&
+          item.createdBy === selected.createdBy &&
+          item.locationId === selected.locationId &&
+          item.category === selected.category &&
+          item.note === selected.note &&
+          String(item.createdAt).slice(0, 19) ===
+            String(selected.createdAt).slice(0, 19),
+      );
+  const cancelled = items.every((item: any) => item.status === "cancelled");
+  const totalQuantity = items.reduce(
+    (sum: number, item: any) => sum + Number(item.quantity),
+    0,
+  );
+  const totalCost = items.reduce(
+    (sum: number, item: any) =>
+      sum + Number(item.quantity) * Number(item.unitCost || 0),
+    0,
+  );
+  const creator = data.users?.find(
+    (user: any) => user.id === selected.createdBy,
+  );
+  return (
+    <Modal
+      title="Detail stok keluar"
+      desc="Rincian seluruh varian dalam satu dokumen stok keluar."
+      close={close}
+      className="large stock-out-detail-modal"
+    >
+      <div className="detail-list">
+        <p><span>Kategori</span><b>{stockOutCategoryLabels[selected.category] || "Lainnya"}</b></p>
+        <p><span>Waktu</span><b>{jakartaDateTime(selected.createdAt)}</b></p>
+        <p><span>Lokasi</span><b>{locations[selected.locationId]?.name || "Lokasi tidak diketahui"}</b></p>
+        <p><span>Pencatat</span><b>{creator?.name || selected.createdBy || "-"}</b></p>
+        <p><span>Status</span><b className={`status ${cancelled ? "danger" : "ok"}`}>{cancelled ? "Dibatalkan" : "Selesai"}</b></p>
+        <p><span>Keterangan</span><b>{selected.note}</b></p>
+        {selected.proofUrl && <p><span>Evidence</span><a className="evidence-link" href={selected.proofUrl} target="_blank" rel="noreferrer">Lihat foto evidence</a></p>}
+        {cancelled && <p><span>Alasan pembatalan</span><b>{selected.cancelReason || "-"}</b></p>}
+      </div>
+      <section className="stock-out-detail-items">
+        <h4>Varian yang dikeluarkan</h4>
+        {items.map((item: any, index: number) => {
+          const variant = variants[item.variantId];
+          return (
+            <div className="stock-out-detail-item" key={item.id}>
+              <span className="stock-out-detail-number">{index + 1}</span>
+              <div>
+                <b>{variant?.productName || "Produk tidak ditemukan"}</b>
+                <span>{variant?.name || item.variantId}</span>
+              </div>
+              <strong>{qty(item.quantity, variant?.unit)}</strong>
+            </div>
+          );
+        })}
+      </section>
+      <div className="detail-list">
+        <p><span>Total jumlah</span><b>{totalQuantity.toLocaleString("id-ID")} item</b></p>
+        {items.some((item: any) => item.unitCost !== undefined) && (
+          <p><span>Total nilai HPP</span><b>{money(totalCost)}</b></p>
+        )}
+      </div>
+      <footer className="modal-actions">
+        <button type="button" className="primary" onClick={close}>Tutup</button>
+      </footer>
+    </Modal>
+  );
+}
+
+function StockOutModal({ data, close, save, uploadImage }: any) {
+  const activeLocations = data.locations.filter((location: any) => location.active);
+  const products = data.products
+    .filter((product: any) => product.active)
+    .map((product: any) => ({
+      ...product,
+      variants: product.variants.filter((variant: any) => variant.active !== false),
+    }));
+  const variants = products.flatMap((product: any) =>
+    product.variants.map((variant: any) => ({ ...variant, productName: product.name, unit: product.unit })),
+  );
+  const [locationId, setLocationId] = useState(activeLocations[0]?.id || "");
+  const [selectedProductId, setSelectedProductId] = useState("");
+  const [productPickerOpen, setProductPickerOpen] = useState(false);
+  const [productSearch, setProductSearch] = useState("");
+  const [variantSearch, setVariantSearch] = useState("");
+  const [packageFilter, setPackageFilter] = useState("all");
+  const [flavorFilter, setFlavorFilter] = useState("all");
+  const [levelFilter, setLevelFilter] = useState("all");
+  const [selectedItems, setSelectedItems] = useState<Record<string, { quantity: number }>>({});
+  const [category, setCategory] = useState("affiliate_sample");
+  const [note, setNote] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [proofFile, setProofFile] = useState<File | null>(null);
+  const [uploadError, setUploadError] = useState("");
+  const productPickerRef = useDismissiblePopover(productPickerOpen, setProductPickerOpen);
+  const selectedProduct = products.find((product: any) => product.id === selectedProductId);
+  const visibleVariants = (selectedProduct?.variants || []).map((variant: any) => ({
+    ...variant,
+    productName: selectedProduct.name,
+    unit: selectedProduct.unit,
+  }));
+  const optionsFor = (field: string) => Array.from(new Set(visibleVariants.map((variant: any) => String(variant[field] || "").trim()).filter(Boolean)));
+  const filteredVariants = visibleVariants.filter((variant: any) =>
+    getBalance(data.balances, locationId, variant.id) > 0 &&
+    (packageFilter === "all" || variant.packageWeight === packageFilter) &&
+    (flavorFilter === "all" || variant.flavor === flavorFilter) &&
+    (levelFilter === "all" || variant.spiceLevel === levelFilter) &&
+    `${variant.name} ${variant.sku || ""} ${variant.barcode || ""} ${variant.packageWeight || ""} ${variant.flavor || ""} ${variant.spiceLevel || ""}`.toLowerCase().includes(variantSearch.toLowerCase()),
+  );
+  const matchingProducts = products.filter((product: any) =>
+    product.name.toLowerCase().includes(productSearch.toLowerCase()),
+  );
+  const selectedFilteredCount = filteredVariants.filter((variant: any) => selectedItems[variant.id]).length;
+  const allFilteredSelected = filteredVariants.length > 0 && selectedFilteredCount === filteredVariants.length;
+  const invalidItems = Object.entries(selectedItems).some(([id, item]) => {
+    const available = getBalance(data.balances, locationId, id);
+    return !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > available;
+  });
+  const invalid =
+    !locationId ||
+    Object.keys(selectedItems).length === 0 ||
+    invalidItems ||
+    note.trim().length < 3;
+  return (
+    <Modal
+      title="Catat stok keluar"
+      desc="Stok berkurang tanpa menambah transaksi penjualan. HPP barang tetap tersimpan untuk pelaporan biaya operasional."
+      close={close}
+    >
+      <form
+        onSubmit={async (event) => {
+          event.preventDefault();
+          if (invalid || saving) return;
+          setSaving(true);
+          setUploadError("");
+          try {
+            const proofUrl = proofFile ? await uploadImage(proofFile) : undefined;
+            await save({
+              locationId,
+              category,
+              note: note.trim(),
+              proofUrl,
+              items: Object.entries(selectedItems).map(([variantId, item]) => ({ variantId, quantity: item.quantity })),
+            });
+          } catch (error) {
+            setUploadError(error instanceof Error ? error.message : "Evidence tidak dapat diunggah.");
+          } finally {
+            setSaving(false);
+          }
+        }}
+      >
+        <Field label="Kategori pengeluaran">
+          <select value={category} onChange={(event) => setCategory(event.target.value)}>
+            {Object.entries(stockOutCategoryLabels).map(([value, label]) => (
+              <option key={value} value={value}>{label}</option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Lokasi asal">
+          <select value={locationId} onChange={(event) => {
+            setLocationId(event.target.value);
+            setSelectedItems({});
+          }}>
+            {activeLocations.map((location: any) => (
+              <option key={location.id} value={location.id}>{location.name}</option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Pilih produk">
+          <div ref={productPickerRef} className="product-picker">
+            <button type="button" className={`product-picker-trigger ${productPickerOpen ? "open" : ""}`} onClick={() => setProductPickerOpen((open) => !open)}>
+              <span>{selectedProduct?.name || "Pilih nama produk"}</span><ChevronDown size={18} />
+            </button>
+            {productPickerOpen && <div className="product-picker-panel">
+              <label className="product-picker-search"><Search size={17} /><input autoFocus={shouldAutoFocusTextInput()} value={productSearch} onChange={(event) => setProductSearch(event.target.value)} placeholder="Cari nama produk" /></label>
+              <div className="product-picker-options">
+                {matchingProducts.map((product: any) => <button type="button" key={product.id} className={product.id === selectedProductId ? "selected" : ""} onClick={() => {
+                  setSelectedProductId(product.id); setSelectedItems({}); setProductPickerOpen(false); setProductSearch(""); setVariantSearch(""); setPackageFilter("all"); setFlavorFilter("all"); setLevelFilter("all");
+                }}><span>{product.name}</span><small>{product.variants.length} varian</small>{product.id === selectedProductId && <Check size={16} />}</button>)}
+              </div>
+            </div>}
+          </div>
+        </Field>
+        {selectedProduct && <div className="field stock-variant-field">
+          <span>Pilih varian {selectedProduct.name}</span>
+          <div className="stock-variant-picker">
+            <div className="stock-variant-tools">
+              <ListSearch value={variantSearch} setValue={setVariantSearch} placeholder="Cari nama varian, SKU, barcode, rasa, level, atau kemasan" />
+              <div className="stock-variant-filters">
+                <select value={packageFilter} onChange={(event) => setPackageFilter(event.target.value)}><option value="all">Semua berat / kemasan</option>{optionsFor("packageWeight").map((value: any) => <option key={value} value={value}>{value}</option>)}</select>
+                <select value={flavorFilter} onChange={(event) => setFlavorFilter(event.target.value)}><option value="all">Semua rasa</option>{optionsFor("flavor").map((value: any) => <option key={value} value={value}>{value}</option>)}</select>
+                <select value={levelFilter} onChange={(event) => setLevelFilter(event.target.value)}><option value="all">Semua level</option>{optionsFor("spiceLevel").map((value: any) => <option key={value} value={value}>{value}</option>)}</select>
+              </div>
+            </div>
+            <div className="stock-variant-bulk"><label><input type="checkbox" checked={allFilteredSelected} disabled={!filteredVariants.length} onChange={() => setSelectedItems((current) => {
+              const next = { ...current }; filteredVariants.forEach((variant: any) => { if (allFilteredSelected) delete next[variant.id]; else next[variant.id] ||= { quantity: 1 }; }); return next;
+            })} /><b>{allFilteredSelected ? "Batalkan semua hasil filter" : "Pilih semua hasil filter"}</b></label><small>{filteredVariants.length} varian ditampilkan · {selectedFilteredCount} dipilih</small></div>
+            <div className="stock-variant-list">
+              {filteredVariants.length ? filteredVariants.map((variant: any) => <label className="variant-picker-option" key={variant.id}><input type="checkbox" checked={!!selectedItems[variant.id]} onChange={(event) => setSelectedItems((current) => { const next = { ...current }; if (event.target.checked) next[variant.id] = { quantity: 1 }; else delete next[variant.id]; return next; })} /><span><b>{variant.name}</b><small className="variant-stock">Stok tersedia: {qty(getBalance(data.balances, locationId, variant.id), variant.unit)}</small></span></label>) : <div className="stock-variant-empty"><Search size={20} /><b>Varian tidak ditemukan</b><span>Ubah pencarian, filter, atau lokasi asal.</span></div>}
+            </div>
+          </div>
+        </div>}
+        {Object.entries(selectedItems).length > 0 && <div style={{ margin: "16px 0" }}><h4>Jumlah Varian Terpilih</h4>{Object.entries(selectedItems).map(([id, item]) => {
+          const variant = variants.find((candidate: any) => candidate.id === id); const available = getBalance(data.balances, locationId, id); if (!variant) return null;
+          return <div key={id} className="form-grid" style={{ background: "#f8fafc", padding: 12, borderRadius: 8, marginBottom: 8 }}><div><b>{variant.productName} · {variant.name}</b><small className="block">Tersedia {qty(available, variant.unit)}</small></div><Field label={`Jumlah (${variant.unit})`}><input type="number" min="1" max={available} value={item.quantity} onChange={(event) => setSelectedItems((current) => ({ ...current, [id]: { quantity: Number(event.target.value) } }))} />{item.quantity > available && <small className="form-error">Jumlah melebihi stok tersedia</small>}</Field></div>;
+        })}</div>}
+        <Field label="Keterangan">
+          <textarea
+            required
+            minLength={3}
+            maxLength={300}
+            value={note}
+            onChange={(event) => setNote(event.target.value)}
+            placeholder="Contoh: Sampel untuk affiliate @namaakun"
+          />
+        </Field>
+        <Field label="Evidence (opsional)">
+          <EvidencePhotoPicker file={proofFile} setFile={setProofFile} subject="evidence stok keluar" />
+        </Field>
+        {uploadError && <p className="login-error">{uploadError}</p>}
+        <ModalActions close={close} disabled={invalid || saving} label={saving ? "Menyimpan..." : "Simpan Stok Keluar"} />
+      </form>
+    </Modal>
+  );
+}
+
 function ReturnModal({
   data,
   close,
@@ -18399,6 +18856,9 @@ function RecentShipmentList({
 
 function ShipmentBatchHistory({ handovers, shipments, locations, users }: any) {
   const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
+  const ITEMS_PER_PAGE = 10;
+  useEffect(() => setPage(1), [query]);
   const userName = (id?: string) =>
     users.find((item: any) => item.id === id)?.name || "Petugas";
   const completed = handovers
@@ -18424,6 +18884,9 @@ function ShipmentBatchHistory({ handovers, shipments, locations, users }: any) {
         new Date(b.completedAt || b.createdAt).getTime() -
         new Date(a.completedAt || a.createdAt).getTime(),
     );
+  const totalPages = Math.max(1, Math.ceil(completed.length / ITEMS_PER_PAGE));
+  const currentPage = Math.min(page, totalPages);
+  const visibleBatches = completed.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE);
   return (
     <div className="batch-history">
       <label className="shipment-search batch-search">
@@ -18438,8 +18901,8 @@ function ShipmentBatchHistory({ handovers, shipments, locations, users }: any) {
         <b>{completed.length.toLocaleString("id-ID")} batch ditemukan</b>
         <span>Klik satu batch untuk membuka daftar resi.</span>
       </div>
-      {completed.length ? (
-        completed.map((batch: any) => (
+      {visibleBatches.length ? (
+        visibleBatches.map((batch: any) => (
           <details className="shipment-batch-folder" key={batch.id}>
             <summary>
               <span className="batch-folder-icon">
@@ -18547,6 +19010,7 @@ function ShipmentBatchHistory({ handovers, shipments, locations, users }: any) {
           </b>
         </div>
       )}
+      <TablePagination page={currentPage} total={completed.length} size={ITEMS_PER_PAGE} setPage={setPage} />
     </div>
   );
 }
@@ -18555,7 +19019,8 @@ function GroupedShipmentList({ items, users, locations }: any) {
   const [query, setQuery] = useState(""),
     [carrier, setCarrier] = useState("all"),
     [marketplace, setMarketplace] = useState("all"),
-    [visible, setVisible] = useState(50);
+    [page, setPage] = useState(1);
+  const ITEMS_PER_PAGE = 10;
   const today = jakartaDateKey();
   const carriers = Array.from(
     new Set(items.map((item: any) => item.carrier)),
@@ -18577,7 +19042,10 @@ function GroupedShipmentList({ items, users, locations }: any) {
       (a: any, b: any) =>
         new Date(b.packedAt).getTime() - new Date(a.packedAt).getTime(),
     );
-  const shown = filtered.slice(0, visible);
+  useEffect(() => setPage(1), [query, carrier, marketplace]);
+  const totalPages = Math.max(1, Math.ceil(filtered.length / ITEMS_PER_PAGE));
+  const currentPage = Math.min(page, totalPages);
+  const shown = filtered.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE);
   const dateGroups = Array.from(
     shown
       .reduce((groups: Map<string, any[]>, item: any) => {
@@ -18603,19 +19071,13 @@ function GroupedShipmentList({ items, users, locations }: any) {
           <Search />
           <input
             value={query}
-            onChange={(event) => {
-              setQuery(event.target.value);
-              setVisible(50);
-            }}
+            onChange={(event) => setQuery(event.target.value)}
             placeholder="Cari nomor resi"
           />
         </label>
         <select
           value={marketplace}
-          onChange={(event) => {
-            setMarketplace(event.target.value);
-            setVisible(50);
-          }}
+          onChange={(event) => setMarketplace(event.target.value)}
           aria-label="Filter marketplace"
         >
           <option value="all">Semua marketplace</option>
@@ -18625,10 +19087,7 @@ function GroupedShipmentList({ items, users, locations }: any) {
         </select>
         <select
           value={carrier}
-          onChange={(event) => {
-            setCarrier(event.target.value);
-            setVisible(50);
-          }}
+          onChange={(event) => setCarrier(event.target.value)}
           aria-label="Filter ekspedisi"
         >
           <option value="all">Semua ekspedisi</option>
@@ -18640,9 +19099,7 @@ function GroupedShipmentList({ items, users, locations }: any) {
       <div className="shipment-result-summary">
         <b>{filtered.length.toLocaleString("id-ID")} paket</b>
         <span>
-          {filtered.length > shown.length
-            ? `${shown.length} ditampilkan`
-            : "seluruh data ditampilkan"}
+          {filtered.length ? `Halaman ${currentPage} dari ${totalPages}` : "Tidak ada data"}
         </span>
       </div>
       {dateGroups.length ? (
@@ -18710,15 +19167,7 @@ function GroupedShipmentList({ items, users, locations }: any) {
           </b>
         </div>
       )}
-      {visible < filtered.length && (
-        <button
-          type="button"
-          className="secondary shipment-load-more"
-          onClick={() => setVisible((current) => current + 50)}
-        >
-          Tampilkan 50 berikutnya
-        </button>
-      )}
+      <TablePagination page={currentPage} total={filtered.length} size={ITEMS_PER_PAGE} setPage={setPage} />
     </div>
   );
 }
@@ -19511,6 +19960,23 @@ function HppMarketplaceCalculator({
     patchActiveProfile({ batches: updater(batches) });
   const [workspace, setWorkspace] = useState<"hpp" | "marketplace">("hpp");
   const [hppEditorOpen, setHppEditorOpen] = useState(false);
+  const [hppListSearch, setHppListSearch] = useState("");
+  const [hppListPage, setHppListPage] = useState(1);
+  const HPP_ITEMS_PER_PAGE = 10;
+  useEffect(() => setHppListPage(1), [hppListSearch]);
+  const normalizedHppListSearch = hppListSearch.trim().toLowerCase();
+  const filteredHppProfiles = productProfiles.filter((profile) =>
+    profile.name.toLowerCase().includes(normalizedHppListSearch),
+  );
+  const hppListTotalPages = Math.max(
+    1,
+    Math.ceil(filteredHppProfiles.length / HPP_ITEMS_PER_PAGE),
+  );
+  const currentHppListPage = Math.min(hppListPage, hppListTotalPages);
+  const visibleHppProfiles = filteredHppProfiles.slice(
+    (currentHppListPage - 1) * HPP_ITEMS_PER_PAGE,
+    currentHppListPage * HPP_ITEMS_PER_PAGE,
+  );
   const [deletingHppProfile, setDeletingHppProfile] =
     useState<HppProductProfile | null>(null);
   const [duplicatingHppProfile, setDuplicatingHppProfile] =
@@ -20971,9 +21437,17 @@ function HppMarketplaceCalculator({
                   </button>
                 </div>
               </div>
-              {productProfiles.length ? (
+              <div className="filters hpp-index-filters">
+                <ListSearch
+                  value={hppListSearch}
+                  setValue={setHppListSearch}
+                  placeholder="Cari nama produk HPP"
+                />
+              </div>
+              {filteredHppProfiles.length ? (
+                <>
                 <div className="hpp-product-index-grid">
-                  {productProfiles.map((profile) => {
+                  {visibleHppProfiles.map((profile) => {
                     const calculationCount =
                       profile.batches.length * profile.packages.length;
                     const connectedProduct = data.products.find(
@@ -21064,13 +21538,21 @@ function HppMarketplaceCalculator({
                     );
                   })}
                 </div>
+                <TablePagination
+                  page={currentHppListPage}
+                  total={filteredHppProfiles.length}
+                  size={HPP_ITEMS_PER_PAGE}
+                  setPage={setHppListPage}
+                />
+                </>
               ) : (
                 <div className="hpp-product-index-empty">
                   <PackagePlus />
-                  <h4>Belum ada Produk HPP</h4>
+                  <h4>{productProfiles.length ? "Produk HPP tidak ditemukan" : "Belum ada Produk HPP"}</h4>
                   <p>
-                    Klik “Buat HPP Produk” untuk mulai mengisi seperti alur
-                    Excel.
+                    {productProfiles.length
+                      ? "Ubah kata pencarian untuk menampilkan produk lainnya."
+                      : "Klik “Buat HPP Produk” untuk mulai mengisi seperti alur Excel."}
                   </p>
                 </div>
               )}

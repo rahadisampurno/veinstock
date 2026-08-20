@@ -125,6 +125,7 @@ async function backfillRolePolicyDependencies(pool) {
     suppliers: "supplier.view",
     receipts: "stock.view",
     stock: "stock.view",
+    "stock-outs": "stock.out",
     transfers: "transfer.view",
     opname: "stock.view",
     history: "audit.location.view",
@@ -224,6 +225,7 @@ const defaultRoleMenusById = {
     "suppliers",
     "receipts",
     "stock",
+    "stock-outs",
     "transfers",
     "opname",
     "history",
@@ -241,6 +243,7 @@ const defaultRoleMenusById = {
     "products",
     "locations",
     "stock",
+    "stock-outs",
     "transfers",
     "opname",
     "history",
@@ -256,6 +259,7 @@ const defaultRoleMenusById = {
     "locations",
     "receipts",
     "stock",
+    "stock-outs",
     "transfers",
     "opname",
     "history",
@@ -989,6 +993,7 @@ const emptyState = (organizationName, owner) => ({
   suppliers: [],
   receipts: [],
   returns: [],
+  stockOuts: [],
   employees: [],
   attendanceSettings: [],
   attendances: [],
@@ -1234,6 +1239,7 @@ const mergeScopedState = (previous, next, actor) => {
     stockCounts: mergeById(previous.stockCounts, next.stockCounts),
     receipts: mergeById(previous.receipts, next.receipts),
     returns: mergeById(previous.returns, next.returns),
+    stockOuts: mergeById(previous.stockOuts, next.stockOuts),
     attendances: mergeById(previous.attendances, next.attendances),
     liveSessions: mergeById(previous.liveSessions, next.liveSessions),
     cashEntries: mergeById(previous.cashEntries, next.cashEntries),
@@ -1759,6 +1765,7 @@ const configurableMenus = new Set([
   "suppliers",
   "receipts",
   "stock",
+  "stock-outs",
   "transfers",
   "opname",
   "history",
@@ -1780,6 +1787,7 @@ const menuPermissionRequirements = {
   suppliers: "supplier.view",
   receipts: "stock.view",
   stock: "stock.view",
+  "stock-outs": "stock.out",
   transfers: "transfer.view",
   opname: "stock.view",
   history: "audit.location.view",
@@ -2638,6 +2646,13 @@ app.get("/api/state", requireAuth, async (req, res) => {
             returns: hasAny("stock.view", "stock.out", "report.view")
               ? source.returns
               : [],
+            stockOuts: hasAny("stock.view", "stock.out", "report.view")
+              ? (source.stockOuts || []).map((item) => {
+                  if (canViewCosts) return item;
+                  const { unitCost: _unitCost, ...operationalItem } = item;
+                  return operationalItem;
+                })
+              : [],
             suppliers: hasAny("supplier.view", "supplier.manage", "stock.in")
               ? source.suppliers
               : [],
@@ -2729,6 +2744,9 @@ app.get("/api/state", requireAuth, async (req, res) => {
       ),
       returns: (data.returns || []).filter((r) =>
         scope.allowedLocationIds.includes(r.locationId),
+      ),
+      stockOuts: (data.stockOuts || []).filter((item) =>
+        scope.allowedLocationIds.includes(item.locationId),
       ),
       shipments: (data.shipments || []).filter((shipment) =>
         scope.allowedLocationIds.includes(shipment.locationId),
@@ -4828,6 +4846,111 @@ app.post("/api/commands/returns", requireAuth, async (req, res) => {
   });
 });
 
+app.post("/api/commands/stock-outs", requireAuth, async (req, res) => {
+  await executeCommand(req, res, async (state, actor) => {
+    const { locationId, category, note, items, proofUrl } = req.body || {};
+    const authorization = commandAuth(actor, "stock.out", locationId);
+    if (!authorization.allowed) throw forbiddenCommand(authorization.reason);
+    if (
+      !state.locations.some(
+        (location) => location.id === locationId && location.active !== false,
+      )
+    )
+      throw invalidCommand("Lokasi stok keluar tidak ditemukan atau tidak aktif.");
+    const categories = new Set([
+      "affiliate_sample",
+      "promotion",
+      "damaged",
+      "internal",
+      "other",
+    ]);
+    const cleanNote = String(note || "").trim();
+    const cleanProofUrl = String(proofUrl || "").trim();
+    if (
+      !categories.has(category) ||
+      cleanNote.length < 3 ||
+      cleanNote.length > 300 ||
+      !Array.isArray(items) ||
+      !items.length ||
+      cleanProofUrl.length > 2048 ||
+      (cleanProofUrl &&
+        !cleanProofUrl.startsWith("https://") &&
+        !/^\/(?!\/)/.test(cleanProofUrl))
+    )
+      throw invalidCommand("Data stok keluar tidak valid.");
+    const variants = new Set(
+      state.products.flatMap((product) =>
+        (product.variants || [])
+          .filter((variant) => variant.active !== false)
+          .map((variant) => variant.id),
+      ),
+    );
+    const variantCosts = new Map(
+      state.products.flatMap((product) =>
+        (product.variants || []).map((variant) => [
+          variant.id,
+          Number(variant.cost || 0),
+        ]),
+      ),
+    );
+    const combined = new Map();
+    for (const item of items) {
+      const quantity = Number(item?.quantity);
+      if (
+        !variants.has(item?.variantId) ||
+        !Number.isInteger(quantity) ||
+        quantity <= 0
+      )
+        throw invalidCommand("Item stok keluar tidak valid.");
+      combined.set(
+        item.variantId,
+        (combined.get(item.variantId) || 0) + quantity,
+      );
+    }
+    let balances = state.balances;
+    const stockOutCode = commandId("outdoc");
+    for (const [variantId, quantity] of combined) {
+      const available = commandBalance(balances, locationId, variantId);
+      if (available < quantity)
+        throw invalidCommand(
+          `Stok tidak mencukupi. Tersedia ${available}, diminta ${quantity}.`,
+        );
+      balances = commandAdjustBalance(
+        balances,
+        locationId,
+        variantId,
+        -quantity,
+      );
+      state.stockOuts ||= [];
+      state.stockOuts.unshift({
+        id: commandId("out"),
+        stockOutCode,
+        category,
+        locationId,
+        variantId,
+        quantity,
+        unitCost: variantCosts.get(variantId) || 0,
+        note: cleanNote,
+        proofUrl: cleanProofUrl || undefined,
+        createdBy: actor.id,
+        createdAt: new Date().toISOString(),
+        status: "completed",
+      });
+      state.movements.unshift(
+        commandMovement(
+          variantId,
+          locationId,
+          "Stok keluar operasional",
+          -quantity,
+          cleanNote,
+          actor,
+        ),
+      );
+    }
+    state.balances = balances;
+  });
+});
+
 app.post("/api/commands/opnames", requireAuth, async (req, res) => {
   await executeCommand(req, res, async (state, actor) => {
     const { locationId, items } = req.body || {};
@@ -5147,6 +5270,54 @@ app.post("/api/commands/cancel", requireAuth, async (req, res) => {
           actor,
         ),
       );
+    } else if (kind === "stock-out") {
+      const item = (state.stockOuts || []).find((row) => row.id === id);
+      const authorization = commandAuth(actor, "stock.out", item?.locationId);
+      if (!authorization.allowed) throw forbiddenCommand(authorization.reason);
+      if (!item || item.status === "cancelled")
+        throw invalidCommand(
+          "Stok keluar tidak ditemukan atau sudah dibatalkan.",
+        );
+      const documentItems = item.stockOutCode
+        ? state.stockOuts.filter(
+            (row) =>
+              row.stockOutCode === item.stockOutCode &&
+              row.status !== "cancelled",
+          )
+        : state.stockOuts.filter(
+            (row) =>
+              !row.stockOutCode &&
+              row.status !== "cancelled" &&
+              row.createdBy === item.createdBy &&
+              row.locationId === item.locationId &&
+              row.category === item.category &&
+              row.note === item.note &&
+              String(row.createdAt).slice(0, 19) ===
+                String(item.createdAt).slice(0, 19),
+          );
+      for (const line of documentItems) {
+        balances = commandAdjustBalance(
+          balances,
+          line.locationId,
+          line.variantId,
+          Number(line.quantity),
+        );
+        Object.assign(line, {
+          status: "cancelled",
+          cancelReason: note,
+          cancelledAt: now,
+        });
+        state.movements.unshift(
+          commandMovement(
+            line.variantId,
+            line.locationId,
+            "Pembatalan stok keluar",
+            Number(line.quantity),
+            note,
+            actor,
+          ),
+        );
+      }
     } else if (kind === "return") {
       const item = state.returns.find((row) => row.id === id);
       const authorization = commandAuth(actor, "stock.out", item?.locationId);

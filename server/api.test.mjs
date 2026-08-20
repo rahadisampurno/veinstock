@@ -565,4 +565,37 @@ describe('multi-tenant API', () => {
     expect(unchanged.body.data.balances.find(item => item.variantId === `variant-${suffix}`).quantity).toBe(2);
     expect(unchanged.body.data.sales).toHaveLength(0);
   });
+
+  it('records and cancels operational stock-outs without creating a sale', async () => {
+    const suffix = `${Date.now()}-stock-out`;
+    const owner = await post('/api/register', { organizationName: 'Stok Keluar Aman', name: 'Owner', email: `owner-${suffix}@test.local`, password: 'Password123!' });
+    const variantId = `variant-${suffix}`;
+    const secondVariantId = `variant-2-${suffix}`;
+    expect((await post('/api/commands/products', {
+      product: { id: `product-${suffix}`, name: 'Produk Sampel', category: 'Uji', unit: 'Pcs', active: true, variants: [{ id: variantId, name: 'Reguler', sku: `OUT-${suffix}`, cost: 1000, price: 2000, resellerPrice: 1500, minStock: 0 }, { id: secondVariantId, name: 'Pedas', sku: `OUT-2-${suffix}`, cost: 1200, price: 2200, resellerPrice: 1700, minStock: 0 }] },
+      initialStocks: [{ locationId: 'loc-owner', variantId, quantity: 3 }, { locationId: 'loc-owner', variantId: secondVariantId, quantity: 4 }],
+    }, owner.body.token)).status).toBe(201);
+
+    expect((await post('/api/commands/stock-outs', { locationId: 'loc-owner', category: 'affiliate_sample', note: 'Evidence tidak aman', proofUrl: 'javascript:alert(1)', items: [{ variantId, quantity: 1 }] }, owner.body.token)).status).toBe(400);
+
+    const proofUrl = `https://example.test/evidence/${suffix}.webp`;
+    const created = await post('/api/commands/stock-outs', { locationId: 'loc-owner', category: 'affiliate_sample', note: 'Sampel affiliate Rina', proofUrl, items: [{ variantId, quantity: 2 }, { variantId: secondVariantId, quantity: 1 }] }, owner.body.token);
+    expect(created.status).toBe(201);
+    let state = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    expect(state.body.data.balances.find(item => item.variantId === variantId).quantity).toBe(1);
+    expect(state.body.data.sales).toHaveLength(0);
+    expect(state.body.data.stockOuts).toHaveLength(2);
+    expect(new Set(state.body.data.stockOuts.map(item => item.stockOutCode)).size).toBe(1);
+    expect(state.body.data.stockOuts.find(item => item.variantId === variantId).unitCost).toBe(1000);
+    expect(state.body.data.movements).toEqual(expect.arrayContaining([expect.objectContaining({ variantId, quantity: -2, type: 'Stok keluar operasional' }), expect.objectContaining({ variantId: secondVariantId, quantity: -1, type: 'Stok keluar operasional' })]));
+    expect(state.body.data.stockOuts).toEqual(expect.arrayContaining([expect.objectContaining({ proofUrl })]));
+
+    const rejected = await post('/api/commands/stock-outs', { locationId: 'loc-owner', category: 'promotion', note: 'Melebihi stok', items: [{ variantId, quantity: 2 }] }, owner.body.token);
+    expect(rejected.status).toBe(400);
+    expect((await post('/api/commands/cancel', { kind: 'stock-out', id: state.body.data.stockOuts[0].id, reason: 'Salah input' }, owner.body.token)).status).toBe(201);
+    state = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    expect(state.body.data.balances.find(item => item.variantId === variantId).quantity).toBe(3);
+    expect(state.body.data.balances.find(item => item.variantId === secondVariantId).quantity).toBe(4);
+    expect(state.body.data.stockOuts.every(item => item.status === 'cancelled')).toBe(true);
+  });
 });
