@@ -1748,6 +1748,7 @@ function App() {
       "locations",
       "receipts",
       "stock",
+      "stock-outs",
       "transfers",
       "sales",
       "shipping",
@@ -2375,25 +2376,25 @@ function App() {
       >
         {sidebarVariant === "collapsed" ? (
           <div className="sidebar-rail" aria-label="Navigasi cepat">
-            <button
+            <a
               className="rail-logo"
               title="Beranda Menengs"
-              onClick={() => setPage("dashboard")}
+              href="#dashboard"
             >
               <img src="/menengs-icon-192.png" alt="Menengs" />
-            </button>
+            </a>
             <span className="rail-divider" />
             <div className="rail-nav">
               {visibleNavItems.map(([id, label]) => (
-                <button
+                <a
                   key={`rail-${id}`}
                   className={page === id ? "active" : ""}
                   title={label}
                   aria-label={label}
-                  onClick={() => setPage(id)}
+                  href={`#${id}`}
                 >
                   <SidebarGlyph name={id} active={page === id} />
-                </button>
+                </a>
               ))}
             </div>
             <button
@@ -2463,12 +2464,19 @@ function App() {
                   <div key={idx} className="nav-group-wrapper">
                     <div className="nav-group-title">{group.group}</div>
                     {allowedItems.map(([id, label]) => (
-                      <button
+                      <a
                         key={id as string}
                         className={page === id ? "active" : ""}
-                        onClick={() => {
-                          setPage(id as Page);
-                          setSidebar(false);
+                        href={`#${id}`}
+                        onClick={(event) => {
+                          if (
+                            event.button === 0 &&
+                            !event.metaKey &&
+                            !event.ctrlKey &&
+                            !event.shiftKey &&
+                            !event.altKey
+                          )
+                            setSidebar(false);
                         }}
                       >
                         <SidebarGlyph
@@ -2480,7 +2488,7 @@ function App() {
                           pendingTransferNotifications > 0 && (
                             <em>{pendingTransferNotifications}</em>
                           )}
-                      </button>
+                      </a>
                     ))}
                   </div>
                 );
@@ -10482,6 +10490,51 @@ function Reports({
     (a: number, r: any) => a + r.quantity * (r.unitCost || 0),
     0,
   );
+  const stockOutLines = (data.stockOuts || []).filter(
+    (item: any) =>
+      item.status !== "cancelled" &&
+      (!isPic || item.locationId === outletId) &&
+      inPeriod(item.createdAt) &&
+      (location === "all" || item.locationId === location) &&
+      (product === "all" || item.variantId === product),
+  );
+  const stockOutQuantity = stockOutLines.reduce(
+    (sum: number, item: any) => sum + Number(item.quantity || 0),
+    0,
+  );
+  const stockOutCost = stockOutLines.reduce(
+    (sum: number, item: any) =>
+      sum + Number(item.quantity || 0) * Number(item.unitCost || 0),
+    0,
+  );
+  const stockOutDocuments = new Set(
+    stockOutLines.map((item: any) => item.stockOutCode || item.id),
+  ).size;
+  const stockOutQuality = stockOutLines.every(
+    (item: any) =>
+      Number.isFinite(Number(item.quantity)) &&
+      Number(item.quantity) > 0 &&
+      Number.isFinite(Number(item.unitCost)) &&
+      Number(item.unitCost) >= 0,
+  )
+    ? "verified"
+    : "review";
+  const stockOutByCategory = Object.entries(
+    stockOutLines.reduce(
+      (
+        result: Record<string, { quantity: number; cost: number }>,
+        item: any,
+      ) => {
+        const current = result[item.category] || { quantity: 0, cost: 0 };
+        current.quantity += Number(item.quantity || 0);
+        current.cost +=
+          Number(item.quantity || 0) * Number(item.unitCost || 0);
+        result[item.category] = current;
+        return result;
+      },
+      {},
+    ),
+  ).sort((a: any, b: any) => b[1].cost - a[1].cost);
   const sold: Record<string, number> = {};
   sales.forEach((s: any) =>
     s.items.forEach(
@@ -10542,12 +10595,16 @@ function Reports({
       scopeLocationId: isPic ? outletId : undefined,
     },
   );
-  const netProfit = calculateNetProfit(grossProfit, cashbookSummary);
+  const stockOutCostForProfit = channel === "all" ? stockOutCost : 0;
+  const netProfit =
+    calculateNetProfit(grossProfit, cashbookSummary) - stockOutCostForProfit;
   const netProfitBase = total + cashbookSummary.otherIncome;
   const netMargin = netProfitBase > 0 ? (netProfit / netProfitBase) * 100 : 0;
   const netProfitQuality = !cashbookFilterCompatible
     ? "estimate"
-    : profitQuality === "verified" && !cashbookSummary.unclassifiedCount
+    : profitQuality === "verified" &&
+        stockOutQuality === "verified" &&
+        !cashbookSummary.unclassifiedCount
       ? "verified"
       : "review";
   const receiptQuality = receipts.every(
@@ -10664,6 +10721,7 @@ function Reports({
       Omzet: 0,
       HPP: 0,
       "Laba Bersih": 0,
+      "Stok Keluar": 0,
     };
   });
   const trendMap = Object.fromEntries(
@@ -10681,6 +10739,13 @@ function Reports({
       0,
     );
     trend[index]["Laba Bersih"] = trend[index].Omzet - trend[index].HPP;
+  });
+  stockOutLines.forEach((item: any) => {
+    const index = trendMap[jakartaDateKey(item.createdAt)];
+    if (index === undefined) return;
+    const cost = Number(item.quantity || 0) * Number(item.unitCost || 0);
+    trend[index]["Stok Keluar"] += cost;
+    if (channel === "all") trend[index]["Laba Bersih"] -= cost;
   });
   if (cashbookFilterCompatible) {
     cashbookSummary.entries.forEach((entry: CashEntry) => {
@@ -10755,6 +10820,7 @@ function Reports({
       ["Margin kotor", `${grossMargin.toFixed(1)}%`],
       ["Pendapatan kas lain", cashbookSummary.otherIncome],
       ["Beban operasional dari Buku Kas", cashbookSummary.operatingExpense],
+      ["Biaya stok keluar operasional", stockOutCost],
       ["Estimasi laba bersih", netProfit],
       ["Margin bersih", `${netMargin.toFixed(1)}%`],
       ["Jumlah transaksi", sales.length],
@@ -10770,6 +10836,8 @@ function Reports({
       ["Dokumen transfer", transferDocuments],
       ["Transfer dalam perjalanan", pendingTransfers],
       ["Selisih opname", stockDifference],
+      ["Dokumen stok keluar", stockOutDocuments],
+      ["Barang stok keluar", stockOutQuantity],
     ];
     await downloadExcel(
       `Laporan_Menengs_${dateFrom || "awal"}_${dateTo || "sekarang"}`,
@@ -10781,6 +10849,35 @@ function Reports({
             { header: "Nilai", key: "nilai", width: 24 },
           ],
           data: summaryData,
+        },
+        {
+          name: "Stok Keluar",
+          columns: [
+            { header: "Waktu", key: "waktu", width: 22 },
+            { header: "Dokumen", key: "dokumen", width: 24 },
+            { header: "Kategori", key: "kategori", width: 22 },
+            { header: "Lokasi", key: "lokasi", width: 28 },
+            { header: "Produk", key: "produk", width: 28 },
+            { header: "Varian", key: "varian", width: 30 },
+            { header: "Jumlah", key: "jumlah", width: 14 },
+            { header: "HPP Satuan", key: "hpp", width: 18 },
+            { header: "Total HPP", key: "total", width: 18 },
+            { header: "Keterangan", key: "keterangan", width: 36 },
+            { header: "Evidence", key: "evidence", width: 42 },
+          ],
+          data: stockOutLines.map((item: any) => [
+            new Date(item.createdAt).toLocaleString("id-ID"),
+            item.stockOutCode || item.id,
+            stockOutCategoryLabels[item.category] || item.category,
+            locations[item.locationId]?.name || "-",
+            variants[item.variantId]?.productName || "-",
+            variants[item.variantId]?.name || "-",
+            item.quantity,
+            item.unitCost || 0,
+            Number(item.quantity || 0) * Number(item.unitCost || 0),
+            item.note || "-",
+            item.proofUrl || "-",
+          ]),
         },
         {
           name: "Audit Metrik",
@@ -10815,8 +10912,8 @@ function Reports({
             ],
             [
               "Laba bersih",
-              "Laba kotor dan Buku Kas",
-              "Laba kotor + pendapatan lain − beban operasional",
+              "Laba kotor, Buku Kas, dan stok keluar",
+              "Laba kotor + pendapatan lain − beban operasional − HPP stok keluar",
               qualityLabel(netProfitQuality),
               cashbookFilterCompatible
                 ? `${cashbookSummary.entries.length} transaksi Buku Kas diperiksa`
@@ -10828,6 +10925,13 @@ function Reports({
               "Jumlah × modal penerimaan",
               qualityLabel(receiptQuality),
               `${receipts.length} baris penerimaan`,
+            ],
+            [
+              "Stok keluar operasional",
+              "Dokumen stok keluar dan snapshot HPP",
+              "Jumlah × unitCost saat stok dikeluarkan",
+              qualityLabel(stockOutQuality),
+              `${stockOutDocuments} dokumen · ${stockOutQuantity} barang`,
             ],
             [
               "Nilai stok",
@@ -11232,6 +11336,35 @@ function Reports({
           </p>
         </section>
 
+        <section className="report-panel" data-pdf-section>
+          <div className="report-section-heading">
+            <div>
+              <small>STOK KELUAR OPERASIONAL</small>
+              <h3>Biaya sampel, promosi, kerusakan, dan pemakaian internal</h3>
+            </div>
+            <span>{stockOutDocuments} dokumen</span>
+          </div>
+          <div className="report-audit-summary">
+            <article>
+              <b>{stockOutQuantity.toLocaleString("id-ID")}</b>
+              <span>Total barang keluar</span>
+            </article>
+            <article>
+              <b>{money(stockOutCost)}</b>
+              <span>Nilai HPP stok keluar · {qualityLabel(stockOutQuality)}</span>
+            </article>
+            {stockOutByCategory.map(([category, value]: any) => (
+              <article key={category}>
+                <b>{money(value.cost)}</b>
+                <span>{stockOutCategoryLabels[category] || category} · {value.quantity.toLocaleString("id-ID")} barang</span>
+              </article>
+            ))}
+          </div>
+          {!stockOutLines.length && (
+            <p className="report-empty">Belum ada stok keluar sesuai filter.</p>
+          )}
+        </section>
+
         <section className="report-panel report-net-profit" data-pdf-section>
           <div className="report-section-heading">
             <div>
@@ -11256,6 +11389,11 @@ function Reports({
               <b>−{money(cashbookSummary.operatingExpense)}</b>
               <small>Dari Buku Kas yang ditandai sebagai beban</small>
             </article>
+            <article className="expense">
+              <span>HPP stok keluar</span>
+              <b>−{money(stockOutCostForProfit)}</b>
+              <small>{channel === "all" ? "Sampel, promosi, rusak, dan pemakaian internal" : "Tidak dialokasikan pada filter kanal"}</small>
+            </article>
             <article className={`net ${netProfit < 0 ? "loss" : ""}`}>
               <span>Estimasi laba bersih</span>
               <i className={`metric-quality ${netProfitQuality}`}>
@@ -11269,7 +11407,7 @@ function Reports({
             className={`report-definition ${!cashbookFilterCompatible ? "report-warning" : ""}`}
           >
             <b>Rumus:</b> laba kotor + pendapatan kas lain − beban
-            operasional. Transaksi modal, piutang, aset, dan utang yang ditandai
+            operasional − HPP stok keluar. Transaksi modal, piutang, aset, dan utang yang ditandai
             “tidak memengaruhi laba” tidak ikut dihitung
             {cashbookSummary.excludedAmount > 0
               ? ` (${money(cashbookSummary.excludedAmount)} dikecualikan pada periode ini).`
@@ -11376,7 +11514,7 @@ function Reports({
                     <b>Laba bersih</b>
                   </td>
                   <td>Laba kotor + transaksi Buku Kas terklasifikasi</td>
-                  <td>Laba kotor + pendapatan lain − beban operasional</td>
+                  <td>Laba kotor + pendapatan lain − beban operasional − HPP stok keluar</td>
                   <td>
                     <span className={`metric-quality ${netProfitQuality}`}>
                       {qualityLabel(netProfitQuality)}
@@ -11417,7 +11555,7 @@ function Reports({
                 </tr>
                 <tr>
                   <td>
-                    <b>Retur, transfer, opname</b>
+                    <b>Retur, transfer, opname, stok keluar</b>
                   </td>
                   <td>Dokumen operasional tersimpan</td>
                   <td>Jumlah dokumen/baris sesuai filter</td>
@@ -11482,6 +11620,13 @@ function Reports({
                   type="monotone"
                   dataKey="HPP"
                   stroke="#f59e0b"
+                  strokeWidth={2}
+                  dot={false}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="Stok Keluar"
+                  stroke="#dc2626"
                   strokeWidth={2}
                   dot={false}
                 />
@@ -24128,6 +24273,9 @@ function AnalyticsPage({
       (transfer) =>
         transfer.status !== "cancelled" && isInRange(transfer.createdAt),
     );
+    const filteredStockOuts = (data.stockOuts || []).filter(
+      (item) => item.status !== "cancelled" && isInRange(item.createdAt),
+    );
 
     const costMap: Record<string, number> = {};
     const variantMap: Record<string, Variant> = {};
@@ -24146,6 +24294,36 @@ function AnalyticsPage({
     });
 
     const grossProfit = revenue - cogs;
+    const stockOutCost = filteredStockOuts.reduce(
+      (sum, item) =>
+        sum + Number(item.quantity || 0) * Number(item.unitCost || 0),
+      0,
+    );
+    const stockOutQuantity = filteredStockOuts.reduce(
+      (sum, item) => sum + Number(item.quantity || 0),
+      0,
+    );
+    const stockOutDocuments = new Set(
+      filteredStockOuts.map((item) => item.stockOutCode || item.id),
+    ).size;
+    const operationalProfit = grossProfit - stockOutCost;
+    const stockOutByCategory = Object.entries(
+      filteredStockOuts.reduce(
+        (result: Record<string, number>, item) => {
+          result[item.category] =
+            (result[item.category] || 0) +
+            Number(item.quantity || 0) * Number(item.unitCost || 0);
+          return result;
+        },
+        {},
+      ),
+    )
+      .map(([category, cost]) => ({
+        category,
+        label: stockOutCategoryLabels[category] || category,
+        cost,
+      }))
+      .sort((a, b) => b.cost - a.cost);
 
     let stockValue = 0;
     const lowStockAlerts: {
@@ -24194,11 +24372,18 @@ function AnalyticsPage({
         amount: 0,
         color: "#f59e0b",
       })),
+      ...filteredStockOuts.map((item) => ({
+        date: new Date(item.createdAt),
+        type: "Stok Keluar",
+        desc: `${stockOutCategoryLabels[item.category] || "Stok keluar"}: ${item.note}`,
+        amount: Number(item.quantity || 0) * Number(item.unitCost || 0),
+        color: "#dc2626",
+      })),
     ]
       .sort((a, b) => b.date.getTime() - a.date.getTime())
       .slice(0, 10);
 
-    const salesTrend: { date: string; Omset: number; Modal: number }[] = [];
+    const salesTrend: { date: string; Omset: number; Modal: number; "Stok Keluar": number }[] = [];
     const trendByKey: Record<string, number> = {};
     for (
       let key = dateFrom, day = 0;
@@ -24213,6 +24398,7 @@ function AnalyticsPage({
         }),
         Omset: 0,
         Modal: 0,
+        "Stok Keluar": 0,
       });
     }
     filteredSales.forEach((sale) => {
@@ -24223,6 +24409,12 @@ function AnalyticsPage({
         salesTrend[index].Modal +=
           item.quantity * (item.unitCost || costMap[item.variantId] || 0);
       });
+    });
+    filteredStockOuts.forEach((item) => {
+      const index = trendByKey[jakartaDateKey(item.createdAt)];
+      if (index === undefined) return;
+      salesTrend[index]["Stok Keluar"] +=
+        Number(item.quantity || 0) * Number(item.unitCost || 0);
     });
 
     const salesByVariant: Record<string, number> = {};
@@ -24248,7 +24440,10 @@ function AnalyticsPage({
     // Profit / Loss Chart Data
     const profitData = [
       { name: "Modal (HPP)", value: cogs, color: "#f87171" },
-      { name: "Estimasi Laba Kotor", value: grossProfit, color: "#10b981" },
+      { name: "Stok Keluar", value: stockOutCost, color: "#dc2626" },
+      operationalProfit >= 0
+        ? { name: "Estimasi Laba Operasional", value: operationalProfit, color: "#10b981" }
+        : { name: "Estimasi Kerugian Operasional", value: Math.abs(operationalProfit), color: "#7f1d1d" },
     ];
 
     const channelSales = (["offline", "online"] as Channel[]).reduce(
@@ -24277,6 +24472,11 @@ function AnalyticsPage({
       totalSalesCount: filteredSales.length,
       totalProductsCount: data.products.length,
       cogs,
+      stockOutCost,
+      stockOutQuantity,
+      stockOutDocuments,
+      stockOutByCategory,
+      operationalProfit,
       channelSales,
     };
   }, [data, dateFrom, dateTo]);
@@ -24291,6 +24491,10 @@ function AnalyticsPage({
           ["Total Omset", stats.revenue],
           ["Estimasi Laba Kotor", stats.grossProfit],
           ["Total Modal (HPP)", stats.cogs],
+          ["Biaya Stok Keluar", stats.stockOutCost],
+          ["Estimasi Laba Setelah Stok Keluar", stats.operationalProfit],
+          ["Dokumen Stok Keluar", stats.stockOutDocuments],
+          ["Barang Stok Keluar", stats.stockOutQuantity],
           ["Nilai Stok Saat Ini", stats.stockValue],
           ["Jumlah Transaksi Penjualan", stats.totalSalesCount],
           ["Penjualan Outlet", stats.channelSales.offline.total],
@@ -24304,6 +24508,7 @@ function AnalyticsPage({
           t.date,
           t.Omset,
           t.Modal,
+          t["Stok Keluar"],
         ]);
         const topProductsData = stats.topProducts.map((t: any, idx: number) => [
           idx + 1,
@@ -24329,8 +24534,17 @@ function AnalyticsPage({
                 { header: "Tanggal", key: "tanggal", width: 20 },
                 { header: "Omset Penjualan", key: "omset", width: 25 },
                 { header: "Modal (HPP)", key: "modal", width: 25 },
+                { header: "Stok Keluar", key: "stokkeluar", width: 25 },
               ],
               data: trendData,
+            },
+            {
+              name: "Kategori Stok Keluar",
+              columns: [
+                { header: "Kategori", key: "kategori", width: 30 },
+                { header: "Nilai HPP", key: "nilai", width: 24 },
+              ],
+              data: stats.stockOutByCategory.map((item) => [item.label, item.cost]),
             },
             {
               name: "Top 5 Produk Terlaris",
@@ -24527,6 +24741,31 @@ function AnalyticsPage({
               </div>
             </div>
           </article>
+          <article className="dash-widget">
+            <header>
+              <h3>Stok Keluar Operasional</h3>
+            </header>
+            <div className="widget-content">
+              <small className="text-muted">Nilai HPP periode ini</small>
+              <h2 style={{ fontSize: 28, margin: "8px 0 20px", color: "#b91c1c" }}>
+                {money(stats.stockOutCost)}
+              </h2>
+              <div style={{ display: "flex", justifyContent: "space-between", borderTop: "1px solid var(--line)", paddingTop: 12 }}>
+                <span className="text-muted">Dokumen</span>
+                <b>{stats.stockOutDocuments}</b>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8 }}>
+                <span className="text-muted">Barang keluar</span>
+                <b>{stats.stockOutQuantity.toLocaleString("id-ID")}</b>
+              </div>
+              {stats.stockOutByCategory[0] && (
+                <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8 }}>
+                  <span className="text-muted">Kategori terbesar</span>
+                  <b>{stats.stockOutByCategory[0].label}</b>
+                </div>
+              )}
+            </div>
+          </article>
         </div>
 
         <div className="dash-grid-middle">
@@ -24590,6 +24829,13 @@ function AnalyticsPage({
                     stackId="a"
                     fill="#f87171"
                     radius={[0, 0, 4, 4]}
+                    barSize={24}
+                  />
+                  <Bar
+                    dataKey="Stok Keluar"
+                    name="Stok Keluar"
+                    stackId="a"
+                    fill="#dc2626"
                     barSize={24}
                   />
                   <Bar
@@ -24676,7 +24922,7 @@ function AnalyticsPage({
           {/* Laba Rugi */}
           <article className="dash-widget">
             <header>
-              <h3>Estimasi Laba Kotor (Semua Waktu)</h3>
+              <h3>Estimasi Setelah Stok Keluar</h3>
               <button
                 className="icon-btn"
                 style={{ padding: 4, margin: -4 }}
@@ -24762,10 +25008,10 @@ function AnalyticsPage({
                   style={{ borderTop: "1px solid var(--line)", paddingTop: 8 }}
                 >
                   <div style={{ fontSize: 13, color: "var(--muted)" }}>
-                    Estimasi Laba Kotor
+                    Estimasi Laba Operasional
                   </div>
                   <b style={{ color: "#10b981", fontSize: 16 }}>
-                    {money(stats.grossProfit)}
+                    {money(stats.operationalProfit)}
                   </b>
                 </div>
               </div>

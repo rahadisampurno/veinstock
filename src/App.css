@@ -134,7 +134,7 @@ nav {
   padding: 8px 13px 4px;
   margin-top: 4px;
 }
-.sidebar nav button {
+.sidebar nav :is(button, a) {
   border: 0;
   background: none;
   color: #b8cbd7;
@@ -146,16 +146,18 @@ nav {
   text-align: left;
   cursor: pointer;
   font-weight: 600;
+  font-family: inherit;
+  text-decoration: none;
 }
-.sidebar nav button svg {
+.sidebar nav :is(button, a) svg {
   width: 18px;
 }
-.sidebar nav button:hover,
-.sidebar nav button.active {
+.sidebar nav :is(button, a):hover,
+.sidebar nav :is(button, a).active {
   background: #ffffff14;
   color: white;
 }
-.sidebar nav button.active {
+.sidebar nav :is(button, a).active {
   box-shadow: inset 3px 0 #32d492;
 }
 .sidebar nav em {
@@ -2191,7 +2193,7 @@ body {
 .sidebar-user small {
   font-size: 13px;
 }
-.sidebar nav button {
+.sidebar nav :is(button, a) {
   font-size: 15px;
 }
 .sidebar nav em {
@@ -2321,7 +2323,7 @@ th {
     font-size: 13px;
     padding: 13px;
   }
-  .sidebar nav button {
+  .sidebar nav :is(button, a) {
     font-size: 15px;
   }
 }
@@ -4447,14 +4449,14 @@ th {
 .workspace > span {
   color: #8fa1bd;
 }
-.sidebar nav button {
+.sidebar nav :is(button, a) {
   color: #c7d1df;
 }
-.sidebar nav button:hover,
-.sidebar nav button.active {
+.sidebar nav :is(button, a):hover,
+.sidebar nav :is(button, a).active {
   background: #ffffff14;
 }
-.sidebar nav button.active {
+.sidebar nav :is(button, a).active {
   box-shadow: inset 3px 0 #ef4444;
 }
 .primary {
@@ -6231,7 +6233,7 @@ th {
   border-color: #ffffff22;
   background: #ffffff0d;
 }
-.sidebar nav button.active {
+.sidebar nav :is(button, a).active {
   background: #ffffff18;
   box-shadow: inset 3px 0 #15b6dc;
 }
@@ -11166,6 +11168,7 @@ button.danger:disabled {
     background: #fff;
     box-shadow: 0 7px 16px #001f343d;
     cursor: pointer;
+    text-decoration: none;
   }
   .rail-logo img {
     width: 100%;
@@ -11193,7 +11196,7 @@ button.danger:disabled {
   .rail-nav::-webkit-scrollbar {
     display: none;
   }
-  .rail-nav button {
+  .rail-nav :is(button, a) {
     position: relative;
     display: grid;
     width: 44px;
@@ -11206,18 +11209,19 @@ button.danger:disabled {
     color: #b9d7e2;
     cursor: pointer;
     transition: 0.18s ease;
+    text-decoration: none;
   }
-  .rail-nav button:hover {
+  .rail-nav :is(button, a):hover {
     background: #ffffff16;
     color: #fff;
   }
-  .rail-nav button.active {
+  .rail-nav :is(button, a).active {
     border-color: #6bd8ef85;
     background: #e8faff;
     color: #087fa9;
     box-shadow: 0 5px 14px #002b4260;
   }
-  .rail-nav button.active::before {
+  .rail-nav :is(button, a).active::before {
     position: absolute;
     left: -11px;
     width: 3px;
@@ -11296,7 +11300,7 @@ button.danger:disabled {
     color: #6d8a99;
     font-size: 10px;
   }
-  .sidebar nav button {
+  .sidebar nav :is(button, a) {
     min-height: 38px;
     padding: 8px 11px;
     border: 1px solid transparent;
@@ -11305,12 +11309,12 @@ button.danger:disabled {
     font-size: 13px;
     font-weight: 750;
   }
-  .sidebar nav button:hover {
+  .sidebar nav :is(button, a):hover {
     border-color: #bee4ed;
     background: #eaf8fb;
     color: #087fa9;
   }
-  .sidebar nav button.active {
+  .sidebar nav :is(button, a).active {
     border-color: #c3eaf3;
     background: linear-gradient(90deg, #dff7fb, #ffffff);
     color: #075777;
@@ -11433,7 +11437,7 @@ button.danger:disabled {
     color: #8ab8c8;
     font-size: 10px;
   }
-  .sidebar.sidebar-expanded nav button {
+  .sidebar.sidebar-expanded nav :is(button, a) {
     min-height: 38px;
     padding: 8px 10px;
     border: 1px solid transparent;
@@ -11442,12 +11446,12 @@ button.danger:disabled {
     font-size: 13px;
     font-weight: 750;
   }
-  .sidebar.sidebar-expanded nav button:hover {
+  .sidebar.sidebar-expanded nav :is(button, a):hover {
     border-color: #a9e8f655;
     background: #ffffff16;
     color: #fff;
   }
-  .sidebar.sidebar-expanded nav button.active {
+  .sidebar.sidebar-expanded nav :is(button, a).active {
     border-color: #6bd8ef85;
     background: #e8faff;
     color: #087fa9;
@@ -11615,7 +11619,7 @@ button.danger:disabled {
   .sidebar.sidebar-expanded .nav-group-wrapper {
     margin-bottom: 3px;
   }
-  .sidebar.sidebar-expanded nav button {
+  .sidebar.sidebar-expanded nav :is(button, a) {
     min-height: 38px;
     padding: 7px 8px;
     gap: 9px;
