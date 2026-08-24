@@ -372,6 +372,7 @@ export async function getStateFromSQL(conn, orgId) {
       // Buku kas memakai snapshot app_state sebagai penyimpanan kanonis. Setiap
       // command tetap dikomit dalam transaksi database dan memiliki versi.
       cashEntries: rawState.cashEntries || [],
+      debtEntries: rawState.debtEntries || [],
       // Pengiriman belum memiliki tabel relasional tersendiri. Selama itu,
       // snapshot app_state adalah sumber kebenaran agar hasil scan packing dan
       // batch serah-terima tidak hilang ketika state dibaca ulang dari SQL.

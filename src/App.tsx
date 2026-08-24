@@ -5,6 +5,7 @@ import {
   type ReactElement,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -14,6 +15,12 @@ import {
   authorizeAction,
   type ActionType,
 } from "./utils/rbac";
+import {
+  isPageAllowedForUser,
+  menuPermissionRequirement,
+  userWithAssignedLocation,
+  type Page,
+} from "./utils/navigationAccess";
 import {
   getOperationalNotifications,
   type OperationalNotification,
@@ -36,26 +43,20 @@ import {
 import {
   Archive,
   AlertTriangle,
-  ArrowDownToLine,
   ArrowRight,
   ArrowRightLeft,
-  BarChart3,
   Bell,
   CalendarDays,
   Boxes,
   Check,
   Camera,
-  ClipboardCheck,
   Calculator,
   Copy,
   Download,
-  History,
   Info,
-  LayoutDashboard,
   KeyRound,
   Menu,
   PackagePlus,
-  PackageOpen,
   Pin,
   PinOff,
   Printer,
@@ -65,10 +66,8 @@ import {
   RotateCcw,
   Search,
   Settings,
-  ShoppingCart,
   Store,
   Trash2,
-  Users,
   Eye,
   EyeOff,
   Warehouse,
@@ -78,10 +77,8 @@ import {
   ChevronUp,
   ChevronLeft,
   ChevronRight,
-  TrendingUp,
   Clock3,
   MapPin,
-  WalletCards,
   Truck,
   Upload,
 } from "lucide-react";
@@ -131,6 +128,7 @@ import type {
   AppData,
   CashEntry,
   CashEntryReportTreatment,
+  DebtEntry,
   Channel,
   HppAdditionalCost,
   HppBatch,
@@ -156,32 +154,6 @@ import {
 } from "./store";
 import "./App.css";
 
-type Page =
-  | "dashboard"
-  | "products"
-  | "locations"
-  | "receipts"
-  | "stock"
-  | "stock-outs"
-  | "transfers"
-  | "sales"
-  | "shipping"
-  | "returns"
-  | "opname"
-  | "history"
-  | "reports"
-  | "business"
-  | "users"
-  | "help"
-  | "analytics"
-  | "employees"
-  | "attendance"
-  | "loans"
-  | "cashbook"
-  | "pricing"
-  | "suppliers"
-  | "role-access";
-
 const configurableRoleList = [
   "admin",
   "pic",
@@ -191,37 +163,62 @@ const configurableRoleList = [
   "employee",
 ] as const;
 type ConfigurableRole = (typeof configurableRoleList)[number];
-const configuredRolesFromData = (
-  data: Pick<AppData, "rolePolicies">,
-): ConfigurableRole[] => {
-  const stored = configurableRoleList.filter((role) =>
-    Boolean(data.rolePolicies?.[role]),
-  );
-  return stored.length ? stored : [...configurableRoleList];
-};
-const roleMenuOptions: Array<{ id: Page; label: string }> = [
-  { id: "dashboard", label: "Dashboard" },
-  { id: "analytics", label: "Analitik Bisnis" },
-  { id: "products", label: "Produk & Varian" },
-  { id: "locations", label: "Lokasi Usaha" },
-  { id: "pricing", label: "HPP & Marketplace" },
-  { id: "suppliers", label: "Supplier" },
-  { id: "receipts", label: "Stok Masuk" },
-  { id: "stock", label: "Stok per Lokasi" },
-  { id: "stock-outs", label: "Stok Keluar" },
-  { id: "transfers", label: "Transfer Stok" },
-  { id: "opname", label: "Stok Opname" },
-  { id: "history", label: "Riwayat Stok" },
-  { id: "sales", label: "Penjualan" },
-  { id: "shipping", label: "Pengiriman Pesanan" },
-  { id: "returns", label: "Retur" },
-  { id: "employees", label: "Tim & Akses" },
-  { id: "attendance", label: "Kehadiran" },
-  { id: "loans", label: "Kasbon & Penggajian" },
-  { id: "cashbook", label: "Buku Kas" },
-  { id: "reports", label: "Laporan" },
-  { id: "help", label: "Pusat Bantuan" },
+const configuredRolesFromData = (): ConfigurableRole[] => [
+  ...configurableRoleList,
 ];
+type RoleMenuOption = {
+  id: Page;
+  label: string;
+  group: string;
+  ownerOnly?: boolean;
+};
+const roleMenuOptions: RoleMenuOption[] = [
+  { id: "dashboard", label: "Dashboard", group: "Utama" },
+  { id: "analytics", label: "Analitik Bisnis", group: "Utama" },
+  { id: "products", label: "Produk & Varian", group: "Master Data" },
+  { id: "locations", label: "Lokasi Usaha", group: "Master Data" },
+  { id: "pricing", label: "HPP & Marketplace", group: "Master Data" },
+  { id: "suppliers", label: "Supplier", group: "Master Data" },
+  { id: "receipts", label: "Stok Masuk", group: "Inventaris" },
+  { id: "stock", label: "Stok per Lokasi", group: "Inventaris" },
+  { id: "stock-outs", label: "Stok Keluar", group: "Inventaris" },
+  { id: "transfers", label: "Transfer Stok", group: "Inventaris" },
+  { id: "opname", label: "Stok Opname", group: "Inventaris" },
+  { id: "history", label: "Riwayat Stok", group: "Inventaris" },
+  { id: "sales", label: "Penjualan", group: "Transaksi" },
+  { id: "shipping", label: "Pengiriman Pesanan", group: "Transaksi" },
+  { id: "returns", label: "Retur", group: "Transaksi" },
+  { id: "cashbook", label: "Buku Kas", group: "Keuangan" },
+  { id: "debts", label: "Hutang & Piutang", group: "Keuangan" },
+  { id: "employees", label: "Tim & Akses", group: "Karyawan" },
+  { id: "attendance", label: "Kehadiran", group: "Karyawan" },
+  { id: "loans", label: "Kasbon & Penggajian", group: "Karyawan" },
+  { id: "reports", label: "Laporan", group: "Laporan" },
+  { id: "business", label: "Profil Usaha", group: "Pengaturan" },
+  {
+    id: "role-access",
+    label: "Peran & Hak Akses",
+    group: "Pengaturan",
+    ownerOnly: true,
+  },
+  { id: "help", label: "Pusat Bantuan", group: "Pengaturan" },
+];
+const roleMenuGroups = [
+  "Utama",
+  "Master Data",
+  "Inventaris",
+  "Transaksi",
+  "Keuangan",
+  "Karyawan",
+  "Laporan",
+  "Pengaturan",
+];
+const navigationMenuGroups = roleMenuGroups.map((group) => ({
+  group,
+  items: roleMenuOptions
+    .filter((item) => item.group === group)
+    .map((item) => [item.id, item.label] as const),
+}));
 const permissionOptions: Array<{
   id: ActionType;
   label: string;
@@ -286,31 +283,15 @@ const permissionOptions: Array<{
     label: "Catat uang masuk & keluar",
     group: "Buku Kas",
   },
+  { id: "debt.view", label: "Lihat hutang & piutang", group: "Hutang & Piutang" },
+  { id: "debt.manage", label: "Catat dan lunasi hutang/piutang", group: "Hutang & Piutang" },
 ];
-const menuPermissionRequirement: Partial<Record<Page, ActionType>> = {
-  products: "product.view",
-  locations: "location.view",
-  pricing: "pricing.view",
-  suppliers: "supplier.view",
-  receipts: "stock.view",
-  stock: "stock.view",
-  "stock-outs": "stock.out",
-  transfers: "transfer.view",
-  opname: "stock.view",
-  history: "audit.location.view",
-  sales: "sale.view",
-  shipping: "shipping.view",
-  returns: "stock.view",
-  employees: "user.view",
-  attendance: "attendance.view",
-  loans: "payroll.view",
-  cashbook: "cashbook.view",
-  reports: "report.view",
-  analytics: "report.view",
-};
 const defaultRoleMenus: Record<ConfigurableRole, string[]> = {
   admin: roleMenuOptions
-    .filter((item) => !["business", "loans"].includes(item.id))
+    .filter(
+      (item) =>
+        !item.ownerOnly && !["business", "loans"].includes(item.id),
+    )
     .map((item) => item.id),
   pic: [
     "dashboard",
@@ -326,7 +307,7 @@ const defaultRoleMenus: Record<ConfigurableRole, string[]> = {
     "attendance",
     "help",
   ],
-  finance: ["dashboard", "cashbook", "stock", "reports", "analytics", "help"],
+  finance: ["dashboard", "cashbook", "debts", "stock", "reports", "analytics", "help"],
   warehouse: [
     "dashboard",
     "products",
@@ -365,31 +346,6 @@ const defaultRolePermissions = (role: ConfigurableRole) =>
       outletId: "preview-location",
     }).permissions,
   );
-
-const isPageAllowedForUser = (page: Page, user: SessionUser, data: AppData) => {
-  const scope = resolveUserScope(user, data.rolePolicies);
-  if (page === "role-access" || page === "business")
-    return scope.role === "owner";
-  if (scope.role !== "owner") {
-    const configuredMenus =
-      data.rolePolicies?.[scope.role as keyof typeof data.rolePolicies]?.menus;
-    if (configuredMenus) {
-      const required = menuPermissionRequirement[page];
-      return (
-        configuredMenus.includes(page) &&
-        (!required || scope.permissions.has(required))
-      );
-    }
-  }
-  if (scope.role === "employee")
-    return page === "attendance" || page === "help";
-  if (page === "dashboard" || page === "help") return true;
-  const required = menuPermissionRequirement[page];
-  if (required) return scope.permissions.has(required);
-  if (page === "users" || page === "employees")
-    return scope.permissions.has("user.view");
-  return false;
-};
 
 const isTouchFirstDevice = () =>
   typeof window !== "undefined" &&
@@ -673,6 +629,7 @@ const SidebarGlyph = ({
       );
       break;
     case "cashbook":
+    case "debts":
       art = (
         <>
           <path {...props} d="M5 3h12a2 2 0 0 1 2 2v16H7a2 2 0 0 1-2-2z" />
@@ -1364,8 +1321,12 @@ function BarcodeScanControl({
 
 function ContinuousResiScanner({
   onDetected,
+  onDetectedMany,
 }: {
   onDetected: (value: string) => Promise<{ ok: boolean; message: string }>;
+  onDetectedMany?: (
+    values: string[],
+  ) => Promise<{ ok: boolean; message: string }>;
 }) {
   const [open, setOpen] = useState(false),
     [feedback, setFeedback] = useState<{
@@ -1375,7 +1336,8 @@ function ContinuousResiScanner({
       tone: "info",
       message: "Tekan Mulai scan sekali, lalu arahkan resi secara bergantian.",
     });
-  const [manual, setManual] = useState("");
+  const [manual, setManual] = useState(""),
+    [processing, setProcessing] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null),
     streamRef = useRef<MediaStream | null>(null),
     fallbackControlsRef = useRef<{ stop: () => void } | null>(null),
@@ -1411,6 +1373,7 @@ function ContinuousResiScanner({
       if (Date.now() - last < 2500) return;
       recentRef.current.set(value, Date.now());
       busyRef.current = true;
+      setProcessing(true);
       try {
         const result = await onDetected(value);
         sound(result.ok);
@@ -1421,10 +1384,47 @@ function ContinuousResiScanner({
         });
       } finally {
         busyRef.current = false;
+        setProcessing(false);
       }
     },
     [onDetected, sound],
   );
+  const manualValues = Array.from(
+    new Set(
+      manual
+        .split(/[\n,;\t]+/)
+        .map((value) => value.trim().toUpperCase())
+        .filter(Boolean),
+    ),
+  );
+  const submitManual = async () => {
+    if (!manualValues.length || processing || busyRef.current) return;
+    if (manualValues.length > 200) {
+      setFeedback({
+        tone: "error",
+        message: "Maksimal 200 resi dalam satu kali proses.",
+      });
+      return;
+    }
+    busyRef.current = true;
+    setProcessing(true);
+    try {
+      const result =
+        manualValues.length > 1 && onDetectedMany
+          ? await onDetectedMany(manualValues)
+          : await onDetected(manualValues[0]);
+      sound(result.ok);
+      navigator.vibrate?.(result.ok ? 80 : [120, 70, 120]);
+      setFeedback({
+        tone: result.ok ? "success" : "error",
+        message: result.message,
+      });
+      if (result.ok) setManual("");
+    } finally {
+      busyRef.current = false;
+      setProcessing(false);
+    }
+  };
   const start = async () => {
     if (!navigator.mediaDevices?.getUserMedia)
       return setFeedback({
@@ -1542,17 +1542,24 @@ function ContinuousResiScanner({
         className="manual-resi"
         onSubmit={(event) => {
           event.preventDefault();
-          void record(manual);
-          setManual("");
+          void submitManual();
         }}
       >
-        <input
+        <textarea
           value={manual}
           onChange={(event) => setManual(event.target.value)}
-          placeholder="Atau masukkan nomor resi manual"
+          placeholder="Masukkan satu resi, atau tempel banyak resi dipisahkan baris/koma"
+          rows={manualValues.length > 1 ? 4 : 2}
         />
-        <button className="secondary" disabled={!manual.trim()}>
-          Catat resi
+        <button
+          className="secondary"
+          disabled={!manualValues.length || processing}
+        >
+          {processing
+            ? "Mencatat…"
+            : manualValues.length > 1
+              ? `Catat ${manualValues.length} resi`
+              : "Catat resi"}
         </button>
       </form>
     </div>
@@ -1660,7 +1667,7 @@ function App() {
   // collapse yang disimpan pengguna.
   const [sidebarHoverPreview, setSidebarHoverPreview] = useState(false);
   const [isMobileViewport, setIsMobileViewport] = useState(
-    () => window.innerWidth <= 767,
+    () => window.innerWidth <= 1024,
   );
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [modal, setModalState] = useState<string | null>(null);
@@ -1765,6 +1772,7 @@ function App() {
       "loans",
       "pricing",
       "cashbook",
+      "debts",
       "suppliers",
       "role-access",
     ]);
@@ -1815,7 +1823,7 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => {
-    const updateViewport = () => setIsMobileViewport(window.innerWidth <= 767);
+    const updateViewport = () => setIsMobileViewport(window.innerWidth <= 1024);
     updateViewport();
     window.addEventListener("resize", updateViewport);
     return () => window.removeEventListener("resize", updateViewport);
@@ -1921,6 +1929,40 @@ function App() {
     };
   }, [token, user?.organizationId, hydrated]);
   useEffect(() => {
+    if (!hydrated || !user) return;
+    const latestAccount = (data.users || []).find(
+      (account) => account.id === user.id,
+    );
+    if (!latestAccount) return;
+    const assignment = (data.employees || []).find(
+      (employee: any) =>
+        employee.userId === user.id && employee.active !== false,
+    );
+    const nextUser: SessionUser = {
+      ...user,
+      name: latestAccount.name,
+      email: latestAccount.email,
+      role: latestAccount.role,
+      active: latestAccount.active,
+      outletId: latestAccount.outletId || assignment?.locationId,
+    };
+    if (
+      nextUser.name === user.name &&
+      nextUser.email === user.email &&
+      nextUser.role === user.role &&
+      nextUser.active === user.active &&
+      nextUser.outletId === user.outletId
+    )
+      return;
+    setAuthUser(nextUser);
+    const currentSession = readSession();
+    if (!currentSession) return;
+    const session = JSON.stringify({ ...currentSession, user: nextUser });
+    sessionStorage.setItem(savedSessionKey, session);
+    if (localStorage.getItem(savedSessionKey))
+      localStorage.setItem(savedSessionKey, session);
+  }, [hydrated, data.users, data.employees, user]);
+  useEffect(() => {
     if (user?.role === "employee") setPage("attendance");
     // Akun karyawan selalu dimulai dari absensi setelah identitas berubah.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2004,10 +2046,11 @@ function App() {
 
   // Gunakan can() ketika izin dibaca saat render. checkAuth() hanya untuk
   // interaksi pengguna karena ia menampilkan toast saat akses ditolak.
+  const permissionUser = user ? userWithAssignedLocation(user, data) : user;
   const can = (action: ActionType, locationId?: string) =>
-    authorizeAction(user, action, locationId, data.rolePolicies).allowed;
+    authorizeAction(permissionUser, action, locationId, data.rolePolicies).allowed;
   const checkAuth = (action: ActionType, locationId?: string) => {
-    const auth = authorizeAction(user, action, locationId, data.rolePolicies);
+    const auth = authorizeAction(permissionUser, action, locationId, data.rolePolicies);
     if (!auth.allowed) notify(auth.reason || "Akses ditolak");
     return auth.allowed;
   };
@@ -2214,8 +2257,12 @@ function App() {
   };
 
   const scope = useMemo(
-    () => resolveUserScope(user, data.rolePolicies),
-    [user, data.rolePolicies],
+    () =>
+      resolveUserScope(
+        user ? userWithAssignedLocation(user, data) : user,
+        data.rolePolicies,
+      ),
+    [user, data],
   );
   useEffect(() => {
     if (!hydrated || !user || isPageAllowedForUser(page, user, data)) return;
@@ -2247,67 +2294,7 @@ function App() {
       </div>
     );
 
-  const navGroups = [
-    {
-      group: "Utama",
-      items: [
-        ["dashboard", "Dashboard", LayoutDashboard],
-        ["analytics", "Analitik Bisnis", TrendingUp],
-      ],
-    },
-    {
-      group: "Master Data",
-      items: [
-        ["products", "Produk & Varian", Archive],
-        ["locations", "Lokasi Usaha", Store],
-        ["pricing", "HPP & Marketplace", Calculator],
-        ["suppliers", "Supplier", Users],
-      ],
-    },
-    {
-      group: "Inventaris",
-      items: [
-        ["receipts", "Stok Masuk", ArrowDownToLine],
-        ["stock", "Stok per Lokasi", Boxes],
-        ["stock-outs", "Stok Keluar", PackageOpen],
-        ["transfers", "Transfer Stok", ArrowRightLeft],
-        ["opname", "Stok Opname", ClipboardCheck],
-        ["history", "Riwayat Stok", History],
-      ],
-    },
-    {
-      group: "Transaksi",
-      items: [
-        ["sales", "Penjualan", ShoppingCart],
-        ["shipping", "Pengiriman Pesanan", Truck],
-        ["returns", "Retur", RotateCcw],
-      ],
-    },
-    {
-      group: "Keuangan",
-      items: [["cashbook", "Buku Kas", WalletCards]],
-    },
-    {
-      group: "Karyawan",
-      items: [
-        ["employees", "Tim & Akses", Users],
-        ["attendance", "Kehadiran", Clock3],
-        ["loans", "Kasbon & Penggajian", WalletCards],
-      ],
-    },
-    {
-      group: "Laporan",
-      items: [["reports", "Laporan", BarChart3]],
-    },
-    {
-      group: "Pengaturan",
-      items: [
-        ["business", "Profil Usaha", Settings],
-        ["role-access", "Peran & Hak Akses", KeyRound],
-        ["help", "Pusat Bantuan", LifeBuoy],
-      ],
-    },
-  ] as const;
+  const navGroups = navigationMenuGroups;
   const titles: Record<Page, string> = {
     dashboard: "Dashboard Operasional",
     products: "Produk & Varian",
@@ -2329,6 +2316,7 @@ function App() {
     attendance: "Kehadiran Karyawan",
     loans: "Kasbon & Penggajian",
     cashbook: "Buku Kas",
+    debts: "Hutang & Piutang",
     pricing: "Kalkulator HPP & Marketplace",
     suppliers: "Master Supplier",
     "role-access": "Peran & Hak Akses",
@@ -2494,6 +2482,45 @@ function App() {
                 );
               })}
             </nav>
+            {isMobileViewport && (
+              <div className="mobile-sidebar-account">
+                <div className="mobile-sidebar-profile">
+                  <div className="avatar">
+                    {user.avatarUrl ||
+                    (user.role === "owner" && data.business?.logoUrl) ? (
+                      <img
+                        src={user.avatarUrl || data.business?.logoUrl}
+                        alt={user.name}
+                      />
+                    ) : (
+                      user.name.slice(0, 2).toUpperCase()
+                    )}
+                  </div>
+                  <span>
+                    <b>{user.name}</b>
+                    <small>{accessRoleLabel(user.role)}</small>
+                  </span>
+                </div>
+                <div className="mobile-sidebar-account-actions">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSidebar(false);
+                      setModal("change-password");
+                    }}
+                  >
+                    Ganti password
+                  </button>
+                  <button
+                    type="button"
+                    className="mobile-logout-button"
+                    onClick={() => void logout()}
+                  >
+                    Logout
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </aside>
@@ -2860,6 +2887,15 @@ function App() {
               canManage={can("cashbook.manage")}
             />
           )}
+          {page === "debts" && (
+            <DebtReceivablePage
+              data={data}
+              runCommand={runCommand}
+              notify={notify}
+              uploadImage={uploadImage}
+              canManage={can("debt.manage")}
+            />
+          )}
           {page === "pricing" && (
             <HppMarketplaceCalculator
               data={data}
@@ -2880,7 +2916,10 @@ function App() {
             />
           )}
           {page === "business" && (
-            <BusinessPage data={data} open={() => setModal("business")} />
+            <BusinessPage
+              data={data}
+              open={scope.role === "owner" ? () => setModal("business") : undefined}
+            />
           )}
           {(page === "employees" || page === "users") && (
             <EmployeesPage
@@ -2896,6 +2935,40 @@ function App() {
               completeEmployee={(userId: string) =>
                 checkAuth("user.update") && setModal(`employee-link:${userId}`)
               }
+              updateEmploymentStatus={(
+                account: any,
+                employee: any,
+                active: boolean,
+              ) => {
+                if (!checkAuth("user.update")) return;
+                setConfirm({
+                  message: active
+                    ? `Aktifkan kembali ${account.name}? Akun dapat login lagi dan data kerja kembali masuk absensi serta estimasi gaji.`
+                    : `Nonaktifkan ${account.name}? Akun tidak dapat login dan tidak lagi masuk absensi maupun estimasi gaji. Seluruh histori tetap tersimpan.`,
+                  onConfirm: async () => {
+                    try {
+                      await runCommand(
+                        `/api/commands/employees/${employee.id}/status`,
+                        { active },
+                        "PATCH",
+                      );
+                      setConfirm(null);
+                      notify(
+                        active
+                          ? "Karyawan berhasil diaktifkan kembali."
+                          : "Karyawan dinonaktifkan. Histori tetap tersimpan.",
+                      );
+                    } catch (error) {
+                      notify(
+                        error instanceof Error
+                          ? error.message
+                          : "Status karyawan tidak dapat diperbarui.",
+                        "error",
+                      );
+                    }
+                  },
+                });
+              }}
               canCreate={can("user.create")}
               canEdit={can("user.update")}
             />
@@ -3135,6 +3208,7 @@ function App() {
                   ? error.message
                   : "Produk tidak dapat disimpan",
               );
+              throw error;
             }
           }}
         />
@@ -3212,6 +3286,7 @@ function App() {
                       ? error.message
                       : "Produk tidak dapat diperbarui",
                   );
+                  throw error;
                 }
               }}
             />
@@ -3380,6 +3455,7 @@ function App() {
                         ? error.message
                         : "Stok masuk tidak dapat disimpan",
                     );
+                    throw error;
                   }
                   return;
                 }
@@ -3397,6 +3473,7 @@ function App() {
                       ? error.message
                       : "Stok masuk tidak dapat diperbarui",
                   );
+                  throw error;
                 }
                 return;
               }}
@@ -3426,6 +3503,7 @@ function App() {
                   ? error.message
                   : "Retur tidak dapat disimpan",
               );
+              throw error;
             }
           }}
         />
@@ -3447,6 +3525,7 @@ function App() {
                   : "Stok keluar tidak dapat disimpan",
                 "error",
               );
+              throw error;
             }
           }}
         />
@@ -3581,6 +3660,7 @@ function App() {
                   ? error.message
                   : "Transfer tidak dapat disimpan",
               );
+              throw error;
             }
           }}
         />
@@ -3692,6 +3772,7 @@ function App() {
                     ? error.message
                     : "Stock opname tidak dapat diperbarui",
                 );
+                throw error;
               }
             } else {
               try {
@@ -3707,6 +3788,7 @@ function App() {
                     ? error.message
                     : "Stock opname tidak dapat disimpan",
                 );
+                throw error;
               }
             }
           }}
@@ -6301,7 +6383,7 @@ function BusinessPage({ data, open }: any) {
     <PageBlock
       title="Identitas usaha"
       desc="Informasi ini digunakan pada dokumen dan ruang kerja Menengs."
-      action="Edit Profil Usaha"
+      action={open ? "Edit Profil Usaha" : undefined}
       onAction={open}
     >
       <article className="business-card">
@@ -6430,6 +6512,7 @@ function EmployeesPage({
   editAccess,
   editEmployee,
   completeEmployee,
+  updateEmploymentStatus,
   canCreate,
   canEdit,
 }: any) {
@@ -6450,7 +6533,14 @@ function EmployeesPage({
     employees.some((employee: any) => employee.userId === account.id),
   ).length;
   const payrollEstimate = employees
-    .filter((employee: any) => employee.active)
+    .filter(
+      (employee: any) =>
+        employee.active &&
+        allAccounts.some(
+          (account: any) =>
+            account.id === employee.userId && account.active,
+        ),
+    )
     .reduce((sum: number, employee: any) => sum + employee.monthlySalary, 0);
   return (
     <PageBlock
@@ -6470,7 +6560,7 @@ function EmployeesPage({
           value={`${linkedCount}/${allAccounts.length}`}
           sub={
             linkedCount === allAccounts.length
-              ? "Semua staf masuk penggajian"
+              ? "Semua staf memiliki histori data kerja"
               : `${allAccounts.length - linkedCount} staf perlu dilengkapi`
           }
           tone={linkedCount === allAccounts.length ? "blue" : "amber"}
@@ -6538,11 +6628,13 @@ function EmployeesPage({
                         <span
                           className={`status ${employee.active && assigned ? "ok" : employee.active ? "wait" : "danger"}`}
                         >
-                          {employee.active
-                            ? assigned
-                              ? "Siap absensi & gaji"
-                              : "Data kerja tanpa lokasi"
-                            : "Data kerja nonaktif"}
+                          {!account.active && employee.active
+                            ? "Akun nonaktif · data kerja perlu disinkronkan"
+                            : employee.active
+                              ? assigned
+                                ? "Siap absensi & gaji"
+                                : "Data kerja tanpa lokasi"
+                              : "Data kerja nonaktif"}
                         </span>
                       ) : (
                         <span
@@ -6564,12 +6656,34 @@ function EmployeesPage({
                             Atur peran
                           </button>
                           {employee ? (
-                            <button
-                              className="table-action"
-                              onClick={() => editEmployee(employee.id)}
-                            >
-                              Atur lokasi & gaji
-                            </button>
+                            <>
+                              <button
+                                className="table-action"
+                                onClick={() => editEmployee(employee.id)}
+                              >
+                                Atur lokasi & gaji
+                              </button>
+                              <button
+                                className={`table-action ${account.active && employee.active ? "danger-text" : "primary-link"}`}
+                                onClick={() => {
+                                  const nextActive =
+                                    account.active !== employee.active
+                                      ? account.active
+                                      : !employee.active;
+                                  updateEmploymentStatus(
+                                    account,
+                                    employee,
+                                    nextActive,
+                                  );
+                                }}
+                              >
+                                {account.active && employee.active
+                                  ? "Nonaktifkan karyawan"
+                                  : !account.active && employee.active
+                                    ? "Nonaktifkan data kerja"
+                                    : "Aktifkan kembali"}
+                              </button>
+                            </>
                           ) : account.active ? (
                             <button
                               className="table-action primary-link"
@@ -6598,7 +6712,7 @@ function EmployeesPage({
 }
 
 function RoleAccessPage({ data, runCommand, notify }: any) {
-  const availableRoles = configuredRolesFromData(data);
+  const availableRoles = configuredRolesFromData();
   const [role, setRole] = useState<ConfigurableRole>(availableRoles[0]);
   const configured = data.rolePolicies?.[role];
   const [menus, setMenus] = useState<string[]>(
@@ -6623,6 +6737,18 @@ function RoleAccessPage({ data, runCommand, notify }: any) {
         ? values.filter((item) => item !== value)
         : [...values, value],
     );
+  const toggleMenu = (item: RoleMenuOption) => {
+    if (item.ownerOnly) return;
+    const enabling = !menus.includes(item.id);
+    setMenus(
+      enabling
+        ? [...menus, item.id]
+        : menus.filter((menu) => menu !== item.id),
+    );
+    const required = menuPermissionRequirement[item.id];
+    if (enabling && required && !permissions.includes(required))
+      setPermissions([...permissions, required]);
+  };
   const save = async (reset = false) => {
     setSaving(true);
     try {
@@ -6651,7 +6777,9 @@ function RoleAccessPage({ data, runCommand, notify }: any) {
       setSaving(false);
     }
   };
-  const groups = [...new Set(permissionOptions.map((item) => item.group))];
+  const permissionGroups = [
+    ...new Set(permissionOptions.map((item) => item.group)),
+  ];
   return (
     <PageBlock
       title="Peran & Hak Akses"
@@ -6686,18 +6814,35 @@ function RoleAccessPage({ data, runCommand, notify }: any) {
               <span>Pilih halaman yang dapat dibuka oleh peran ini.</span>
             </div>
           </div>
-          <div className="role-check-grid">
-            {roleMenuOptions.map((item) => (
-              <label key={item.id}>
-                <input
-                  type="checkbox"
-                  checked={menus.includes(item.id)}
-                  onChange={() => toggle(menus, item.id, setMenus)}
-                />
-                <span>{item.label}</span>
-              </label>
-            ))}
-          </div>
+          {roleMenuGroups.map((group) => (
+            <div className="permission-group role-menu-group" key={group}>
+              <b>{group}</b>
+              <div className="role-check-grid">
+                {roleMenuOptions
+                  .filter((item) => item.group === group)
+                  .map((item) => (
+                    <label
+                      key={item.id}
+                      className={item.ownerOnly ? "owner-only" : ""}
+                      title={
+                        item.ownerOnly
+                          ? "Pengelolaan hak akses hanya tersedia untuk Owner."
+                          : undefined
+                      }
+                    >
+                      <input
+                        type="checkbox"
+                        checked={item.ownerOnly ? false : menus.includes(item.id)}
+                        disabled={item.ownerOnly}
+                        onChange={() => toggleMenu(item)}
+                      />
+                      <span>{item.label}</span>
+                      {item.ownerOnly && <em>Khusus Owner</em>}
+                    </label>
+                  ))}
+              </div>
+            </div>
+          ))}
         </div>
         <div className="role-policy-section">
           <div className="card-head">
@@ -6709,24 +6854,42 @@ function RoleAccessPage({ data, runCommand, notify }: any) {
               </span>
             </div>
           </div>
-          {groups.map((group) => (
+          {permissionGroups.map((group) => (
             <div className="permission-group" key={group}>
               <b>{group}</b>
               <div className="role-check-grid">
                 {permissionOptions
                   .filter((item) => item.group === group)
-                  .map((item) => (
-                    <label key={item.id}>
-                      <input
-                        type="checkbox"
-                        checked={permissions.includes(item.id)}
-                        onChange={() =>
-                          toggle(permissions, item.id, setPermissions)
+                  .map((item) => {
+                    const requiredByMenu = menus.some(
+                      (menu) =>
+                        menuPermissionRequirement[menu as Page] === item.id,
+                    );
+                    return (
+                      <label
+                        key={item.id}
+                        className={requiredByMenu ? "permission-required" : ""}
+                        title={
+                          requiredByMenu
+                            ? "Izin ini wajib karena menu terkait sedang ditampilkan."
+                            : undefined
                         }
-                      />
-                      <span>{item.label}</span>
-                    </label>
-                  ))}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={
+                            requiredByMenu || permissions.includes(item.id)
+                          }
+                          disabled={requiredByMenu}
+                          onChange={() =>
+                            toggle(permissions, item.id, setPermissions)
+                          }
+                        />
+                        <span>{item.label}</span>
+                        {requiredByMenu && <em>Wajib untuk menu</em>}
+                      </label>
+                    );
+                  })}
               </div>
             </div>
           ))}
@@ -8007,6 +8170,10 @@ function LoansPage({
   const activeEmployees = (data.employees || []).filter(
     (employee: any) =>
       employee.active &&
+      data.users.some(
+        (account: any) =>
+          account.id === employee.userId && account.active,
+      ) &&
       (!employee.joinDate || employee.joinDate.slice(0, 7) <= period),
   );
   const totalPayroll = activeEmployees.reduce(
@@ -9611,6 +9778,7 @@ function TransferReceiveScanner({
                   ? error.message
                   : "Bukti penerimaan tidak dapat diunggah.",
               );
+            } finally {
               setSaving(false);
             }
           }}
@@ -11798,6 +11966,277 @@ function Reports({
     </PageBlock>
   );
 }
+function DebtReceivablePage({
+  data,
+  runCommand,
+  notify,
+  uploadImage,
+  canManage,
+}: {
+  data: AppData;
+  runCommand: (path: string, payload: object) => Promise<AppData>;
+  notify: (message: string, tone?: ToastTone) => void;
+  uploadImage: (file: File, options?: { silent?: boolean }) => Promise<string>;
+  canManage: boolean;
+}) {
+  const activeLocations = data.locations.filter((location) => location.active);
+  const [type, setType] = useState<"debt" | "receivable">("debt");
+  const [transactionDate, setTransactionDate] = useState(jakartaDateKey());
+  const [dueDate, setDueDate] = useState("");
+  const [locationId, setLocationId] = useState(activeLocations[0]?.id || "");
+  const [partyName, setPartyName] = useState("");
+  const [amount, setAmount] = useState(0);
+  const [note, setNote] = useState("");
+  const [proofFile, setProofFile] = useState<File | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [typeFilter, setTypeFilter] = useState("");
+  const [paymentEntry, setPaymentEntry] = useState<DebtEntry | null>(null);
+  const rows = [...(data.debtEntries || [])]
+    .filter((entry) =>
+      (!statusFilter || entry.status === statusFilter) &&
+      (!typeFilter || entry.type === typeFilter) &&
+      (!search.trim() || `${entry.partyName} ${entry.note || ""}`.toLowerCase().includes(search.trim().toLowerCase())),
+    )
+    .sort((a, b) => `${b.transactionDate}|${b.createdAt}`.localeCompare(`${a.transactionDate}|${a.createdAt}`));
+  const outstandingDebt = (data.debtEntries || []).reduce(
+    (sum, entry) => sum + (entry.type === "debt" && entry.status === "unpaid" ? entry.amount : 0), 0,
+  );
+  const outstandingReceivable = (data.debtEntries || []).reduce(
+    (sum, entry) => sum + (entry.type === "receivable" && entry.status === "unpaid" ? entry.amount : 0), 0,
+  );
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!partyName.trim() || !amount || !locationId) return;
+    setSaving(true);
+    try {
+      const proofUrl = proofFile ? await uploadImage(proofFile, { silent: true }) : undefined;
+      await runCommand("/api/commands/debts", {
+        entry: { type, transactionDate, dueDate, locationId, partyName, amount, note, proofUrl },
+      });
+      setPartyName(""); setAmount(0); setNote(""); setDueDate(""); setProofFile(null);
+      notify(`${type === "debt" ? "Hutang" : "Piutang"} berhasil dicatat.`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Catatan gagal disimpan.", "error");
+    } finally { setSaving(false); }
+  };
+  return (
+    <PageBlock title="Hutang & Piutang" desc="Catat kewajiban dan tagihan usaha, simpan foto bukti, lalu pantau pelunasannya.">
+      <div className="debt-page">
+        <div className="stats-grid compact">
+          <Stat label="Hutang belum dibayar" value={money(outstandingDebt)} tone="red" />
+          <Stat label="Piutang belum diterima" value={money(outstandingReceivable)} tone="navy" />
+          <Stat label="Selisih piutang - hutang" value={money(outstandingReceivable - outstandingDebt)} />
+        </div>
+        {canManage && (
+          <form className="card cashbook-entry-card debt-entry-card" onSubmit={submit}>
+            <div className="cashbook-card-heading">
+              <div>
+                <span className="eyebrow">CATAT HUTANG / PIUTANG</span>
+                <h3>Tambah catatan keuangan</h3>
+                <p>
+                  Pilih jenis catatan, lengkapi pihak dan nominal, lalu tambahkan
+                  bukti agar pencatatan mudah ditelusuri.
+                </p>
+              </div>
+              <div className="cashbook-type-picker debt-type-picker" aria-label="Jenis catatan keuangan">
+                <button
+                  type="button"
+                  className={type === "debt" ? "active expense" : ""}
+                  aria-pressed={type === "debt"}
+                  onClick={() => setType("debt")}
+                >
+                  Hutang
+                </button>
+                <button
+                  type="button"
+                  className={type === "receivable" ? "active income" : ""}
+                  aria-pressed={type === "receivable"}
+                  onClick={() => setType("receivable")}
+                >
+                  Piutang
+                </button>
+              </div>
+            </div>
+            <div className="cashbook-form-grid debt-form-grid">
+              <label>
+                <span>Tanggal pencatatan</span>
+                <input type="date" required value={transactionDate} onChange={(e) => setTransactionDate(e.target.value)} />
+              </label>
+              <label>
+                <span>Jatuh tempo (opsional)</span>
+                <input type="date" value={dueDate} min={transactionDate} onChange={(e) => setDueDate(e.target.value)} />
+              </label>
+              <label>
+                <span>Lokasi</span>
+                <select required value={locationId} onChange={(e) => setLocationId(e.target.value)}>
+                  {!activeLocations.length && <option value="">Belum ada lokasi aktif</option>}
+                  {activeLocations.map((location) => <option key={location.id} value={location.id}>{location.name}</option>)}
+                </select>
+              </label>
+              <label className="debt-party-field">
+                <span>Nama pihak</span>
+                <input autoComplete="organization" required maxLength={120} value={partyName} placeholder="Supplier, pelanggan, atau nama pihak" onChange={(e) => setPartyName(e.target.value)} />
+              </label>
+              <label className="debt-amount-field">
+                <span>Nominal</span>
+                <div className="cashbook-money-input">
+                  <b>Rp</b>
+                  <RupiahInput label="Nominal hutang atau piutang" value={amount} onValue={setAmount} />
+                </div>
+              </label>
+              <label className="cashbook-note-field debt-note-field">
+                <span>Keterangan</span>
+                <input maxLength={500} value={note} placeholder="Contoh: Invoice INV-001 atau keterangan lainnya" onChange={(e) => setNote(e.target.value)} />
+              </label>
+              <div className="field debt-proof-field">
+                <span>Foto bukti (opsional)</span>
+                <EvidencePhotoPicker file={proofFile} setFile={setProofFile} subject="hutang atau piutang" />
+                <small className="cashbook-field-hint">Foto invoice, nota, atau dokumen pendukung. Maksimal 5 MB.</small>
+              </div>
+            </div>
+            <footer className="cashbook-form-footer"><small>Status awal otomatis Belum dibayar.</small><button className="primary" disabled={saving || !partyName.trim() || !amount || !locationId}><Check />{saving ? "Menyimpan…" : "Simpan catatan"}</button></footer>
+          </form>
+        )}
+        <section className="card cashbook-list-card">
+          <div className="cashbook-list-heading"><div><h3>Daftar hutang & piutang</h3><p>Filter catatan dan perbarui status pelunasan.</p></div></div>
+          <div className="cashbook-filter-main">
+            <div className="cashbook-filter-field cashbook-filter-search"><span>Pencarian</span><ListSearch value={search} setValue={setSearch} placeholder="Cari nama pihak atau keterangan" /></div>
+            <label className="cashbook-filter-field"><span>Jenis</span><select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}><option value="">Semua jenis</option><option value="debt">Hutang</option><option value="receivable">Piutang</option></select></label>
+            <label className="cashbook-filter-field"><span>Status</span><select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}><option value="">Semua status</option><option value="unpaid">Belum dibayar</option><option value="paid">Sudah dibayar</option></select></label>
+          </div>
+          <div className="table-wrap debt-table">
+            <table>
+              <thead><tr><th>Tanggal</th><th>Jenis</th><th>Pihak</th><th>Jatuh tempo</th><th>Bukti</th><th>Nominal</th><th>Status</th><th>Aksi</th></tr></thead>
+              <tbody>
+                {rows.length ? rows.map((entry) => (
+                  <tr key={entry.id}>
+                    <td>{new Date(`${entry.transactionDate}T12:00:00`).toLocaleDateString("id-ID")}</td>
+                    <td><span className={`debt-type ${entry.type}`}>{entry.type === "debt" ? "Hutang" : "Piutang"}</span></td>
+                    <td><b>{entry.partyName}</b><small>{entry.note || ""}</small></td>
+                    <td>{entry.dueDate ? new Date(`${entry.dueDate}T12:00:00`).toLocaleDateString("id-ID") : "—"}</td>
+                    <td>
+                      {entry.proofUrl || entry.paidProofUrl ? (
+                        <div className="debt-proof-links">
+                          {entry.proofUrl && <a href={entry.proofUrl} target="_blank" rel="noreferrer">Bukti awal</a>}
+                          {entry.paidProofUrl && <a href={entry.paidProofUrl} target="_blank" rel="noreferrer">Bukti pembayaran</a>}
+                        </div>
+                      ) : "—"}
+                    </td>
+                    <td><b>{money(entry.amount)}</b></td>
+                    <td>
+                      <span className={`debt-status ${entry.status}`}>
+                        {entry.status === "paid"
+                          ? entry.type === "debt" ? "Sudah dibayar" : "Sudah diterima"
+                          : entry.type === "debt" ? "Belum dibayar" : "Belum diterima"}
+                      </span>
+                      {entry.paidAt && <small>{jakartaDateTime(entry.paidAt)}</small>}
+                    </td>
+                    <td>
+                      {canManage && entry.status === "unpaid" ? (
+                        <button type="button" className="table-action" onClick={() => setPaymentEntry(entry)}>
+                          <Check size={15}/>{entry.type === "debt" ? "Sudah bayar" : "Sudah diterima"}
+                        </button>
+                      ) : "—"}
+                    </td>
+                  </tr>
+                )) : <Empty text="Belum ada catatan hutang atau piutang" />}
+              </tbody>
+            </table>
+          </div>
+        </section>
+        {paymentEntry && (
+          <DebtPaymentModal
+            entry={paymentEntry}
+            close={() => setPaymentEntry(null)}
+            uploadImage={uploadImage}
+            save={async (paidProofUrl?: string) => {
+              await runCommand("/api/commands/debts", {
+                action: "mark_paid",
+                id: paymentEntry.id,
+                paidProofUrl,
+              });
+              setPaymentEntry(null);
+              notify(
+                paymentEntry.type === "debt"
+                  ? "Pembayaran hutang berhasil dicatat."
+                  : "Penerimaan piutang berhasil dicatat.",
+              );
+            }}
+          />
+        )}
+      </div>
+    </PageBlock>
+  );
+}
+
+function DebtPaymentModal({
+  entry,
+  close,
+  save,
+  uploadImage,
+}: {
+  entry: DebtEntry;
+  close: () => void;
+  save: (paidProofUrl?: string) => Promise<void>;
+  uploadImage: (file: File, options?: { silent?: boolean }) => Promise<string>;
+}) {
+  const [file, setFile] = useState<File | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const isDebt = entry.type === "debt";
+  return (
+    <Modal
+      title={isDebt ? "Catat pembayaran hutang" : "Catat penerimaan piutang"}
+      desc={`Konfirmasi ${isDebt ? "pembayaran kepada" : "penerimaan dari"} ${entry.partyName} dan unggah foto bukti bila tersedia.`}
+      close={close}
+    >
+      <form
+        onSubmit={async (event) => {
+          event.preventDefault();
+          if (loading) return;
+          setLoading(true);
+          setError("");
+          try {
+            const paidProofUrl = file
+              ? await uploadImage(file, { silent: true })
+              : undefined;
+            await save(paidProofUrl);
+          } catch (err) {
+            setError(
+              err instanceof Error
+                ? err.message
+                : "Pembayaran tidak dapat disimpan.",
+            );
+          } finally {
+            setLoading(false);
+          }
+        }}
+      >
+        <div className="detail-list payroll-payment-summary debt-payment-summary">
+          <p><span>Jenis</span><b>{isDebt ? "Pembayaran hutang" : "Penerimaan piutang"}</b></p>
+          <p><span>Nama pihak</span><b>{entry.partyName}</b></p>
+          <p><span>Nominal</span><b>{money(entry.amount)}</b></p>
+        </div>
+        <div className="field debt-payment-proof-field">
+          <span>Bukti pembayaran (opsional)</span>
+          <EvidencePhotoPicker file={file} setFile={setFile} subject="pembayaran" />
+        </div>
+        <small className="cashbook-field-hint debt-payment-hint">
+          Foto bukti transfer, kuitansi, atau dokumen pembayaran. Maksimal 5 MB.
+        </small>
+        {error && <p className="login-error">{error}</p>}
+        <ModalActions
+          close={close}
+          disabled={loading}
+          label={loading ? "Menyimpan…" : isDebt ? "Simpan pembayaran" : "Simpan penerimaan"}
+        />
+      </form>
+    </Modal>
+  );
+}
+
 function CashbookPage({
   data,
   user,
@@ -12305,22 +12744,47 @@ const Empty = ({
   );
 };
 
-const Modal = ({ title, desc, close, children, className = "" }: any) => (
-  <div className="modal-backdrop">
-    <div className={`modal ${className}`}>
-      <header>
-        <div>
-          <h2>{title}</h2>
-          <p>{desc}</p>
-        </div>
-        <button className="icon-btn" aria-label="Tutup dialog" onClick={close}>
-          <X />
-        </button>
-      </header>
-      {children}
+function Modal({ title, desc, close, children, className = "" }: any) {
+  const titleId = useId();
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [close]);
+  return (
+    <div className="modal-backdrop">
+      <div
+        className={`modal ${className}`}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+      >
+        <header>
+          <div>
+            <h2 id={titleId}>{title}</h2>
+            <p>{desc}</p>
+          </div>
+          <button
+            type="button"
+            className="icon-btn"
+            aria-label="Tutup dialog"
+            onClick={close}
+          >
+            <X />
+          </button>
+        </header>
+        {children}
+      </div>
     </div>
-  </div>
-);
+  );
+}
 const AppSelect = ({
   value,
   onChange,
@@ -12590,22 +13054,90 @@ function ProductModal({
   const [bulkPrice, setBulkPrice] = useState("");
   const [bulkReseller, setBulkReseller] = useState("");
   const [bulkMinStock, setBulkMinStock] = useState("");
+  const [bulkInitialStock, setBulkInitialStock] = useState("");
+  const [bulkProductScope, setBulkProductScope] = useState<"all" | "visible">(
+    "all",
+  );
+  const [variantSearch, setVariantSearch] = useState("");
+  const [variantPackageFilter, setVariantPackageFilter] = useState("all");
+  const [variantFlavorFilter, setVariantFlavorFilter] = useState("all");
+  const [variantLevelFilter, setVariantLevelFilter] = useState("all");
+
+  const variantOptionValues = (field: string) =>
+    Array.from(
+      new Set(
+        variants
+          .map((variant) => String(variant[field] || "").trim())
+          .filter(Boolean),
+      ),
+    ).sort((a, b) =>
+      String(a).localeCompare(String(b), "id", {
+        numeric: true,
+        sensitivity: "base",
+      }),
+    );
+  const variantPackageOptions = variantOptionValues("packageWeight");
+  const variantFlavorOptions = variantOptionValues("flavor");
+  const variantLevelOptions = variantOptionValues("spiceLevel");
+  const normalizedVariantSearch = variantSearch
+    .trim()
+    .toLocaleLowerCase("id-ID");
+  const visibleVariantEntries = variants
+    .map((variant, index) => ({ variant, index }))
+    .filter(({ variant }) => {
+      if (
+        variantPackageFilter !== "all" &&
+        variant.packageWeight !== variantPackageFilter
+      )
+        return false;
+      if (
+        variantFlavorFilter !== "all" &&
+        variant.flavor !== variantFlavorFilter
+      )
+        return false;
+      if (
+        variantLevelFilter !== "all" &&
+        variant.spiceLevel !== variantLevelFilter
+      )
+        return false;
+      if (!normalizedVariantSearch) return true;
+      return `${variant.name || ""} ${variant.sku || ""} ${
+        variant.barcode || ""
+      } ${variant.packageWeight || ""} ${variant.flavor || ""} ${
+        variant.spiceLevel || ""
+      }`
+        .toLocaleLowerCase("id-ID")
+        .includes(normalizedVariantSearch);
+    });
 
   const applyBulk = () => {
+    const visibleIndexes = new Set(
+      visibleVariantEntries.map((entry) => entry.index),
+    );
     setVariants(
-      variants.map((v) => ({
-        ...v,
-        cost: bulkCost !== "" ? Number(bulkCost) : v.cost,
-        price: bulkPrice !== "" ? Number(bulkPrice) : v.price,
-        resellerPrice:
-          bulkReseller !== "" ? Number(bulkReseller) : v.resellerPrice,
-        minStock: bulkMinStock !== "" ? Number(bulkMinStock) : v.minStock,
-      })),
+      variants.map((v, index) =>
+        editing && bulkProductScope === "visible" && !visibleIndexes.has(index)
+          ? v
+          : {
+              ...v,
+              cost: bulkCost !== "" ? Number(bulkCost) : v.cost,
+              price: bulkPrice !== "" ? Number(bulkPrice) : v.price,
+              resellerPrice:
+                bulkReseller !== "" ? Number(bulkReseller) : v.resellerPrice,
+              minStock:
+                bulkMinStock !== "" ? Number(bulkMinStock) : v.minStock,
+              initialStock:
+                !editing && includeInitialStock && bulkInitialStock !== ""
+                  ? Number(bulkInitialStock)
+                  : v.initialStock,
+            },
+      ),
     );
     setBulkCost("");
     setBulkPrice("");
     setBulkReseller("");
     setBulkMinStock("");
+    setBulkInitialStock("");
   };
 
   const updateVariant = (index: number, field: string, value: any) => {
@@ -12705,6 +13237,7 @@ function ProductModal({
             setError(
               err instanceof Error ? err.message : "Gagal menyimpan produk",
             );
+          } finally {
             setLoading(false);
           }
         }}
@@ -12900,7 +13433,7 @@ function ProductModal({
             }}
           >
             <h3 style={{ margin: 0, fontSize: "14px", color: "#0f172a" }}>
-              Isi Cepat (Terapkan ke Semua Varian)
+              Bulk Update Varian
             </h3>
             <button
               type="button"
@@ -12919,6 +13452,21 @@ function ProductModal({
               Terapkan
             </button>
           </div>
+          {editing && (
+            <Field label="Terapkan perubahan ke">
+              <select
+                value={bulkProductScope}
+                onChange={(event) =>
+                  setBulkProductScope(event.target.value as "all" | "visible")
+                }
+              >
+                <option value="all">Semua {variants.length} varian</option>
+                <option value="visible">
+                  {visibleVariantEntries.length} hasil pencarian / filter
+                </option>
+              </select>
+            </Field>
+          )}
           <div className="form-grid">
             <Field label="Harga Modal">
               <OptionalRupiahInput
@@ -12955,6 +13503,20 @@ function ProductModal({
                 style={{ background: "white" }}
               />
             </Field>
+            {!editing && includeInitialStock && (
+              <Field label={`Stok Awal (${unit})`}>
+                <input
+                  type="number"
+                  min="0"
+                  value={bulkInitialStock}
+                  onChange={(event) =>
+                    setBulkInitialStock(event.target.value)
+                  }
+                  placeholder="Jumlah untuk semua varian"
+                  style={{ background: "white" }}
+                />
+              </Field>
+            )}
           </div>
         </div>
 
@@ -13034,7 +13596,53 @@ function ProductModal({
         )}
 
         <h3 style={{ margin: "0 0 16px", fontSize: "16px" }}>Daftar Varian</h3>
-        {variants.map((v, index) => (
+        {editing && (
+          <div className="product-variant-editor-tools">
+            <ListSearch
+              value={variantSearch}
+              setValue={setVariantSearch}
+              placeholder="Cari nama varian, SKU, barcode, rasa, level, atau kemasan"
+            />
+            <div className="product-variant-editor-filters">
+              <select
+                aria-label="Filter berat atau kemasan varian"
+                value={variantPackageFilter}
+                onChange={(event) =>
+                  setVariantPackageFilter(event.target.value)
+                }
+              >
+                <option value="all">Semua berat / kemasan</option>
+                {variantPackageOptions.map((value) => (
+                  <option key={value} value={value}>{value}</option>
+                ))}
+              </select>
+              <select
+                aria-label="Filter rasa varian"
+                value={variantFlavorFilter}
+                onChange={(event) => setVariantFlavorFilter(event.target.value)}
+              >
+                <option value="all">Semua rasa</option>
+                {variantFlavorOptions.map((value) => (
+                  <option key={value} value={value}>{value}</option>
+                ))}
+              </select>
+              <select
+                aria-label="Filter level varian"
+                value={variantLevelFilter}
+                onChange={(event) => setVariantLevelFilter(event.target.value)}
+              >
+                <option value="all">Semua level</option>
+                {variantLevelOptions.map((value) => (
+                  <option key={value} value={value}>{value}</option>
+                ))}
+              </select>
+            </div>
+            <small>
+              {visibleVariantEntries.length} dari {variants.length} varian ditampilkan
+            </small>
+          </div>
+        )}
+        {visibleVariantEntries.map(({ variant: v, index }) => (
           <div
             key={v.id}
             style={{
@@ -13238,6 +13846,25 @@ function ProductModal({
           </div>
         ))}
 
+        {editing && visibleVariantEntries.length === 0 && (
+          <div className="product-variant-editor-empty">
+            <b>Varian tidak ditemukan</b>
+            <span>Coba ubah kata pencarian atau filter yang dipilih.</span>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => {
+                setVariantSearch("");
+                setVariantPackageFilter("all");
+                setVariantFlavorFilter("all");
+                setVariantLevelFilter("all");
+              }}
+            >
+              Reset pencarian & filter
+            </button>
+          </div>
+        )}
+
         <button
           type="button"
           className="secondary"
@@ -13359,6 +13986,8 @@ function LocationModal({ close, save, location, onDelete }: any) {
           try {
             await save(name, type, address, active, isCentralWarehouse);
           } catch {
+            // Callback penyimpanan menampilkan pesan validasi.
+          } finally {
             setIsSaving(false);
           }
         }}
@@ -13467,6 +14096,7 @@ function SupplierModal({ supplier, close, save }: any) {
       setError(
         err instanceof Error ? err.message : "Supplier tidak dapat disimpan.",
       );
+    } finally {
       setLoading(false);
     }
   };
@@ -13604,6 +14234,7 @@ function EmployeeModal({
       setError(
         err instanceof Error ? err.message : "Karyawan tidak dapat disimpan.",
       );
+    } finally {
       setLoading(false);
     }
   };
@@ -13786,6 +14417,7 @@ function LoanModal({ data, close, save }: any) {
       setError(
         err instanceof Error ? err.message : "Kasbon tidak dapat disimpan.",
       );
+    } finally {
       setLoading(false);
     }
   };
@@ -13924,6 +14556,7 @@ function PayrollPaymentModal({
                 ? err.message
                 : "Bukti transfer tidak dapat diunggah.",
             );
+          } finally {
             setLoading(false);
           }
         }}
@@ -13983,7 +14616,7 @@ function PayrollPaymentModal({
   );
 }
 function UserModal({ data, close, save, user, uploadImage, onDelete }: any) {
-  const availableRoles = configuredRolesFromData(data);
+  const availableRoles = configuredRolesFromData();
   const editing = Boolean(user),
     isOwner = user?.role === "owner",
     [name, setName] = useState(user?.name || ""),
@@ -14068,6 +14701,7 @@ function UserModal({ data, close, save, user, uploadImage, onDelete }: any) {
             setError(
               err instanceof Error ? err.message : "Gagal menyimpan pengguna",
             );
+          } finally {
             setLoading(false);
           }
         }}
@@ -14458,7 +15092,9 @@ function ReceiptModal({
     [variantSearch, setVariantSearch] = useState(""),
     [variantPackageFilter, setVariantPackageFilter] = useState("all"),
     [variantFlavorFilter, setVariantFlavorFilter] = useState("all"),
-    [variantLevelFilter, setVariantLevelFilter] = useState("all");
+    [variantLevelFilter, setVariantLevelFilter] = useState("all"),
+    [bulkReceiptQuantity, setBulkReceiptQuantity] = useState(""),
+    [bulkReceiptCost, setBulkReceiptCost] = useState("");
   const productPickerRef = useDismissiblePopover(
     productPickerOpen,
     setProductPickerOpen,
@@ -14557,6 +15193,27 @@ function ReceiptModal({
       return next;
     });
   };
+  const applyReceiptBulk = () => {
+    if (bulkReceiptQuantity === "" && bulkReceiptCost === "") return;
+    setSelectedItems((current) =>
+      Object.fromEntries(
+        Object.entries(current).map(([variantId, item]) => [
+          variantId,
+          {
+            ...item,
+            quantity:
+              bulkReceiptQuantity !== ""
+                ? Number(bulkReceiptQuantity)
+                : item.quantity,
+            unitCost:
+              bulkReceiptCost !== ""
+                ? Number(bulkReceiptCost)
+                : item.unitCost,
+          },
+        ]),
+      ),
+    );
+  };
   const matchingProducts = products.filter((product: any) =>
     product.name.toLowerCase().includes(productSearch.toLowerCase()),
   );
@@ -14651,6 +15308,7 @@ function ReceiptModal({
                 ? error.message
                 : "Bukti penerimaan tidak dapat diunggah.",
             );
+          } finally {
             setIsSaving(false);
           }
         }}
@@ -14995,6 +15653,44 @@ function ReceiptModal({
                 <h4 style={{ margin: "0 0 12px", fontSize: 14 }}>
                   Varian Terpilih:
                 </h4>
+                <div className="variant-bulk-update">
+                  <div>
+                    <b>Bulk update varian terpilih</b>
+                    <small>
+                      Kosongkan nilai yang tidak ingin diubah.
+                    </small>
+                  </div>
+                  <label>
+                    <span>Jumlah</span>
+                    <input
+                      type="number"
+                      min="1"
+                      value={bulkReceiptQuantity}
+                      onChange={(event) =>
+                        setBulkReceiptQuantity(event.target.value)
+                      }
+                      placeholder="Contoh: 10"
+                    />
+                  </label>
+                  <label>
+                    <span>Harga modal</span>
+                    <OptionalRupiahInput
+                      label="Harga modal bulk stok masuk"
+                      value={bulkReceiptCost}
+                      onValue={setBulkReceiptCost}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={
+                      bulkReceiptQuantity === "" && bulkReceiptCost === ""
+                    }
+                    onClick={applyReceiptBulk}
+                  >
+                    Terapkan ke {Object.keys(selectedItems).length} varian
+                  </button>
+                </div>
                 {Object.entries(selectedItems).map(([vid, item]) => {
                   const v = variants.find((x: any) => x.id === vid);
                   if (!v) return null;
@@ -15367,6 +16063,18 @@ function ReturnModal({
   const visibleVariants = filteredVariants.filter(
     (variant: any) => variant.productName === selectedProductName,
   );
+  const returnInvalid =
+    !locationId ||
+    reason.trim().length < 3 ||
+    Object.keys(selectedItems).length === 0 ||
+    Object.entries(selectedItems).some(
+      ([variantId, item]) =>
+        !Number.isInteger(Number(item.quantity)) ||
+        Number(item.quantity) < 1 ||
+        (type === "supplier" &&
+          Number(item.quantity) >
+            getBalance(data.balances, locationId, variantId)),
+    );
 
   return (
     <Modal
@@ -15378,11 +16086,13 @@ function ReturnModal({
         onSubmit={async (e) => {
           e.preventDefault();
           if (isSaving) return;
-          setIsSaving(true);
-          if (Object.keys(selectedItems).length === 0) {
-            setIsSaving(false);
-            return alert("Pilih minimal satu produk");
+          if (returnInvalid) {
+            setUploadError(
+              "Pilih varian, isi jumlah yang valid, dan tulis alasan minimal 3 karakter.",
+            );
+            return;
           }
+          setIsSaving(true);
           setUploadError("");
           try {
             const proofUrl = proofFile
@@ -15404,6 +16114,7 @@ function ReturnModal({
                 ? error.message
                 : "Bukti retur tidak dapat diunggah.",
             );
+          } finally {
             setIsSaving(false);
           }
         }}
@@ -15591,7 +16302,11 @@ function ReturnModal({
           Foto kondisi barang, nota, atau surat jalan. Maksimal 5 MB.
         </small>
         {uploadError && <p className="login-error">{uploadError}</p>}
-        <ModalActions close={close} disabled={isSaving} />
+        <ModalActions
+          close={close}
+          disabled={isSaving || returnInvalid}
+          label={isSaving ? "Menyimpan..." : "Simpan"}
+        />
       </form>
     </Modal>
   );
@@ -15622,7 +16337,7 @@ function BusinessModal({ data, close, save, uploadImage }: any) {
           setError("");
           try {
             const logoUrl = file ? await uploadImage(file) : current.logoUrl;
-            save({
+            await save({
               name,
               ownerName,
               phone,
@@ -15635,6 +16350,7 @@ function BusinessModal({ data, close, save, uploadImage }: any) {
             setError(
               err instanceof Error ? err.message : "Gagal menyimpan profil",
             );
+          } finally {
             setLoading(false);
           }
         }}
@@ -15759,6 +16475,7 @@ function TransferModal({
     filteredVariants = variants.filter((v: any) => {
       return getBalance(data.balances, from, v.id) > 0 || selectedItems[v.id];
     });
+  const [bulkTransferQuantity, setBulkTransferQuantity] = useState("");
   const transferProducts = Object.values(
     variants.reduce((result: Record<string, any>, variant: any) => {
       if (!result[variant.productName])
@@ -15868,6 +16585,22 @@ function TransferModal({
       return next;
     });
   };
+  const applyTransferBulk = (useMaximum = false) => {
+    if (!useMaximum && bulkTransferQuantity === "") return;
+    setSelectedItems((current) =>
+      Object.fromEntries(
+        Object.entries(current).map(([variantId, item]) => [
+          variantId,
+          {
+            ...item,
+            quantity: useMaximum
+              ? getBalance(data.balances, from, variantId)
+              : Number(bulkTransferQuantity),
+          },
+        ]),
+      ),
+    );
+  };
   const invalidTransferItems = Object.entries(selectedItems).filter(
     ([variantId, item]) =>
       item.quantity < 1 ||
@@ -15914,6 +16647,7 @@ function TransferModal({
                 ? error.message
                 : "Bukti pengiriman tidak dapat diunggah.",
             );
+          } finally {
             setIsSaving(false);
           }
         }}
@@ -16134,6 +16868,41 @@ function TransferModal({
             <h4 style={{ margin: "0 0 12px", fontSize: 14 }}>
               Varian Terpilih:
             </h4>
+            <div className="variant-bulk-update transfer-variant-bulk-update">
+              <div>
+                <b>Bulk jumlah transfer</b>
+                <small>
+                  Terapkan jumlah yang sama atau seluruh stok tersedia.
+                </small>
+              </div>
+              <label>
+                <span>Jumlah per varian</span>
+                <input
+                  type="number"
+                  min="1"
+                  value={bulkTransferQuantity}
+                  onChange={(event) =>
+                    setBulkTransferQuantity(event.target.value)
+                  }
+                  placeholder="Contoh: 5"
+                />
+              </label>
+              <button
+                type="button"
+                className="secondary"
+                disabled={bulkTransferQuantity === ""}
+                onClick={() => applyTransferBulk(false)}
+              >
+                Terapkan ke {Object.keys(selectedItems).length} varian
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => applyTransferBulk(true)}
+              >
+                Gunakan stok maksimum
+              </button>
+            </div>
             {Object.entries(selectedItems).map(([vid, item]) => {
               const v = variants.find((x: any) => x.id === vid);
               if (!v) return null;
@@ -17787,22 +18556,27 @@ function OpnameModal({ data, item, close, save, fixedLocation }: any) {
       close={close}
     >
       <form
-        onSubmit={(e) => {
+        onSubmit={async (e) => {
           e.preventDefault();
           if (isSaving) return;
-          setIsSaving(true);
           if (Object.keys(selectedItems).length === 0 || invalidItems) {
-            setIsSaving(false);
             return;
           }
-          save(
-            loc,
-            Object.entries(selectedItems).map(([vid, val]) => ({
-              variantId: vid,
-              actualQty: Number(val.actualQty),
-              reason: val.reason,
-            })),
-          );
+          setIsSaving(true);
+          try {
+            await save(
+              loc,
+              Object.entries(selectedItems).map(([vid, val]) => ({
+                variantId: vid,
+                actualQty: Number(val.actualQty),
+                reason: val.reason,
+              })),
+            );
+          } catch {
+            // Callback halaman sudah menampilkan pesan error.
+          } finally {
+            setIsSaving(false);
+          }
         }}
       >
         <Field label="Lokasi opname">
@@ -18048,11 +18822,15 @@ function CancelModal({ close, save }: any) {
       close={close}
     >
       <form
-        onSubmit={(e) => {
+        onSubmit={async (e) => {
           e.preventDefault();
           if (isSaving) return;
           setIsSaving(true);
-          save(reason);
+          try {
+            await save(reason);
+          } finally {
+            setIsSaving(false);
+          }
         }}
       >
         <Field label="Alasan pembatalan / koreksi">
@@ -18612,9 +19390,35 @@ function TransferDetail({
     </Modal>
   );
 }
-function ShippingPage({ data, user, runCommand, uploadImage, notify }: any) {
+const newShippingBatchCode = () =>
+  `KRM-${jakartaDateKey().replace(/-/g, "")}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+
+function ShippingPage({
+  data,
+  user,
+  runCommand,
+  uploadImage,
+  notify,
+  canManage,
+}: any) {
+  const shipments = data.shipments || [],
+    handovers = data.shipmentHandovers || [];
+  const draftBatches = handovers
+    .filter(
+      (batch: any) =>
+        batch.status === "draft" &&
+        shipments.some(
+          (shipment: any) =>
+            shipment.status === "handover_scanned" &&
+            shipment.handoverBatchCode === batch.batchCode,
+        ),
+    )
+    .sort(
+      (a: any, b: any) =>
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    );
   const [tab, setTab] = useState<"packing" | "ready" | "handover" | "history">(
-    "packing",
+    canManage ? "packing" : "ready",
   );
   const locations = data.locations.filter(
     (location: any) =>
@@ -18636,24 +19440,40 @@ function ShippingPage({ data, user, runCommand, uploadImage, notify }: any) {
     [courierName, setCourierName] = useState(""),
     [vehicleNumber, setVehicleNumber] = useState(""),
     [proofFile, setProofFile] = useState<File | null>(null),
-    [finishing, setFinishing] = useState(false);
+    [finishing, setFinishing] = useState(false),
+    [correction, setCorrection] = useState<null | {
+      kind: "cancel" | "remove";
+      shipment: any;
+    }>(null),
+    [correctionReason, setCorrectionReason] = useState(""),
+    [correcting, setCorrecting] = useState(false);
   const [batchCode, setBatchCode] = useState(
-    () =>
-      `KRM-${jakartaDateKey().replace(/-/g, "")}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`,
+    () => draftBatches[0]?.batchCode || newShippingBatchCode(),
   );
-  const shipments = data.shipments || [],
-    handovers = data.shipmentHandovers || [];
   const scoped = shipments.filter(
     (item: any) => !locationId || item.locationId === locationId,
   );
   const ready = scoped.filter((item: any) => item.status === "ready"),
     allReady = shipments.filter((item: any) => item.status === "ready"),
-    scanned = scoped.filter(
+    scanned = shipments.filter(
       (item: any) =>
         item.status === "handover_scanned" &&
         item.handoverBatchCode === batchCode,
     ),
-    completed = shipments.filter((item: any) => item.status === "handed_over");
+    completed = shipments.filter((item: any) => item.status === "handed_over"),
+    activeBatch = draftBatches.find(
+      (item: any) => item.batchCode === batchCode,
+    ),
+    batchLocked = Boolean(activeBatch && scanned.length);
+  useEffect(() => {
+    if (!canManage && (tab === "packing" || tab === "handover"))
+      setTab("ready");
+  }, [canManage, tab]);
+  useEffect(() => {
+    if (!activeBatch) return;
+    setLocationId(activeBatch.locationId);
+    setHandoverCarrier(activeBatch.carrier);
+  }, [activeBatch]);
   const carriers = [
       "SPX Express",
       "J&T Express",
@@ -18690,7 +19510,53 @@ function ShippingPage({ data, user, runCommand, uploadImage, notify }: any) {
       };
     }
   };
+  const recordReadyMany = async (trackingNumbers: string[]) => {
+    try {
+      await runCommand("/api/commands/shipping/ready/bulk", {
+        trackingNumbers,
+        locationId,
+        marketplace,
+      });
+      return {
+        ok: true,
+        message: `${trackingNumbers.length} resi tercatat dan siap diangkut.`,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        message:
+          error instanceof Error
+            ? error.message
+            : "Daftar resi tidak dapat dicatat.",
+      };
+    }
+  };
+  const confirmCarrierMismatch = (trackingNumbers: string[]) => {
+    const mismatches = trackingNumbers
+      .map((trackingNumber) =>
+        ready.find((item: any) => item.trackingNumber === trackingNumber),
+      )
+      .filter(
+        (item: any) =>
+          item &&
+          item.carrier !== "Belum ditentukan" &&
+          item.carrier !== handoverCarrier,
+      );
+    if (!mismatches.length) return true;
+    const examples = mismatches
+      .slice(0, 3)
+      .map((item: any) => `${item.trackingNumber} (${item.carrier})`)
+      .join(", ");
+    return window.confirm(
+      `${mismatches.length} resi terdeteksi memakai ekspedisi berbeda dari ${handoverCarrier}: ${examples}${mismatches.length > 3 ? ", …" : ""}. Tetap masukkan ke batch ini?`,
+    );
+  };
   const recordHandover = async (trackingNumber: string) => {
+    if (!confirmCarrierMismatch([trackingNumber]))
+      return {
+        ok: false,
+        message: "Resi tidak dimasukkan. Periksa kembali ekspedisi batch.",
+      };
     try {
       await runCommand("/api/commands/shipping/handover/scan", {
         trackingNumber,
@@ -18712,6 +19578,93 @@ function ShippingPage({ data, user, runCommand, uploadImage, notify }: any) {
       };
     }
   };
+  const recordHandoverMany = async (trackingNumbers: string[]) => {
+    if (!confirmCarrierMismatch(trackingNumbers))
+      return {
+        ok: false,
+        message: "Daftar resi tidak dimasukkan. Periksa ekspedisi batch.",
+      };
+    try {
+      await runCommand("/api/commands/shipping/handover/scan/bulk", {
+        trackingNumbers,
+        locationId,
+        carrier: handoverCarrier,
+        batchCode,
+      });
+      return {
+        ok: true,
+        message: `${trackingNumbers.length} resi masuk batch ${batchCode}.`,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        message:
+          error instanceof Error
+            ? error.message
+            : "Daftar resi tidak dapat dimasukkan ke batch.",
+      };
+    }
+  };
+  const chooseBatch = (nextBatchCode: string) => {
+    const selected = draftBatches.find(
+      (item: any) => item.batchCode === nextBatchCode,
+    );
+    setBatchCode(nextBatchCode);
+    if (selected) {
+      setLocationId(selected.locationId);
+      setHandoverCarrier(selected.carrier);
+    }
+  };
+  const createBatch = () => {
+    if (
+      scanned.length &&
+      !window.confirm(
+        `Batch ${batchCode} belum selesai dan berisi ${scanned.length} paket. Batch lama tetap dapat dilanjutkan. Buat batch baru?`,
+      )
+    )
+      return;
+    setBatchCode(newShippingBatchCode());
+    setCourierName("");
+    setVehicleNumber("");
+    setProofFile(null);
+  };
+  const openCorrection = (kind: "cancel" | "remove", shipment: any) => {
+    setCorrection({ kind, shipment });
+    setCorrectionReason("");
+  };
+  const applyCorrection = async () => {
+    if (!correction || correctionReason.trim().length < 3 || correcting) return;
+    setCorrecting(true);
+    try {
+      if (correction.kind === "cancel") {
+        await runCommand(
+          `/api/commands/shipping/packages/${encodeURIComponent(correction.shipment.id)}/cancel`,
+          { reason: correctionReason.trim() },
+        );
+        notify(`Resi ${correction.shipment.trackingNumber} dibatalkan.`);
+      } else {
+        await runCommand("/api/commands/shipping/handover/remove", {
+          trackingNumber: correction.shipment.trackingNumber,
+          batchCode,
+          reason: correctionReason.trim(),
+        });
+        notify(
+          `Resi ${correction.shipment.trackingNumber} dikembalikan ke daftar Siap Diangkut.`,
+        );
+        if (scanned.length === 1) setBatchCode(newShippingBatchCode());
+      }
+      setCorrection(null);
+      setCorrectionReason("");
+    } catch (error) {
+      notify(
+        error instanceof Error
+          ? error.message
+          : "Koreksi pengiriman tidak dapat disimpan.",
+      );
+    } finally {
+      setCorrecting(false);
+    }
+  };
   const finalize = async () => {
     if (!scanned.length || finishing) return;
     setFinishing(true);
@@ -18726,9 +19679,7 @@ function ShippingPage({ data, user, runCommand, uploadImage, notify }: any) {
       notify(
         `${scanned.length} paket berhasil diserahkan ke ${handoverCarrier}.`,
       );
-      setBatchCode(
-        `KRM-${jakartaDateKey().replace(/-/g, "")}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`,
-      );
+      setBatchCode(newShippingBatchCode());
       setCourierName("");
       setVehicleNumber("");
       setProofFile(null);
@@ -18756,14 +19707,15 @@ function ShippingPage({ data, user, runCommand, uploadImage, notify }: any) {
         </article>
         <article>
           <span>Batch aktif</span>
-          <b>
+          <b>{draftBatches.length}</b>
+          <small>
             {
               shipments.filter(
                 (item: any) => item.status === "handover_scanned",
               ).length
-            }
-          </b>
-          <small>resi sudah dipindai</small>
+            }{" "}
+            resi belum diselesaikan
+          </small>
         </article>
         <article>
           <span>Sudah diserahkan</span>
@@ -18771,27 +19723,40 @@ function ShippingPage({ data, user, runCommand, uploadImage, notify }: any) {
           <small>paket selesai</small>
         </article>
       </div>
-      <div className="shipping-tabs" role="tablist">
+      <div
+        className="shipping-tabs"
+        role="tablist"
+        aria-label="Tahapan pengiriman pesanan"
+      >
         {[
           ["packing", "Packing"],
           ["ready", "Siap Diangkut"],
           ["handover", "Serah Terima"],
           ["history", "Riwayat"],
-        ].map(([id, label]) => (
-          <button
-            key={id}
-            className={tab === id ? "active" : ""}
-            onClick={() => setTab(id as any)}
-          >
-            {label}
-          </button>
-        ))}
+        ]
+          .filter(
+            ([id]) =>
+              canManage || (id !== "packing" && id !== "handover"),
+          )
+          .map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              aria-selected={tab === id}
+              className={tab === id ? "active" : ""}
+              onClick={() => setTab(id as any)}
+            >
+              {label}
+            </button>
+          ))}
       </div>
-      {(tab === "packing" || tab === "handover") && (
+      {canManage && (tab === "packing" || tab === "handover") && (
         <div className="shipping-config">
           <Field label="Lokasi">
             <AppSelect
               value={locationId}
+              disabled={tab === "handover" && batchLocked}
               onChange={(event: any) => setLocationId(event.target.value)}
             >
               {locations.map((item: any) => (
@@ -18817,6 +19782,7 @@ function ShippingPage({ data, user, runCommand, uploadImage, notify }: any) {
               <Field label="Ekspedisi batch">
                 <AppSelect
                   value={handoverCarrier}
+                  disabled={batchLocked}
                   onChange={(event: any) =>
                     setHandoverCarrier(event.target.value)
                   }
@@ -18826,14 +19792,47 @@ function ShippingPage({ data, user, runCommand, uploadImage, notify }: any) {
                   ))}
                 </AppSelect>
               </Field>
-              <Field label="Kode batch">
-                <input readOnly className="input-readonly" value={batchCode} />
+              <Field label="Batch serah terima">
+                <AppSelect
+                  value={batchCode}
+                  onChange={(event: any) => chooseBatch(event.target.value)}
+                >
+                  {!activeBatch && (
+                    <option value={batchCode}>Batch baru · {batchCode}</option>
+                  )}
+                  {draftBatches.map((batch: any) => {
+                    const count = shipments.filter(
+                      (shipment: any) =>
+                        shipment.status === "handover_scanned" &&
+                        shipment.handoverBatchCode === batch.batchCode,
+                    ).length;
+                    return (
+                      <option key={batch.id} value={batch.batchCode}>
+                        {batch.batchCode} · {batch.carrier} · {count} paket
+                      </option>
+                    );
+                  })}
+                </AppSelect>
               </Field>
+              <div className="shipping-batch-action">
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={createBatch}
+                >
+                  <Plus size={16} /> Batch baru
+                </button>
+                <small>
+                  {batchLocked
+                    ? "Lokasi dan ekspedisi dikunci karena batch sudah berisi paket."
+                    : "Pilih batch lama untuk melanjutkan setelah pindah menu atau memuat ulang."}
+                </small>
+              </div>
             </>
           )}
         </div>
       )}
-      {tab === "packing" && (
+      {canManage && tab === "packing" && (
         <section className="shipping-workspace">
           <div className="shipping-heading">
             <div>
@@ -18845,12 +19844,17 @@ function ShippingPage({ data, user, runCommand, uploadImage, notify }: any) {
             </div>
             <span>{ready.length} siap</span>
           </div>
-          <ContinuousResiScanner onDetected={recordReady} />
+          <ContinuousResiScanner
+            onDetected={recordReady}
+            onDetectedMany={recordReadyMany}
+          />
           <RecentShipmentList
             items={scoped
               .filter((item: any) => item.status === "ready")
               .slice(0, 8)}
             users={data.users}
+            actionLabel="Batalkan"
+            onAction={(shipment: any) => openCorrection("cancel", shipment)}
           />
         </section>
       )}
@@ -18871,10 +19875,15 @@ function ShippingPage({ data, user, runCommand, uploadImage, notify }: any) {
             items={allReady}
             users={data.users}
             locations={data.locations}
+            onCancel={
+              canManage
+                ? (shipment: any) => openCorrection("cancel", shipment)
+                : undefined
+            }
           />
         </section>
       )}
-      {tab === "handover" && (
+      {canManage && tab === "handover" && (
         <section className="shipping-workspace">
           <div className="shipping-heading">
             <div>
@@ -18886,7 +19895,10 @@ function ShippingPage({ data, user, runCommand, uploadImage, notify }: any) {
             </div>
             <span>{scanned.length} dipindai</span>
           </div>
-          <ContinuousResiScanner onDetected={recordHandover} />
+          <ContinuousResiScanner
+            onDetected={recordHandover}
+            onDetectedMany={recordHandoverMany}
+          />
           <div className="handover-fields">
             <Field label="Nama kurir (opsional)">
               <input
@@ -18914,6 +19926,8 @@ function ShippingPage({ data, user, runCommand, uploadImage, notify }: any) {
             items={scanned}
             users={data.users}
             empty="Belum ada resi pada batch ini."
+            actionLabel="Keluarkan"
+            onAction={(shipment: any) => openCorrection("remove", shipment)}
           />
           <footer className="shipping-finalize">
             <span>
@@ -18958,6 +19972,57 @@ function ShippingPage({ data, user, runCommand, uploadImage, notify }: any) {
           />
         </section>
       )}
+      {correction && (
+        <Modal
+          title={
+            correction.kind === "cancel"
+              ? "Batalkan paket pengiriman"
+              : "Keluarkan resi dari batch"
+          }
+          desc={`Resi ${correction.shipment.trackingNumber}. Perubahan akan dicatat pada jejak audit.`}
+          close={() => {
+            if (!correcting) setCorrection(null);
+          }}
+        >
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              void applyCorrection();
+            }}
+          >
+            <Field label="Alasan koreksi">
+              <textarea
+                autoFocus={shouldAutoFocusTextInput()}
+                value={correctionReason}
+                maxLength={240}
+                onChange={(event) => setCorrectionReason(event.target.value)}
+                placeholder={
+                  correction.kind === "cancel"
+                    ? "Contoh: nomor resi salah ditempel"
+                    : "Contoh: paket masuk ke batch kurir yang salah"
+                }
+              />
+            </Field>
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="secondary"
+                disabled={correcting}
+                onClick={() => setCorrection(null)}
+              >
+                Batal
+              </button>
+              <button
+                type="submit"
+                className="primary"
+                disabled={correcting || correctionReason.trim().length < 3}
+              >
+                {correcting ? "Menyimpan…" : "Simpan koreksi"}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
     </PageBlock>
   );
 }
@@ -18965,6 +20030,8 @@ function RecentShipmentList({
   items,
   users,
   empty = "Belum ada resi tercatat.",
+  actionLabel,
+  onAction,
 }: any) {
   return items.length ? (
     <div className="shipment-list">
@@ -18980,14 +20047,20 @@ function RecentShipmentList({
             </small>
           </div>
           <time>
-            {new Date(item.handedOverAt || item.packedAt).toLocaleString(
-              "id-ID",
-            )}{" "}
-            ·{" "}
+            {jakartaDateTime(item.handedOverAt || item.packedAt)} ·{" "}
             {users.find(
               (user: any) => user.id === (item.handedOverBy || item.packedBy),
             )?.name || "Petugas"}
           </time>
+          {onAction && actionLabel && (
+            <button
+              type="button"
+              className="shipment-correction"
+              onClick={() => onAction(item)}
+            >
+              {actionLabel}
+            </button>
+          )}
         </article>
       ))}
     </div>
@@ -19000,10 +20073,23 @@ function RecentShipmentList({
 }
 
 function ShipmentBatchHistory({ handovers, shipments, locations, users }: any) {
-  const [query, setQuery] = useState("");
-  const [page, setPage] = useState(1);
+  const [query, setQuery] = useState(""),
+    [locationFilter, setLocationFilter] = useState("all"),
+    [carrierFilter, setCarrierFilter] = useState("all"),
+    [dateFilter, setDateFilter] = useState(""),
+    [page, setPage] = useState(1);
   const ITEMS_PER_PAGE = 10;
-  useEffect(() => setPage(1), [query]);
+  const completedCarriers = Array.from(
+    new Set(
+      handovers
+        .filter((item: any) => item.status === "completed")
+        .map((item: any) => item.carrier),
+    ),
+  ).sort() as string[];
+  useEffect(
+    () => setPage(1),
+    [query, locationFilter, carrierFilter, dateFilter],
+  );
   const userName = (id?: string) =>
     users.find((item: any) => item.id === id)?.name || "Petugas";
   const completed = handovers
@@ -19024,6 +20110,19 @@ function ShipmentBatchHistory({ handovers, shipments, locations, users }: any) {
             .includes(query.trim().toLowerCase()),
         ),
     )
+    .filter(
+      (batch: any) =>
+        locationFilter === "all" || batch.locationId === locationFilter,
+    )
+    .filter(
+      (batch: any) =>
+        carrierFilter === "all" || batch.carrier === carrierFilter,
+    )
+    .filter(
+      (batch: any) =>
+        !dateFilter ||
+        jakartaDateKey(batch.completedAt || batch.createdAt) === dateFilter,
+    )
     .sort(
       (a: any, b: any) =>
         new Date(b.completedAt || b.createdAt).getTime() -
@@ -19034,14 +20133,44 @@ function ShipmentBatchHistory({ handovers, shipments, locations, users }: any) {
   const visibleBatches = completed.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE);
   return (
     <div className="batch-history">
-      <label className="shipment-search batch-search">
-        <Search />
+      <div className="batch-filter-tools">
+        <label className="shipment-search batch-search">
+          <Search />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Cari kode batch atau nomor resi"
+          />
+        </label>
+        <select
+          value={locationFilter}
+          onChange={(event) => setLocationFilter(event.target.value)}
+          aria-label="Filter lokasi riwayat"
+        >
+          <option value="all">Semua lokasi</option>
+          {locations.map((location: any) => (
+            <option key={location.id} value={location.id}>
+              {location.name}
+            </option>
+          ))}
+        </select>
+        <select
+          value={carrierFilter}
+          onChange={(event) => setCarrierFilter(event.target.value)}
+          aria-label="Filter ekspedisi riwayat"
+        >
+          <option value="all">Semua ekspedisi</option>
+          {completedCarriers.map((value) => (
+            <option key={value}>{value}</option>
+          ))}
+        </select>
         <input
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Cari kode batch atau nomor resi"
+          type="date"
+          value={dateFilter}
+          onChange={(event) => setDateFilter(event.target.value)}
+          aria-label="Filter tanggal riwayat"
         />
-      </label>
+      </div>
       <div className="batch-history-summary">
         <b>{completed.length.toLocaleString("id-ID")} batch ditemukan</b>
         <span>Klik satu batch untuk membuka daftar resi.</span>
@@ -19065,9 +20194,7 @@ function ShipmentBatchHistory({ handovers, shipments, locations, users }: any) {
               <span className="batch-folder-meta">
                 <b>{batch.packages.length} paket</b>
                 <small>
-                  {batch.completedAt
-                    ? new Date(batch.completedAt).toLocaleString("id-ID")
-                    : "-"}
+                  {batch.completedAt ? jakartaDateTime(batch.completedAt) : "-"}
                 </small>
               </span>
               <ChevronDown className="batch-folder-chevron" />
@@ -19090,7 +20217,7 @@ function ShipmentBatchHistory({ handovers, shipments, locations, users }: any) {
                   <small>Waktu selesai</small>
                   <b>
                     {batch.completedAt
-                      ? new Date(batch.completedAt).toLocaleString("id-ID")
+                      ? jakartaDateTime(batch.completedAt)
                       : "-"}
                   </b>
                 </span>
@@ -19130,7 +20257,7 @@ function ShipmentBatchHistory({ handovers, shipments, locations, users }: any) {
                       </div>
                       <time>
                         Packing{" "}
-                        {new Date(item.packedAt).toLocaleString("id-ID")} ·{" "}
+                        {jakartaDateTime(item.packedAt)} ·{" "}
                         {userName(item.packedBy)}
                       </time>
                     </article>
@@ -19149,7 +20276,10 @@ function ShipmentBatchHistory({ handovers, shipments, locations, users }: any) {
         <div className="empty standalone">
           <Archive />
           <b>
-            {query
+            {query ||
+            locationFilter !== "all" ||
+            carrierFilter !== "all" ||
+            dateFilter
               ? "Batch atau nomor resi tidak ditemukan."
               : "Belum ada riwayat serah terima."}
           </b>
@@ -19160,10 +20290,12 @@ function ShipmentBatchHistory({ handovers, shipments, locations, users }: any) {
   );
 }
 
-function GroupedShipmentList({ items, users, locations }: any) {
+function GroupedShipmentList({ items, users, locations, onCancel }: any) {
   const [query, setQuery] = useState(""),
     [carrier, setCarrier] = useState("all"),
     [marketplace, setMarketplace] = useState("all"),
+    [locationFilter, setLocationFilter] = useState("all"),
+    [dateFilter, setDateFilter] = useState(""),
     [page, setPage] = useState(1);
   const ITEMS_PER_PAGE = 10;
   const today = jakartaDateKey();
@@ -19183,11 +20315,21 @@ function GroupedShipmentList({ items, users, locations }: any) {
     .filter(
       (item: any) => marketplace === "all" || item.marketplace === marketplace,
     )
+    .filter(
+      (item: any) =>
+        locationFilter === "all" || item.locationId === locationFilter,
+    )
+    .filter(
+      (item: any) => !dateFilter || jakartaDateKey(item.packedAt) === dateFilter,
+    )
     .sort(
       (a: any, b: any) =>
         new Date(b.packedAt).getTime() - new Date(a.packedAt).getTime(),
     );
-  useEffect(() => setPage(1), [query, carrier, marketplace]);
+  useEffect(
+    () => setPage(1),
+    [query, carrier, marketplace, locationFilter, dateFilter],
+  );
   const totalPages = Math.max(1, Math.ceil(filtered.length / ITEMS_PER_PAGE));
   const currentPage = Math.min(page, totalPages);
   const shown = filtered.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE);
@@ -19240,6 +20382,24 @@ function GroupedShipmentList({ items, users, locations }: any) {
             <option key={value}>{value}</option>
           ))}
         </select>
+        <select
+          value={locationFilter}
+          onChange={(event) => setLocationFilter(event.target.value)}
+          aria-label="Filter lokasi"
+        >
+          <option value="all">Semua lokasi</option>
+          {locations.map((location: any) => (
+            <option key={location.id} value={location.id}>
+              {location.name}
+            </option>
+          ))}
+        </select>
+        <input
+          type="date"
+          value={dateFilter}
+          onChange={(event) => setDateFilter(event.target.value)}
+          aria-label="Filter tanggal packing"
+        />
       </div>
       <div className="shipment-result-summary">
         <b>{filtered.length.toLocaleString("id-ID")} paket</b>
@@ -19295,7 +20455,12 @@ function GroupedShipmentList({ items, users, locations }: any) {
                       </span>
                       <em>{group.items.length} paket</em>
                     </summary>
-                    <RecentShipmentList items={group.items} users={users} />
+                    <RecentShipmentList
+                      items={group.items}
+                      users={users}
+                      actionLabel={onCancel ? "Batalkan" : undefined}
+                      onAction={onCancel}
+                    />
                   </details>
                 ))}
               </div>
@@ -19306,7 +20471,11 @@ function GroupedShipmentList({ items, users, locations }: any) {
         <div className="empty standalone">
           <Truck />
           <b>
-            {query
+            {query ||
+            carrier !== "all" ||
+            marketplace !== "all" ||
+            locationFilter !== "all" ||
+            dateFilter
               ? "Nomor resi tidak ditemukan."
               : "Belum ada paket yang siap diangkut."}
           </b>
@@ -19593,7 +20762,7 @@ function PasswordInput({
 }
 const ModalActions = ({ close, onDelete, disabled, label = "Simpan" }: any) => (
   <footer className="modal-actions">
-    <button type="button" className="secondary" onClick={close}>
+    <button type="button" className="secondary" onClick={close} disabled={disabled}>
       Batal
     </button>
     {onDelete && (

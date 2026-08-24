@@ -14,7 +14,8 @@ export type ActionType =
   | 'pricing.view' | 'pricing.manage'
   | 'attendance.view' | 'attendance.record' | 'attendance.manage'
   | 'payroll.view' | 'payroll.manage'
-  | 'cashbook.view' | 'cashbook.manage';
+  | 'cashbook.view' | 'cashbook.manage'
+  | 'debt.view' | 'debt.manage';
 
 export interface Scope {
   organizationId: string | null;
@@ -34,7 +35,7 @@ export function resolveUserScope(user?: SessionUser | null, policies?: RolePolic
 
   if (role === 'owner' || role === 'admin' || role === 'finance') {
     scopeType = 'all';
-  } else if (role === 'warehouse' || role === 'pic' || role === 'cashier') {
+  } else if (role === 'warehouse' || role === 'pic' || role === 'cashier' || (role === 'employee' && outletId)) {
     scopeType = 'specific';
     if (outletId) allowedLocationIds = [outletId];
   }
@@ -50,7 +51,7 @@ export function resolveUserScope(user?: SessionUser | null, policies?: RolePolic
      'sale.view', 'sale.create', 'sale.void', 'shipping.view', 'shipping.manage',
      'report.view', 'report.export', 'audit.location.view', 'audit.view', 'supplier.view', 'supplier.manage',
      'pricing.view', 'pricing.manage', 'attendance.view', 'attendance.record', 'attendance.manage', 'payroll.view', 'payroll.manage',
-     'cashbook.view', 'cashbook.manage'].forEach(p => permissions.add(p as ActionType));
+     'cashbook.view', 'cashbook.manage', 'debt.view', 'debt.manage'].forEach(p => permissions.add(p as ActionType));
   } else if (role === 'admin') {
     ['product.view', 'product.create', 'product.update',
      'location.view', 'location.create', 'location.update',
@@ -59,9 +60,9 @@ export function resolveUserScope(user?: SessionUser | null, policies?: RolePolic
      'transfer.view', 'transfer.create', 'transfer.send', 'transfer.receive', 'transfer.cancel',
      'sale.view', 'sale.create', 'sale.void', 'shipping.view', 'shipping.manage',
      'report.view', 'report.export', 'audit.location.view', 'audit.view', 'supplier.view', 'supplier.manage', 'pricing.view', 'pricing.manage', 'attendance.view', 'attendance.record',
-     'cashbook.view', 'cashbook.manage'].forEach(p => permissions.add(p as ActionType));
+     'cashbook.view', 'cashbook.manage', 'debt.view', 'debt.manage'].forEach(p => permissions.add(p as ActionType));
   } else if (role === 'finance') {
-    ['stock.view', 'report.view', 'report.export', 'pricing.view', 'cashbook.view', 'cashbook.manage'].forEach(p => permissions.add(p as ActionType));
+    ['stock.view', 'report.view', 'report.export', 'pricing.view', 'cashbook.view', 'cashbook.manage', 'debt.view', 'debt.manage'].forEach(p => permissions.add(p as ActionType));
   } else if (role === 'warehouse') {
     ['product.view', 'location.view', 'stock.view', 'stock.in', 'stock.out', 'stock.opname',
      'transfer.view', 'transfer.create', 'transfer.send', 'shipping.view', 'shipping.manage', 'audit.location.view', 'attendance.view', 'attendance.record'].forEach(p => permissions.add(p as ActionType));

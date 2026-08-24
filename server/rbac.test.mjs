@@ -53,4 +53,16 @@ describe('server RBAC policy', () => {
     expect(authorizeAction({ user, action: 'sale.create', locationId: 'outlet-a' }).allowed).toBe(false);
     expect(authorizeAction({ user, action: 'stock.opname', locationId: 'outlet-b' }).allowed).toBe(false);
   });
+
+  it('applies custom employee permissions only at the assigned location', () => {
+    const employee = {
+      role: 'employee',
+      outletId: 'outlet-a',
+      organizationId: 'org-a',
+      rolePermissions: ['cashbook.view', 'cashbook.manage'],
+    };
+    expect(authorizeAction({ user: employee, action: 'cashbook.view', locationId: 'outlet-a' }).allowed).toBe(true);
+    expect(authorizeAction({ user: employee, action: 'cashbook.manage', locationId: 'outlet-a' }).allowed).toBe(true);
+    expect(authorizeAction({ user: employee, action: 'cashbook.manage', locationId: 'outlet-b' }).allowed).toBe(false);
+  });
 });

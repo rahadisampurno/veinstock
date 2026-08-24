@@ -1,14 +1,17 @@
 import { readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parseHppExcel } from "./hppExcelImport";
 import { calculateBatchHpp, calculateExcelProductHpp } from "./hpp";
 import ExcelJS from "exceljs";
 
-describe("import HPP Excel Menengs", () => {
+const workbookPath =
+  process.env.HPP_TEST_WORKBOOK ||
+  "/Users/telkomdev-rahadi/Downloads/HPP_Mie_Kremes_Menengs_New.xlsx";
+
+describe.skipIf(!existsSync(workbookPath))("import HPP Excel Menengs", () => {
   it("mengimpor master, batch, kemasan, dan menghasilkan angka yang sama", async () => {
-    const bytes = await readFile(
-      "/Users/telkomdev-rahadi/Downloads/HPP_Mie_Kremes_Menengs_New.xlsx",
-    );
+    const bytes = await readFile(workbookPath);
     const file = new File([bytes], "HPP_Mie_Kremes_Menengs_New.xlsx");
     const imported = await parseHppExcel(file);
     expect(imported.profile.name).toBe("MIE KREMES");
@@ -32,9 +35,7 @@ describe("import HPP Excel Menengs", () => {
   });
 
   it("merekonsiliasi seluruh 24 batch dan 120 HPP produk terhadap nilai Excel", async () => {
-    const path =
-      "/Users/telkomdev-rahadi/Downloads/HPP_Mie_Kremes_Menengs_New.xlsx";
-    const bytes = await readFile(path);
+    const bytes = await readFile(workbookPath);
     const imported = await parseHppExcel(
       new File([bytes], "HPP_Mie_Kremes_Menengs_New.xlsx"),
     );

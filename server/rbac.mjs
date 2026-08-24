@@ -9,7 +9,7 @@ export function resolveUserScope(user) {
   if (role === 'owner' || role === 'admin' || role === 'finance') {
     scopeType = 'all';
     // allowedLocationIds remains empty meaning 'all', or we fetch them all if needed
-  } else if (role === 'warehouse' || role === 'pic' || role === 'cashier') {
+  } else if (role === 'warehouse' || role === 'pic' || role === 'cashier' || (role === 'employee' && outletId)) {
     scopeType = 'specific';
     if (outletId) allowedLocationIds = [outletId];
   }
@@ -25,7 +25,7 @@ export function resolveUserScope(user) {
      'sale.view', 'sale.create', 'sale.void', 'shipping.view', 'shipping.manage',
      'report.view', 'report.export', 'audit.location.view', 'audit.view', 'supplier.view', 'supplier.manage',
      'pricing.view', 'pricing.manage', 'attendance.view', 'attendance.record', 'attendance.manage', 'payroll.view', 'payroll.manage',
-     'cashbook.view', 'cashbook.manage'].forEach(p => permissions.add(p));
+     'cashbook.view', 'cashbook.manage', 'debt.view', 'debt.manage'].forEach(p => permissions.add(p));
   } else if (role === 'admin') {
     ['product.view', 'product.create', 'product.update',
      'location.view', 'location.create', 'location.update',
@@ -34,9 +34,9 @@ export function resolveUserScope(user) {
      'transfer.view', 'transfer.create', 'transfer.send', 'transfer.receive', 'transfer.cancel',
      'sale.view', 'sale.create', 'sale.void', 'shipping.view', 'shipping.manage',
      'report.view', 'report.export', 'audit.location.view', 'audit.view', 'supplier.view', 'supplier.manage', 'pricing.view', 'pricing.manage', 'attendance.view', 'attendance.record',
-     'cashbook.view', 'cashbook.manage'].forEach(p => permissions.add(p));
+     'cashbook.view', 'cashbook.manage', 'debt.view', 'debt.manage'].forEach(p => permissions.add(p));
   } else if (role === 'finance') {
-    ['stock.view', 'report.view', 'report.export', 'pricing.view', 'cashbook.view', 'cashbook.manage'].forEach(p => permissions.add(p));
+    ['stock.view', 'report.view', 'report.export', 'pricing.view', 'cashbook.view', 'cashbook.manage', 'debt.view', 'debt.manage'].forEach(p => permissions.add(p));
   } else if (role === 'warehouse') {
     ['product.view', 'location.view', 'stock.view', 'stock.in', 'stock.out', 'stock.opname',
      'transfer.view', 'transfer.create', 'transfer.send', 'shipping.view', 'shipping.manage', 'audit.location.view', 'attendance.view', 'attendance.record'].forEach(p => permissions.add(p));

@@ -297,18 +297,38 @@ export interface CashEntry {
   createdBy: string;
   createdByName?: string;
 }
+export interface DebtEntry {
+  id: string;
+  type: "debt" | "receivable";
+  transactionDate: string;
+  dueDate?: string;
+  locationId: string;
+  partyName: string;
+  amount: number;
+  note?: string;
+  proofUrl?: string;
+  status: "unpaid" | "paid";
+  paidAt?: string;
+  paidProofUrl?: string;
+  createdAt: string;
+  createdBy: string;
+  createdByName?: string;
+}
 export interface ShipmentPackage {
   id: string;
   trackingNumber: string;
   marketplace: string;
   carrier: string;
   locationId: string;
-  status: "ready" | "handover_scanned" | "handed_over";
+  status: "ready" | "handover_scanned" | "handed_over" | "cancelled";
   packedAt: string;
   packedBy: string;
   handoverBatchCode?: string;
   handedOverAt?: string;
   handedOverBy?: string;
+  cancelledAt?: string;
+  cancelledBy?: string;
+  cancelReason?: string;
 }
 export interface ShipmentHandover {
   id: string;
@@ -318,11 +338,14 @@ export interface ShipmentHandover {
   courierName?: string;
   vehicleNumber?: string;
   proofUrl?: string;
-  status: "draft" | "completed";
+  status: "draft" | "completed" | "cancelled";
   createdAt: string;
   createdBy: string;
   completedAt?: string;
   completedBy?: string;
+  cancelledAt?: string;
+  cancelledBy?: string;
+  cancelReason?: string;
 }
 export interface HppMaterial {
   id: string;
@@ -446,6 +469,7 @@ export interface AppData {
   loans?: Loan[];
   payrolls?: Payroll[];
   cashEntries?: CashEntry[];
+  debtEntries?: DebtEntry[];
   shipments?: ShipmentPackage[];
   shipmentHandovers?: ShipmentHandover[];
   pricing?: PricingData;

@@ -41,7 +41,7 @@ export const createEmptyData = (organizationName: string, owner: Pick<SessionUse
   business: { name: organizationName, ownerName: owner.name, email: owner.email },
   users: [{ id: owner.id, name: owner.name, email: owner.email, role: 'owner', active: true }],
   locations: [{ id: 'loc-owner', name: `Gudang ${organizationName}`, type: 'warehouse', active: true }],
-  products: [], balances: [], transfers: [], sales: [], movements: [], stockCounts: [], suppliers: [], receipts: [], returns: [], stockOuts: [], employees: [], attendanceSettings: [], attendances: [], liveSessions: [], loans: [], payrolls: [], cashEntries: [], shipments: [], shipmentHandovers: [],
+  products: [], balances: [], transfers: [], sales: [], movements: [], stockCounts: [], suppliers: [], receipts: [], returns: [], stockOuts: [], employees: [], attendanceSettings: [], attendances: [], liveSessions: [], loans: [], payrolls: [], cashEntries: [], debtEntries: [], shipments: [], shipmentHandovers: [],
 });
 
 const stockUnitNames = ['Pcs', 'Botol', 'Cup', 'Pack', 'Box', 'Dus', 'Kg', 'Gram', 'Liter', 'Ml'] as const;
@@ -71,7 +71,7 @@ export const normalizeData = (data: AppData): AppData => {
     stockCounts: data.stockCounts || [],
     suppliers: data.suppliers || [],
     receipts: data.receipts || [],
-    returns: data.returns || [], stockOuts: data.stockOuts || [], employees: data.employees || [], attendanceSettings: data.attendanceSettings || [], attendances: data.attendances || [], liveSessions: data.liveSessions || [], loans: data.loans || [], payrolls: data.payrolls || [], cashEntries: data.cashEntries || [], shipments: data.shipments || [], shipmentHandovers: data.shipmentHandovers || [], rolePolicies: data.rolePolicies || {}
+    returns: data.returns || [], stockOuts: data.stockOuts || [], employees: data.employees || [], attendanceSettings: data.attendanceSettings || [], attendances: data.attendances || [], liveSessions: data.liveSessions || [], loans: data.loans || [], payrolls: data.payrolls || [], cashEntries: data.cashEntries || [], debtEntries: data.debtEntries || [], shipments: data.shipments || [], shipmentHandovers: data.shipmentHandovers || [], rolePolicies: data.rolePolicies || {}
   };
 };
 

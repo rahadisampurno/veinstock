@@ -136,6 +136,7 @@ async function backfillRolePolicyDependencies(pool) {
     attendance: "attendance.view",
     loans: "payroll.view",
     cashbook: "cashbook.view",
+    debts: "debt.view",
     reports: "report.view",
   };
   const [rows] = await pool.execute("SELECT id, payload FROM app_state");
@@ -163,6 +164,16 @@ async function backfillRolePolicyDependencies(pool) {
         changed = true;
       }
       for (const permission of ["cashbook.view", "cashbook.manage"]) {
+        if (!policy.permissions.includes(permission)) {
+          policy.permissions.push(permission);
+          changed = true;
+        }
+      }
+      if (!policy.menus.includes("debts")) {
+        policy.menus.push("debts");
+        changed = true;
+      }
+      for (const permission of ["debt.view", "debt.manage"]) {
         if (!policy.permissions.includes(permission)) {
           policy.permissions.push(permission);
           changed = true;
@@ -235,6 +246,7 @@ const defaultRoleMenusById = {
     "employees",
     "attendance",
     "cashbook",
+    "debts",
     "reports",
     "help",
   ],
@@ -252,7 +264,7 @@ const defaultRoleMenusById = {
     "attendance",
     "help",
   ],
-  finance: ["dashboard", "cashbook", "stock", "reports", "analytics", "help"],
+  finance: ["dashboard", "cashbook", "debts", "stock", "reports", "analytics", "help"],
   warehouse: [
     "dashboard",
     "products",
@@ -1001,6 +1013,7 @@ const emptyState = (organizationName, owner) => ({
   loans: [],
   payrolls: [],
   cashEntries: [],
+  debtEntries: [],
   rolePolicies: defaultRolePolicyState(),
 });
 app.post("/api/login", async (req, res) => {
@@ -1033,7 +1046,11 @@ app.post("/api/login", async (req, res) => {
         .json({ message: "Email atau password tidak sesuai" });
   } else {
     user = demoUsers.find((item) => item.email === email);
-    if (!user || password !== (user.demo_password || "VeinStock123!"))
+    if (
+      !user ||
+      user.active === false ||
+      password !== (user.demo_password || "VeinStock123!")
+    )
       return res
         .status(401)
         .json({ message: "Email atau password tidak sesuai" });
@@ -1243,6 +1260,7 @@ const mergeScopedState = (previous, next, actor) => {
     attendances: mergeById(previous.attendances, next.attendances),
     liveSessions: mergeById(previous.liveSessions, next.liveSessions),
     cashEntries: mergeById(previous.cashEntries, next.cashEntries),
+    debtEntries: mergeById(previous.debtEntries, next.debtEntries),
   };
 };
 function validateRoleChange(previous, next, user) {
@@ -1703,6 +1721,15 @@ const commandMovement = (
 });
 const commandAuth = (actor, action, locationId) =>
   authorizeAction({ user: actor, action, locationId });
+const attachEmployeeLocation = (state, actor) => {
+  if (!actor || actor.role !== "employee" || actor.outletId || actor.outlet_id)
+    return actor;
+  const assignment = (state?.employees || []).find(
+    (employee) => employee.userId === actor.id && employee.active !== false,
+  );
+  if (assignment?.locationId) actor.outletId = assignment.locationId;
+  return actor;
+};
 const configurableRoles = new Set([
   "admin",
   "pic",
@@ -1755,6 +1782,8 @@ const configurablePermissions = new Set([
   "payroll.manage",
   "cashbook.view",
   "cashbook.manage",
+  "debt.view",
+  "debt.manage",
 ]);
 const configurableMenus = new Set([
   "dashboard",
@@ -1776,7 +1805,9 @@ const configurableMenus = new Set([
   "attendance",
   "loans",
   "cashbook",
+  "debts",
   "reports",
+  "business",
   "help",
 ]);
 const menuPermissionRequirements = {
@@ -1798,6 +1829,7 @@ const menuPermissionRequirements = {
   attendance: "attendance.view",
   loans: "payroll.view",
   cashbook: "cashbook.view",
+  debts: "debt.view",
   reports: "report.view",
 };
 const validateCommandProduct = (product) => {
@@ -1899,6 +1931,7 @@ async function executeCommand(req, res, mutate) {
       );
     const state = structuredClone(loaded.data);
     actor.rolePermissions = state.rolePolicies?.[actor.role]?.permissions;
+    attachEmployeeLocation(state, actor);
     // Users are authoritative in the users table.  Keeping this projection in
     // the command transaction prevents a newly created employee account from
     // being invisible until some unrelated legacy snapshot is written.
@@ -2505,6 +2538,7 @@ app.get("/api/state", requireAuth, async (req, res) => {
   const sanitize = (data) => {
     if (!data) return data;
     actor.rolePermissions = data.rolePolicies?.[actor.role]?.permissions;
+    attachEmployeeLocation(data, actor);
     const permissions = resolveUserScope(actor).permissions;
     const hasAny = (...items) => items.some((item) => permissions.has(item));
     const canViewCosts = hasAny("pricing.view", "pricing.manage");
@@ -2703,6 +2737,9 @@ app.get("/api/state", requireAuth, async (req, res) => {
             // memang memiliki akses laporan boleh menerima data ini, sedangkan
             // UI Buku Kas tetap dikendalikan oleh izin cashbook.view/manage.
             cashEntries: reportCashEntries,
+            debtEntries: hasAny("debt.view", "debt.manage")
+              ? source.debtEntries || []
+              : [],
             pricing: hasAny("pricing.view", "pricing.manage")
               ? source.pricing
               : undefined,
@@ -2721,6 +2758,10 @@ app.get("/api/state", requireAuth, async (req, res) => {
       actor.role === "employee"
         ? myEmployees.map((employee) => employee.locationId).filter(Boolean)
         : scope.allowedLocationIds;
+    const effectiveLocationIds =
+      scope.allowedLocationIds.length > 0
+        ? scope.allowedLocationIds
+        : employeeLocationIds;
     return maskByPermissions({
       ...data,
       locations: (data.locations || []).filter((l) =>
@@ -2728,31 +2769,31 @@ app.get("/api/state", requireAuth, async (req, res) => {
       ),
       users: (data.users || []).filter((u) => u.id === actor.id),
       balances: (data.balances || []).filter((b) =>
-        scope.allowedLocationIds.includes(b.locationId),
+        effectiveLocationIds.includes(b.locationId),
       ),
       sales: (data.sales || []).filter((s) =>
-        scope.allowedLocationIds.includes(s.locationId),
+        effectiveLocationIds.includes(s.locationId),
       ),
       movements: (data.movements || []).filter((m) =>
-        scope.allowedLocationIds.includes(m.locationId),
+        effectiveLocationIds.includes(m.locationId),
       ),
       stockCounts: (data.stockCounts || []).filter((sc) =>
-        scope.allowedLocationIds.includes(sc.locationId),
+        effectiveLocationIds.includes(sc.locationId),
       ),
       receipts: (data.receipts || []).filter((r) =>
-        scope.allowedLocationIds.includes(r.locationId),
+        effectiveLocationIds.includes(r.locationId),
       ),
       returns: (data.returns || []).filter((r) =>
-        scope.allowedLocationIds.includes(r.locationId),
+        effectiveLocationIds.includes(r.locationId),
       ),
       stockOuts: (data.stockOuts || []).filter((item) =>
-        scope.allowedLocationIds.includes(item.locationId),
+        effectiveLocationIds.includes(item.locationId),
       ),
       shipments: (data.shipments || []).filter((shipment) =>
-        scope.allowedLocationIds.includes(shipment.locationId),
+        effectiveLocationIds.includes(shipment.locationId),
       ),
       shipmentHandovers: (data.shipmentHandovers || []).filter((handover) =>
-        scope.allowedLocationIds.includes(handover.locationId),
+        effectiveLocationIds.includes(handover.locationId),
       ),
       employees: myEmployees,
       attendanceSettings: (data.attendanceSettings || []).filter((setting) =>
@@ -2771,15 +2812,18 @@ app.get("/api/state", requireAuth, async (req, res) => {
       loans: [],
       payrolls: [],
       cashEntries: (data.cashEntries || []).filter((entry) =>
-        scope.allowedLocationIds.includes(entry.locationId),
+        effectiveLocationIds.includes(entry.locationId),
+      ),
+      debtEntries: (data.debtEntries || []).filter((entry) =>
+        effectiveLocationIds.includes(entry.locationId),
       ),
       // PIC/Kasir dapat membaca rute dokumen, tetapi tidak memperoleh saldo
       // atau daftar produk dari lokasi asal.
       transfers: (data.transfers || [])
         .filter(
           (t) =>
-            scope.allowedLocationIds.includes(t.fromId) ||
-            scope.allowedLocationIds.includes(t.toId),
+            effectiveLocationIds.includes(t.fromId) ||
+            effectiveLocationIds.includes(t.toId),
         )
         .map((t) => ({
           ...t,
@@ -2976,24 +3020,43 @@ app.put("/api/state", requireAuth, async (req, res) => {
 // These routes intentionally accept a small command payload only.  The server
 // reads, validates and commits the current organization state in one database
 // transaction so a refresh or a second device cannot overwrite a sale/transfer.
-app.post("/api/commands/shipping/ready", requireAuth, async (req, res) => {
-  await executeCommand(req, res, async (state, actor) => {
-    const trackingNumber = String(req.body?.trackingNumber || "")
-      .trim()
-      .toUpperCase();
-    const locationId = String(req.body?.locationId || "");
-    const authorization = commandAuth(actor, "shipping.manage", locationId);
-    if (!authorization.allowed) throw forbiddenCommand(authorization.reason);
-    if (
-      !state.locations.some(
-        (location) => location.id === locationId && location.active !== false,
-      )
+const normalizeShippingTrackingNumbers = (input) => {
+  const values = (Array.isArray(input) ? input : [input])
+    .map((value) => String(value || "").trim().toUpperCase())
+    .filter(Boolean);
+  const trackingNumbers = [...new Set(values)];
+  if (!trackingNumbers.length)
+    throw invalidCommand("Masukkan minimal satu nomor resi.");
+  if (trackingNumbers.length > 200)
+    throw invalidCommand("Maksimal 200 nomor resi dalam satu proses.");
+  const invalid = trackingNumbers.find(
+    (trackingNumber) =>
+      !/^[A-Z0-9][A-Z0-9._-]{5,79}$/.test(trackingNumber),
+  );
+  if (invalid)
+    throw invalidCommand(`Nomor resi ${invalid} tidak valid. Periksa kembali.`);
+  return trackingNumbers;
+};
+
+const ensureActiveShippingLocation = (state, actor, locationId) => {
+  const authorization = commandAuth(actor, "shipping.manage", locationId);
+  if (!authorization.allowed) throw forbiddenCommand(authorization.reason);
+  if (
+    !state.locations.some(
+      (location) => location.id === locationId && location.active !== false,
     )
-      throw invalidCommand("Lokasi packing tidak aktif atau tidak ditemukan.");
-    if (!/^[A-Z0-9][A-Z0-9._-]{5,79}$/.test(trackingNumber))
-      throw invalidCommand(
-        "Nomor resi tidak valid. Periksa kembali hasil scan.",
-      );
+  )
+    throw invalidCommand("Lokasi packing tidak aktif atau tidak ditemukan.");
+};
+
+const recordReadyShipments = (
+  state,
+  actor,
+  { trackingNumbers, locationId, marketplace },
+) => {
+  ensureActiveShippingLocation(state, actor, locationId);
+  const packedAt = new Date().toISOString();
+  trackingNumbers.forEach((trackingNumber) => {
     const detectedCarrier = detectShippingCarrier(trackingNumber);
     // Packing tidak boleh gagal hanya karena pola resi ekspedisi berubah.
     // Ekspedisi final ditetapkan saat paket masuk ke batch serah terima.
@@ -3001,23 +3064,109 @@ app.post("/api/commands/shipping/ready", requireAuth, async (req, res) => {
     const existing = state.shipments.find(
       (item) => item.trackingNumber === trackingNumber,
     );
-    if (existing)
+    if (existing && existing.status !== "cancelled")
       throw invalidCommand(
         existing.status === "handed_over"
-          ? "Resi ini sudah diserahkan ke ekspedisi."
-          : "Resi ini sudah tercatat pada proses pengiriman.",
+          ? `Resi ${trackingNumber} sudah diserahkan ke ekspedisi.`
+          : `Resi ${trackingNumber} sudah tercatat pada proses pengiriman.`,
       );
-    state.shipments.unshift({
-      id: commandId("shp"),
+    const shipment = existing || { id: commandId("shp"), trackingNumber };
+    Object.assign(shipment, {
       trackingNumber,
       locationId,
-      marketplace: String(req.body?.marketplace || "Lainnya")
-        .trim()
-        .slice(0, 40),
+      marketplace,
       carrier,
       status: "ready",
-      packedAt: new Date().toISOString(),
+      packedAt,
       packedBy: actor.id,
+    });
+    delete shipment.handoverBatchCode;
+    delete shipment.handedOverAt;
+    delete shipment.handedOverBy;
+    delete shipment.cancelledAt;
+    delete shipment.cancelledBy;
+    delete shipment.cancelReason;
+    if (!existing) state.shipments.unshift(shipment);
+  });
+};
+
+const recordHandoverShipments = (
+  state,
+  actor,
+  { trackingNumbers, locationId, carrier, batchCode },
+) => {
+  ensureActiveShippingLocation(state, actor, locationId);
+  if (!batchCode || !carrier)
+    throw invalidCommand("Batch dan ekspedisi wajib dipilih.");
+  let batch = state.shipmentHandovers.find(
+    (item) => item.batchCode === batchCode,
+  );
+  if (
+    batch &&
+    (batch.status !== "draft" ||
+      batch.locationId !== locationId ||
+      batch.carrier !== carrier)
+  )
+    throw invalidCommand("Batch serah terima tidak sesuai atau sudah selesai.");
+  const selected = trackingNumbers.map((trackingNumber) => {
+    const shipment = state.shipments.find(
+      (item) => item.trackingNumber === trackingNumber,
+    );
+    if (!shipment)
+      throw invalidCommand(
+        `Resi ${trackingNumber} belum tercatat sebagai paket siap diangkut.`,
+      );
+    if (shipment.locationId !== locationId)
+      throw invalidCommand(
+        `Resi ${trackingNumber} berasal dari lokasi packing yang berbeda.`,
+      );
+    if (shipment.status !== "ready")
+      throw invalidCommand(
+        shipment.status === "handed_over"
+          ? `Resi ${trackingNumber} sudah pernah diserahkan ke ekspedisi.`
+          : `Resi ${trackingNumber} sudah dipindai dalam batch serah terima.`,
+      );
+    return shipment;
+  });
+  if (!batch) {
+    batch = {
+      id: commandId("hnd"),
+      batchCode,
+      carrier,
+      locationId,
+      status: "draft",
+      createdAt: new Date().toISOString(),
+      createdBy: actor.id,
+    };
+    state.shipmentHandovers.unshift(batch);
+  }
+  selected.forEach((shipment) => {
+    shipment.status = "handover_scanned";
+    shipment.handoverBatchCode = batchCode;
+    shipment.carrier = carrier;
+  });
+};
+
+app.post("/api/commands/shipping/ready", requireAuth, async (req, res) => {
+  await executeCommand(req, res, async (state, actor) => {
+    recordReadyShipments(state, actor, {
+      trackingNumbers: normalizeShippingTrackingNumbers(
+        req.body?.trackingNumber,
+      ),
+      locationId: String(req.body?.locationId || ""),
+      marketplace: String(req.body?.marketplace || "Lainnya").trim().slice(0, 40),
+    });
+  });
+});
+
+app.post("/api/commands/shipping/ready/bulk", requireAuth, async (req, res) => {
+  await executeCommand(req, res, async (state, actor) => {
+    recordReadyShipments(state, actor, {
+      trackingNumbers: normalizeShippingTrackingNumbers(
+        req.body?.trackingNumbers,
+      ),
+      locationId: String(req.body?.locationId || ""),
+      marketplace: String(req.body?.marketplace || "Lainnya").trim().slice(0, 40),
     });
   });
 });
@@ -3027,59 +3176,144 @@ app.post(
   requireAuth,
   async (req, res) => {
     await executeCommand(req, res, async (state, actor) => {
-      const trackingNumber = String(req.body?.trackingNumber || "")
-        .trim()
-        .toUpperCase();
       const locationId = String(req.body?.locationId || "");
       const batchCode = String(req.body?.batchCode || "")
         .trim()
         .toUpperCase();
       const carrier = String(req.body?.carrier || "").trim();
-      const authorization = commandAuth(actor, "shipping.manage", locationId);
-      if (!authorization.allowed) throw forbiddenCommand(authorization.reason);
-      if (!batchCode || !carrier)
-        throw invalidCommand("Batch dan ekspedisi wajib dipilih.");
+      recordHandoverShipments(state, actor, {
+        trackingNumbers: normalizeShippingTrackingNumbers(
+          req.body?.trackingNumber,
+        ),
+        locationId,
+        carrier,
+        batchCode,
+      });
+    });
+  },
+);
+
+app.post(
+  "/api/commands/shipping/handover/scan/bulk",
+  requireAuth,
+  async (req, res) => {
+    await executeCommand(req, res, async (state, actor) => {
+      recordHandoverShipments(state, actor, {
+        trackingNumbers: normalizeShippingTrackingNumbers(
+          req.body?.trackingNumbers,
+        ),
+        locationId: String(req.body?.locationId || ""),
+        carrier: String(req.body?.carrier || "").trim(),
+        batchCode: String(req.body?.batchCode || "").trim().toUpperCase(),
+      });
+    });
+  },
+);
+
+app.post(
+  "/api/commands/shipping/packages/:id/cancel",
+  requireAuth,
+  async (req, res) => {
+    await executeCommand(req, res, async (state, actor) => {
       const shipment = state.shipments.find(
-        (item) => item.trackingNumber === trackingNumber,
+        (item) => item.id === String(req.params.id),
       );
-      if (!shipment)
-        throw invalidCommand(
-          "Resi belum tercatat sebagai paket siap diangkut.",
-        );
-      if (shipment.locationId !== locationId)
-        throw invalidCommand("Resi berasal dari lokasi packing yang berbeda.");
+      if (!shipment) throw invalidCommand("Paket pengiriman tidak ditemukan.");
+      const authorization = commandAuth(
+        actor,
+        "shipping.manage",
+        shipment.locationId,
+      );
+      if (!authorization.allowed) throw forbiddenCommand(authorization.reason);
       if (shipment.status !== "ready")
         throw invalidCommand(
-          shipment.status === "handed_over"
-            ? "Resi sudah pernah diserahkan ke ekspedisi."
-            : "Resi sudah dipindai dalam batch serah terima.",
+          shipment.status === "handover_scanned"
+            ? "Keluarkan resi dari batch sebelum membatalkan paket."
+            : "Paket ini tidak dapat dibatalkan lagi.",
         );
-      let batch = state.shipmentHandovers.find(
+      const reason = String(req.body?.reason || "").trim().slice(0, 240);
+      if (reason.length < 3)
+        throw invalidCommand("Alasan pembatalan minimal 3 karakter.");
+      Object.assign(shipment, {
+        status: "cancelled",
+        cancelledAt: new Date().toISOString(),
+        cancelledBy: actor.id,
+        cancelReason: reason,
+      });
+      state.movements ||= [];
+      state.movements.push({
+        id: commandId("audit"),
+        variantId: "system",
+        locationId: shipment.locationId,
+        type: "Pembatalan paket pengiriman",
+        quantity: 0,
+        note: `${shipment.trackingNumber} · ${reason}`,
+        user: actor.name,
+        createdAt: new Date().toISOString(),
+      });
+    });
+  },
+);
+
+app.post(
+  "/api/commands/shipping/handover/remove",
+  requireAuth,
+  async (req, res) => {
+    await executeCommand(req, res, async (state, actor) => {
+      const trackingNumber = String(req.body?.trackingNumber || "")
+        .trim()
+        .toUpperCase();
+      const batchCode = String(req.body?.batchCode || "")
+        .trim()
+        .toUpperCase();
+      const reason = String(req.body?.reason || "").trim().slice(0, 240);
+      if (reason.length < 3)
+        throw invalidCommand("Alasan koreksi minimal 3 karakter.");
+      const batch = state.shipmentHandovers.find(
         (item) => item.batchCode === batchCode,
       );
-      if (!batch) {
-        batch = {
-          id: commandId("hnd"),
-          batchCode,
-          carrier,
-          locationId,
-          status: "draft",
-          createdAt: new Date().toISOString(),
-          createdBy: actor.id,
-        };
-        state.shipmentHandovers.unshift(batch);
-      }
-      if (
-        batch.status !== "draft" ||
-        batch.locationId !== locationId ||
-        batch.carrier !== carrier
-      )
-        throw invalidCommand(
-          "Batch serah terima tidak sesuai atau sudah selesai.",
-        );
-      shipment.status = "handover_scanned";
-      shipment.handoverBatchCode = batchCode;
-      shipment.carrier = carrier;
+      if (!batch || batch.status !== "draft")
+        throw invalidCommand("Batch aktif tidak ditemukan.");
+      const authorization = commandAuth(
+        actor,
+        "shipping.manage",
+        batch.locationId,
+      );
+      if (!authorization.allowed) throw forbiddenCommand(authorization.reason);
+      const shipment = state.shipments.find(
+        (item) =>
+          item.trackingNumber === trackingNumber &&
+          item.handoverBatchCode === batchCode &&
+          item.status === "handover_scanned",
+      );
+      if (!shipment)
+        throw invalidCommand("Resi tidak ditemukan pada batch aktif ini.");
+      shipment.status = "ready";
+      shipment.carrier = detectShippingCarrier(trackingNumber) || "Belum ditentukan";
+      delete shipment.handoverBatchCode;
+      const remaining = state.shipments.some(
+        (item) =>
+          item.handoverBatchCode === batchCode &&
+          item.status === "handover_scanned",
+      );
+      if (!remaining)
+        Object.assign(batch, {
+          status: "cancelled",
+          cancelledAt: new Date().toISOString(),
+          cancelledBy: actor.id,
+          cancelReason: reason,
+        });
+      state.movements ||= [];
+      state.movements.push({
+        id: commandId("audit"),
+        variantId: "system",
+        locationId: shipment.locationId,
+        type: "Koreksi batch pengiriman",
+        quantity: 0,
+        note: `${trackingNumber} dikeluarkan dari ${batchCode} · ${reason}`,
+        user: actor.name,
+        createdAt: new Date().toISOString(),
+      });
     });
   },
 );
@@ -3701,6 +3935,78 @@ app.post("/api/commands/cashbook", requireAuth, async (req, res) => {
   });
 });
 
+app.post("/api/commands/debts", requireAuth, async (req, res) => {
+  await executeCommand(req, res, async (state, actor) => {
+    const action = String(req.body?.action || "create");
+    state.debtEntries ||= [];
+    if (action === "mark_paid") {
+      const id = String(req.body?.id || "");
+      const paidProofUrl = String(req.body?.paidProofUrl || "").trim();
+      const entry = state.debtEntries.find((item) => item.id === id);
+      if (!entry) throw invalidCommand("Catatan hutang/piutang tidak ditemukan.");
+      const auth = commandAuth(actor, "debt.manage", entry.locationId);
+      if (!auth.allowed) throw forbiddenCommand(auth.reason);
+      if (
+        paidProofUrl.length > 2048 ||
+        (paidProofUrl &&
+          !paidProofUrl.startsWith("https://") &&
+          !/^\/(?!\/)/.test(paidProofUrl))
+      )
+        throw invalidCommand("Bukti pembayaran tidak valid.");
+      entry.status = "paid";
+      entry.paidAt = new Date().toISOString();
+      entry.paidProofUrl = paidProofUrl || undefined;
+      return;
+    }
+    const input = req.body?.entry || {};
+    const type = String(input.type || "");
+    const transactionDate = String(input.transactionDate || "");
+    const dueDate = String(input.dueDate || "");
+    const locationId = String(input.locationId || "");
+    const partyName = String(input.partyName || "").trim();
+    const amount = Number(input.amount);
+    const note = String(input.note || "").trim();
+    const proofUrl = String(input.proofUrl || "").trim();
+    const auth = commandAuth(actor, "debt.manage", locationId);
+    if (!auth.allowed) throw forbiddenCommand(auth.reason);
+    if (!['debt', 'receivable'].includes(type))
+      throw invalidCommand("Pilih jenis hutang atau piutang.");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(transactionDate))
+      throw invalidCommand("Tanggal pencatatan tidak valid.");
+    if (dueDate && !/^\d{4}-\d{2}-\d{2}$/.test(dueDate))
+      throw invalidCommand("Tanggal jatuh tempo tidak valid.");
+    if (!partyName || partyName.length > 120)
+      throw invalidCommand("Nama pihak wajib diisi dan maksimal 120 karakter.");
+    if (!Number.isSafeInteger(amount) || amount <= 0)
+      throw invalidCommand("Nominal harus berupa rupiah bulat lebih dari nol.");
+    if (!(state.locations || []).some((location) => location.id === locationId && location.active !== false))
+      throw invalidCommand("Lokasi tidak ditemukan atau sudah tidak aktif.");
+    if (note.length > 500) throw invalidCommand("Keterangan maksimal 500 karakter.");
+    if (
+      proofUrl.length > 2048 ||
+      (proofUrl &&
+        !proofUrl.startsWith("https://") &&
+        !/^\/(?!\/)/.test(proofUrl))
+    )
+      throw invalidCommand("Bukti pencatatan tidak valid.");
+    state.debtEntries.unshift({
+      id: commandId("debt"),
+      type,
+      transactionDate,
+      dueDate: dueDate || undefined,
+      locationId,
+      partyName,
+      amount,
+      note: note || undefined,
+      proofUrl: proofUrl || undefined,
+      status: "unpaid",
+      createdAt: new Date().toISOString(),
+      createdBy: actor.id,
+      createdByName: actor.name,
+    });
+  });
+});
+
 app.post("/api/commands/role-policies", requireAuth, async (req, res) => {
   await executeCommand(req, res, async (state, actor) => {
     if (actor.role !== "owner")
@@ -3942,6 +4248,60 @@ app.patch("/api/commands/employees/:id", requireAuth, async (req, res) => {
       state,
       state.employees[index],
     );
+  });
+});
+app.patch("/api/commands/employees/:id/status", requireAuth, async (req, res) => {
+  await executeCommand(req, res, async (state, actor, connection) => {
+    if (!commandAuth(actor, "user.update").allowed)
+      throw forbiddenCommand(
+        "Akun Anda tidak memiliki izin mengubah status karyawan.",
+      );
+    const employee = state.employees.find(
+      (item) => item.id === req.params.id,
+    );
+    if (!employee) throw invalidCommand("Data karyawan tidak ditemukan.");
+    const account = state.users.find((item) => item.id === employee.userId);
+    if (!account || account.role === "owner")
+      throw invalidCommand("Akun staf tidak ditemukan atau tidak dapat diubah.");
+    const active = req.body?.active === true;
+    if (
+      active &&
+      (!employee.locationId ||
+        !state.locations.some(
+          (location) =>
+            location.id === employee.locationId && location.active !== false,
+        ))
+    )
+      throw invalidCommand(
+        "Tetapkan lokasi kerja aktif sebelum mengaktifkan kembali karyawan.",
+      );
+    employee.active = active;
+    account.active = active;
+    if (connection) {
+      await connection.execute(
+        "UPDATE users SET active=? WHERE id=? AND organization_id=? AND role<>'owner'",
+        [active, employee.userId, req.auth.org],
+      );
+    } else {
+      const demoAccount = demoUsers.find(
+        (user) =>
+          user.id === employee.userId &&
+          user.organization_id === req.auth.org &&
+          user.role !== "owner",
+      );
+      if (demoAccount) demoAccount.active = active;
+    }
+    state.movements ||= [];
+    state.movements.push({
+      id: commandId("audit"),
+      variantId: "system",
+      locationId: employee.locationId || "system",
+      type: active ? "Aktivasi karyawan" : "Nonaktif karyawan",
+      quantity: 0,
+      note: `${account.name} ${active ? "diaktifkan kembali" : "dinonaktifkan"}; histori tetap dipertahankan`,
+      user: actor.name,
+      createdAt: new Date().toISOString(),
+    });
   });
 });
 const LIVE_SESSION_PLATFORMS = [

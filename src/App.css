@@ -192,6 +192,9 @@ nav {
   color: #a8c0d0;
   font-size: 11px;
 }
+.mobile-sidebar-account {
+  display: none;
+}
 .avatar {
   width: 38px;
   height: 38px;
@@ -695,7 +698,23 @@ button:disabled,
   gap: 11px;
 }
 .batch-search {
-  width: min(520px, 100%);
+  width: 100%;
+}
+.batch-filter-tools {
+  display: grid;
+  grid-template-columns: minmax(260px, 1.4fr) repeat(3, minmax(150px, 0.65fr));
+  gap: 10px;
+}
+.batch-filter-tools select,
+.batch-filter-tools > input {
+  min-height: 46px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: #fff;
+  color: var(--text);
+  font: inherit;
+  font-weight: 700;
 }
 .batch-history-summary {
   display: flex;
@@ -824,6 +843,9 @@ button:disabled,
   font-size: 13px;
 }
 @media (max-width: 720px) {
+  .batch-filter-tools {
+    grid-template-columns: 1fr;
+  }
   .batch-history-summary {
     align-items: flex-start;
     flex-direction: column;
@@ -855,10 +877,11 @@ button:disabled,
 }
 .shipment-group-tools {
   display: grid;
-  grid-template-columns: minmax(240px, 1fr) 220px 220px;
+  grid-template-columns: minmax(240px, 1.4fr) repeat(4, minmax(145px, 0.65fr));
   gap: 10px;
 }
 .shipment-group-tools select,
+.shipment-group-tools > input,
 .shipment-search {
   min-height: 46px;
   border: 1px solid var(--line);
@@ -868,6 +891,11 @@ button:disabled,
 }
 .shipment-group-tools select {
   padding: 0 12px;
+  font-weight: 700;
+}
+.shipment-group-tools > input {
+  padding: 0 12px;
+  font: inherit;
   font-weight: 700;
 }
 .shipment-search {
@@ -1556,6 +1584,75 @@ td small.block {
   }
   .header-actions .date-chip {
     display: none;
+  }
+  .menu-btn {
+    position: relative;
+    z-index: 2;
+    display: grid;
+    width: 44px;
+    height: 44px;
+    flex: 0 0 44px;
+    place-items: center;
+    padding: 0;
+    border: 1px solid #c7e3eb;
+    background: #f7fcfd;
+    color: #083c5c;
+  }
+  .mobile-sidebar-account {
+    display: grid;
+    flex: 0 0 auto;
+    gap: 10px;
+    padding: 12px max(12px, env(safe-area-inset-right))
+      max(14px, env(safe-area-inset-bottom));
+    border-top: 1px solid #ffffff1f;
+    background: #062f49;
+  }
+  .mobile-sidebar-profile {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 10px;
+  }
+  .mobile-sidebar-profile .avatar img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: inherit;
+  }
+  .mobile-sidebar-profile > span {
+    min-width: 0;
+  }
+  .mobile-sidebar-profile b,
+  .mobile-sidebar-profile small {
+    display: block;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .mobile-sidebar-profile small {
+    margin-top: 2px;
+    color: #a8c0d0;
+    font-size: 11px;
+  }
+  .mobile-sidebar-account-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .mobile-sidebar-account-actions button {
+    min-height: 42px;
+    padding: 8px 10px;
+    border: 1px solid #ffffff24;
+    border-radius: 10px;
+    background: #ffffff0d;
+    color: #e8f8fb;
+    font-weight: 750;
+    cursor: pointer;
+  }
+  .mobile-sidebar-account-actions .mobile-logout-button {
+    border-color: #ffb4ab55;
+    background: #d92d2724;
+    color: #ffd2cc;
   }
   .dashboard-grid {
     grid-template-columns: 1fr;
@@ -2540,6 +2637,20 @@ th {
   padding: 14px;
   margin-bottom: 14px;
 }
+.shipping-batch-action {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-top: 2px;
+}
+.shipping-batch-action button {
+  flex: 0 0 auto;
+}
+.shipping-batch-action small {
+  color: var(--muted);
+  line-height: 1.45;
+}
 .shipping-workspace {
   background: #fff;
   border: 1px solid var(--line);
@@ -2662,12 +2773,15 @@ th {
   gap: 9px;
   margin-top: 11px;
 }
-.manual-resi input {
+.manual-resi textarea {
   flex: 1;
+  min-height: 48px;
+  resize: vertical;
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 11px 12px;
   text-transform: uppercase;
+  font: inherit;
 }
 .shipment-list {
   display: grid;
@@ -2692,6 +2806,20 @@ th {
 .shipment-list time {
   color: var(--muted);
   font-size: 12px;
+}
+.shipment-correction {
+  flex: 0 0 auto;
+  border: 1px solid #f0c9c6;
+  border-radius: 9px;
+  background: #fff6f5;
+  color: #b42318;
+  padding: 7px 10px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.shipment-correction:hover {
+  border-color: #df8f89;
+  background: #fff0ef;
 }
 .shipment-state {
   width: 31px;
@@ -2730,6 +2858,14 @@ th {
   color: var(--text);
 }
 @media (max-width: 720px) {
+  .shipping-tabs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow: visible;
+  }
+  .shipping-tabs button {
+    padding-inline: 8px;
+  }
   .shipping-stats {
     grid-template-columns: 1fr;
   }
@@ -2756,6 +2892,10 @@ th {
   .manual-resi {
     flex-direction: column;
   }
+  .shipping-batch-action {
+    align-items: stretch;
+    flex-direction: column;
+  }
   .shipment-list article {
     align-items: flex-start;
     flex-wrap: wrap;
@@ -2763,6 +2903,9 @@ th {
   .shipment-list time {
     width: 100%;
     padding-left: 42px;
+  }
+  .shipment-correction {
+    width: 100%;
   }
   .shipping-finalize .primary {
     width: 100%;
@@ -3007,9 +3150,214 @@ th {
 .stock-variant-empty span {
   font-size: 12px;
 }
+.product-variant-editor-tools {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  margin-bottom: 16px;
+  border: 1px solid #dbe5ef;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+.product-variant-editor-tools .list-search {
+  width: 100%;
+}
+.product-variant-editor-filters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.product-variant-editor-filters select {
+  min-width: 0;
+  width: 100%;
+  background: #fff;
+}
+.product-variant-editor-tools > small {
+  color: #64748b;
+  text-align: right;
+}
+.product-variant-editor-empty {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  padding: 28px 16px;
+  margin-bottom: 16px;
+  border: 1px dashed #cbd5e1;
+  border-radius: 12px;
+  color: #64748b;
+  text-align: center;
+}
+.product-variant-editor-empty b {
+  color: #172033;
+}
+.product-variant-editor-empty .secondary {
+  margin-top: 4px;
+}
+.variant-bulk-update {
+  display: grid;
+  grid-template-columns: minmax(170px, 1.2fr) repeat(2, minmax(130px, 1fr)) auto;
+  gap: 10px;
+  align-items: end;
+  padding: 14px;
+  margin-bottom: 12px;
+  border: 1px solid #bae6d3;
+  border-radius: 10px;
+  background: #f0fdf7;
+}
+.variant-bulk-update > div {
+  display: grid;
+  gap: 3px;
+  align-self: center;
+}
+.variant-bulk-update > div small {
+  color: #64748b;
+}
+.variant-bulk-update label {
+  display: grid;
+  gap: 5px;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+}
+.variant-bulk-update input {
+  width: 100%;
+  background: #fff;
+}
+.variant-bulk-update button {
+  min-height: 42px;
+  white-space: nowrap;
+}
+.debt-page {
+  display: grid;
+  gap: 18px;
+}
+.debt-entry-card {
+  padding: 20px;
+}
+.debt-form-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+.debt-form-grid > label,
+.debt-proof-field {
+  display: grid;
+  gap: 6px;
+}
+.debt-form-grid > label > span,
+.debt-proof-field > span {
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+}
+.debt-note-field,
+.debt-proof-field {
+  grid-column: span 3;
+}
+.debt-party-field,
+.debt-amount-field {
+  grid-column: span 6 !important;
+}
+.debt-proof-field {
+  grid-column: 1 / -1;
+  align-content: start;
+  min-width: 0;
+}
+.debt-proof-field > span {
+  color: #667b8f;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.035em;
+  text-transform: uppercase;
+}
+.debt-type-picker {
+  flex: 0 0 auto;
+}
+.debt-table td small {
+  display: block;
+  margin-top: 4px;
+  color: #64748b;
+}
+.debt-proof-links {
+  display: grid;
+  justify-items: start;
+  gap: 5px;
+}
+.debt-proof-links a {
+  color: #087da5;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.debt-proof-links a:hover {
+  text-decoration: underline;
+}
+.debt-payment-summary b {
+  min-width: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.debt-payment-proof-field {
+  margin-bottom: 8px;
+}
+.debt-payment-hint {
+  display: block;
+  margin-bottom: 20px;
+}
+.debt-type,
+.debt-status {
+  display: inline-flex;
+  padding: 5px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.debt-type.debt {
+  color: #b42318;
+  background: #fef3f2;
+}
+.debt-type.receivable {
+  color: #027a48;
+  background: #ecfdf3;
+}
+.debt-status.unpaid {
+  color: #b54708;
+  background: #fffaeb;
+}
+.debt-status.paid {
+  color: #027a48;
+  background: #ecfdf3;
+}
+.transfer-variant-bulk-update {
+  grid-template-columns: minmax(170px, 1.2fr) minmax(130px, 1fr) auto auto;
+}
 @media (max-width: 680px) {
   .stock-variant-filters {
     grid-template-columns: 1fr;
+  }
+  .product-variant-editor-filters {
+    grid-template-columns: 1fr;
+  }
+  .variant-bulk-update,
+  .transfer-variant-bulk-update {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+  .variant-bulk-update button {
+    width: 100%;
+  }
+  .debt-form-grid {
+    grid-template-columns: 1fr;
+  }
+  .debt-note-field,
+  .debt-proof-field {
+    grid-column: auto;
+  }
+  .debt-party-field,
+  .debt-amount-field,
+  .debt-proof-field {
+    grid-column: 1 / -1 !important;
   }
   .stock-variant-bulk {
     align-items: flex-start;
@@ -3698,6 +4046,33 @@ th {
 }
 .role-check-grid input {
   accent-color: var(--green);
+}
+.role-check-grid label > span {
+  min-width: 0;
+}
+.role-check-grid label > em {
+  margin-left: auto;
+  color: #667b8f;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-align: right;
+  text-transform: uppercase;
+}
+.role-check-grid label.owner-only {
+  border-style: dashed;
+  background: #f8fafc;
+  color: #7a8997;
+  cursor: not-allowed;
+}
+.role-check-grid label.permission-required {
+  background: #f3fbf8;
+  border-color: #b9dfd2;
+  cursor: default;
+}
+.role-menu-group + .role-menu-group {
+  margin-top: 18px;
 }
 .permission-group {
   margin-top: 15px;
@@ -12398,6 +12773,32 @@ button.danger:disabled {
   background: #fff;
 }
 
+/* File inputs inside the evidence picker stay visually hidden and must not
+   inherit the full-width form-control treatment above. */
+.cashbook-form-grid .evidence-photo-actions input[type="file"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.cashbook-form-grid .evidence-photo-actions label {
+  display: inline-flex;
+  grid-column: auto;
+}
+
+.cashbook-form-grid .evidence-photo-actions label > span {
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
 .cashbook-money-input {
   display: flex;
   align-items: center;
@@ -13003,5 +13404,140 @@ td.cashbook-amount-column.out {
     place-content: center;
     place-items: center;
     text-align: center;
+  }
+}
+
+/* Global layout quality: consistent dialog rhythm and touch-friendly controls. */
+.content > *,
+.page-head > *,
+.page-head-actions,
+.form-grid > *,
+.stats-grid > *,
+.dashboard-grid > *,
+.dash-grid-top > *,
+.dash-grid-middle > *,
+.dash-grid-bottom > *,
+.card-head > *,
+.filters > * {
+  min-width: 0;
+}
+
+.page-head h2,
+.page-head p,
+.modal h2,
+.modal p,
+.field > span,
+button,
+td,
+th {
+  overflow-wrap: anywhere;
+}
+
+.modal {
+  overscroll-behavior: contain;
+}
+
+.modal > header {
+  align-items: flex-start;
+  gap: 16px;
+  padding: 24px;
+}
+
+.modal > header .icon-btn {
+  flex: 0 0 auto;
+}
+
+.modal > form {
+  padding: 24px;
+}
+
+.modal .field > span {
+  line-height: 1.35;
+}
+
+.modal .field textarea {
+  min-height: 96px;
+  line-height: 1.5;
+}
+
+/* Keep save/cancel controls reachable in long operational forms. */
+.modal:not(.pos-modal) > form > .modal-actions {
+  position: sticky;
+  z-index: 6;
+  bottom: 0;
+  margin-right: -24px;
+  margin-left: -24px;
+  padding: 18px 24px 24px;
+  background: #fff;
+  box-shadow: 0 -10px 22px #1732430a;
+}
+
+/* Safe spacing for dialog content that is not wrapped in a form. */
+.modal > .field {
+  margin: 24px;
+}
+
+.modal > .modal-actions {
+  margin-top: 0;
+  padding: 18px 24px 24px;
+}
+
+.location-list > div,
+.location-sales-list > div,
+.activity > div {
+  width: 100%;
+  min-width: 0;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+[role="button"]:focus-visible,
+[role="tab"]:focus-visible {
+  outline: 3px solid #0aa0c555;
+  outline-offset: 2px;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+@media (max-width: 767px) {
+  main button,
+  main a.table-action,
+  main [role="button"] {
+    min-height: 44px;
+  }
+
+  main input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+  main select,
+  main textarea {
+    min-height: 44px;
+  }
+
+  .modal > header,
+  .modal > form {
+    padding: 18px 16px;
+  }
+
+  .modal:not(.pos-modal) > form > .modal-actions {
+    bottom: 0;
+    margin-right: -16px;
+    margin-left: -16px;
+    padding: 16px max(16px, env(safe-area-inset-right))
+      max(16px, env(safe-area-inset-bottom))
+      max(16px, env(safe-area-inset-left));
+  }
+
+  .modal > .field {
+    margin: 18px 16px;
+  }
+
+  .modal > .modal-actions {
+    padding: 16px max(16px, env(safe-area-inset-right))
+      max(16px, env(safe-area-inset-bottom))
+      max(16px, env(safe-area-inset-left));
   }
 }

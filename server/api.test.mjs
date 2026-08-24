@@ -66,9 +66,98 @@ describe('multi-tenant API', () => {
     expect(state.body.data.movements.some(item => item.type === 'Perubahan hak akses')).toBe(true);
 
     const financeEmail = `finance-${suffix}@test.local`;
-    expect((await post('/api/users', { name: 'Finance', email: financeEmail, password: 'Password123!', role: 'finance' }, owner.body.token)).status).toBe(201);
+    const financeAccount = await post('/api/users', { name: 'Finance', email: financeEmail, password: 'Password123!', role: 'finance' }, owner.body.token);
+    expect(financeAccount.status).toBe(201);
     const finance = await post('/api/login', { email: financeEmail, password: 'Password123!' });
     expect((await post('/api/commands/role-policies', { role: 'cashier', policy }, finance.body.token)).status).toBe(403);
+
+    const currentState = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    const locationId = currentState.body.data.locations[0].id;
+    const livePolicy = {
+      menus: ['dashboard', 'cashbook', 'business', 'help'],
+      permissions: ['cashbook.view', 'cashbook.manage'],
+    };
+    expect((await post('/api/commands/role-policies', { role: 'finance', policy: livePolicy }, owner.body.token)).status).toBe(201);
+    const financeState = await request('/api/state', { headers: { authorization: `Bearer ${finance.body.token}` } });
+    expect(financeState.body.data.rolePolicies.finance).toEqual(livePolicy);
+    expect((await request('/api/organization', {
+      method: 'PUT',
+      headers: { authorization: `Bearer ${finance.body.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Tidak boleh diubah' }),
+    })).status).toBe(403);
+
+    const transactionDate = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit',
+    }).format(new Date());
+    const cashEntry = {
+      type: 'in', transactionDate, locationId, category: 'Uji RBAC langsung',
+      amount: 1000, paymentMethod: 'Tunai', reportTreatment: 'other_income',
+    };
+    expect((await post('/api/commands/cashbook', { entry: cashEntry }, finance.body.token)).status).toBe(201);
+
+    const revokedPolicy = {
+      menus: ['dashboard', 'cashbook', 'business', 'help'],
+      permissions: ['cashbook.view'],
+    };
+    expect((await post('/api/commands/role-policies', { role: 'finance', policy: revokedPolicy }, owner.body.token)).status).toBe(201);
+    expect((await post('/api/commands/cashbook', { entry: { ...cashEntry, category: 'Harus ditolak' } }, finance.body.token)).status).toBe(403);
+
+    expect((await patch(`/api/users/${financeAccount.body.user.id}`, {
+      name: 'Finance menjadi karyawan', email: financeEmail, role: 'employee', active: true,
+    }, owner.body.token)).status).toBe(200);
+    const sameSessionAfterRoleChange = await request('/api/state', {
+      headers: { authorization: `Bearer ${finance.body.token}` },
+    });
+    expect(sameSessionAfterRoleChange.status).toBe(200);
+    expect(sameSessionAfterRoleChange.body.data.users.find(item => item.id === financeAccount.body.user.id)?.role).toBe('employee');
+    expect(Object.keys(sameSessionAfterRoleChange.body.data.rolePolicies)).toEqual(['employee']);
+    expect(sameSessionAfterRoleChange.body.data.cashEntries).toEqual([]);
+  });
+
+  it('records debt or receivable evidence and marks the entry paid', async () => {
+    const suffix = `${Date.now()}-debt-entry`;
+    const owner = await post('/api/register', { organizationName: 'Debt Ledger', name: 'Owner', email: `owner-${suffix}@test.local`, password: 'Password123!' });
+    const initial = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    const locationId = initial.body.data.locations[0].id;
+    const created = await post('/api/commands/debts', {
+      entry: {
+        type: 'debt', transactionDate: '2026-08-24', dueDate: '2026-08-31',
+        locationId, partyName: 'Supplier Uji', amount: 250000,
+        proofUrl: 'https://example.com/invoice.jpg', note: 'Invoice bahan baku',
+      },
+    }, owner.body.token);
+    expect(created.status).toBe(201);
+    const afterCreate = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    const entry = afterCreate.body.data.debtEntries[0];
+    expect(entry).toMatchObject({ type: 'debt', status: 'unpaid', amount: 250000, partyName: 'Supplier Uji' });
+    expect((await post('/api/commands/debts', { action: 'mark_paid', id: entry.id, paidProofUrl: 'javascript:alert(1)' }, owner.body.token)).status).toBe(400);
+    const paidProofUrl = 'https://example.com/payment.jpg';
+    expect((await post('/api/commands/debts', { action: 'mark_paid', id: entry.id, paidProofUrl }, owner.body.token)).status).toBe(201);
+    const afterPaid = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    expect(afterPaid.body.data.debtEntries[0].status).toBe('paid');
+    expect(afterPaid.body.data.debtEntries[0].paidAt).toBeTruthy();
+    expect(afterPaid.body.data.debtEntries[0].paidProofUrl).toBe(paidProofUrl);
+  });
+
+  it('deactivates and reactivates an employee account and work record together', async () => {
+    const suffix = `${Date.now()}-employee-status`;
+    const password = 'Password123!';
+    const owner = await post('/api/register', { organizationName: 'Employee Status', name: 'Owner', email: `owner-${suffix}@test.local`, password });
+    const initial = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    const locationId = initial.body.data.locations[0].id;
+    const staffEmail = `staff-${suffix}@test.local`;
+    const account = await post('/api/users', { name: 'Staff Uji', email: staffEmail, password, role: 'employee' }, owner.body.token);
+    expect(account.status).toBe(201);
+    expect((await post('/api/commands/employees', { employee: { id: `emp-${suffix}`, userId: account.body.user.id, locationId, position: 'Karyawan', monthlySalary: 2500000, active: true } }, owner.body.token)).status).toBe(201);
+
+    expect((await request(`/api/commands/employees/emp-${suffix}/status`, { method: 'PATCH', headers: { 'content-type': 'application/json', authorization: `Bearer ${owner.body.token}` }, body: JSON.stringify({ active: false }) })).status).toBe(201);
+    const inactive = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    expect(inactive.body.data.users.find(item => item.id === account.body.user.id).active).toBe(false);
+    expect(inactive.body.data.employees.find(item => item.id === `emp-${suffix}`).active).toBe(false);
+    expect((await post('/api/login', { email: staffEmail, password })).status).toBe(401);
+
+    expect((await request(`/api/commands/employees/emp-${suffix}/status`, { method: 'PATCH', headers: { 'content-type': 'application/json', authorization: `Bearer ${owner.body.token}` }, body: JSON.stringify({ active: true }) })).status).toBe(201);
+    expect((await post('/api/login', { email: staffEmail, password })).status).toBe(200);
   });
 
   it('persists an uploaded product image after the product is edited', async () => {
@@ -409,6 +498,34 @@ describe('multi-tenant API', () => {
     expect(refreshed.body.data.shipments).toContainEqual(expect.objectContaining({ trackingNumber: jneTrackingNumber, carrier: 'JNE', status: 'ready' }));
     expect(refreshed.body.data.shipments).toContainEqual(expect.objectContaining({ trackingNumber: unknownTrackingNumber, carrier: 'SiCepat', status: 'handed_over', handoverBatchCode: sicepatBatchCode }));
     expect(refreshed.body.data.shipmentHandovers).toContainEqual(expect.objectContaining({ batchCode, status: 'completed', courierName: 'Kurir SPX' }));
+  });
+
+  it('supports bulk shipping, restores draft batches, and audits package corrections', async () => {
+    const suffix = `${Date.now()}-shipping-correction`;
+    const owner = await post('/api/register', { organizationName: 'Pengiriman Koreksi', name: 'Owner', email: `owner-${suffix}@test.local`, password: 'Password123!' });
+    const trackingNumbers = [`SPXID${Date.now()}A`, `SPXID${Date.now()}B`];
+    expect((await post('/api/commands/shipping/ready/bulk', { trackingNumbers, locationId: 'loc-owner', marketplace: 'Shopee' }, owner.body.token)).status).toBe(201);
+    const batchCode = `KRM-CORRECTION-${Date.now()}`;
+    expect((await post('/api/commands/shipping/handover/scan/bulk', { trackingNumbers, locationId: 'loc-owner', carrier: 'SPX Express', batchCode }, owner.body.token)).status).toBe(201);
+
+    expect((await post('/api/commands/shipping/handover/remove', { trackingNumber: trackingNumbers[0], batchCode, reason: 'Salah memasukkan paket' }, owner.body.token)).status).toBe(201);
+    expect((await post('/api/commands/shipping/handover/remove', { trackingNumber: trackingNumbers[1], batchCode, reason: 'Batch kurir diganti' }, owner.body.token)).status).toBe(201);
+    let refreshed = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    const packageToCancel = refreshed.body.data.shipments.find((item) => item.trackingNumber === trackingNumbers[0]);
+    expect(packageToCancel).toEqual(expect.objectContaining({ status: 'ready' }));
+    expect(refreshed.body.data.shipmentHandovers).toContainEqual(expect.objectContaining({ batchCode, status: 'cancelled' }));
+
+    expect((await post(`/api/commands/shipping/packages/${packageToCancel.id}/cancel`, { reason: 'Nomor resi salah ditempel' }, owner.body.token)).status).toBe(201);
+    expect((await post('/api/commands/shipping/ready', { trackingNumber: trackingNumbers[0], locationId: 'loc-owner', marketplace: 'Shopee' }, owner.body.token)).status).toBe(201);
+    refreshed = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    expect(refreshed.body.data.shipments.filter((item) => item.trackingNumber === trackingNumbers[0])).toHaveLength(1);
+    const restoredPackage = refreshed.body.data.shipments.find((item) => item.trackingNumber === trackingNumbers[0]);
+    expect(restoredPackage).toEqual(expect.objectContaining({ trackingNumber: trackingNumbers[0], status: 'ready' }));
+    expect(restoredPackage.cancelReason).toBeUndefined();
+    expect(refreshed.body.data.movements).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'Koreksi batch pengiriman' }),
+      expect.objectContaining({ type: 'Pembatalan paket pengiriman' }),
+    ]));
   });
 
   it('synchronizes a saved HPP recipe to the selected variant master costs', async () => {
