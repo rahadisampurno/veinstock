@@ -13,6 +13,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveUserScope, authorizeAction } from "./rbac.mjs";
 import { syncStateToSQL, getStateFromSQL } from "./sqlState.mjs";
+import {
+  buildPackingEvidence,
+  failPackingEvidenceDeletion,
+  packingEvidenceDeletionDue,
+  publicShipmentEvidence,
+  resolvePackingEvidence,
+} from "./shippingEvidence.mjs";
 
 // EAN-13 adalah format yang dapat dibaca oleh scanner barcode retail umum.
 // Prefix 20 dipakai untuk kode internal usaha; 10 digit berikutnya diturunkan
@@ -210,6 +217,22 @@ async function backfillRolePolicyDependencies(pool) {
     }
     for (const policy of Object.values(state?.rolePolicies || {})) {
       policy.permissions ||= [];
+      if (
+        policy.permissions.includes("shipping.view") &&
+        !policy.permissions.includes("shipping.evidence.view")
+      ) {
+        policy.permissions.push("shipping.evidence.view");
+        changed = true;
+      }
+      if (
+        policy.permissions.includes("shipping.manage") &&
+        !policy.permissions.includes("shipping.evidence.manage")
+      ) {
+        policy.permissions.push("shipping.evidence.manage");
+        if (!policy.permissions.includes("shipping.evidence.view"))
+          policy.permissions.push("shipping.evidence.view");
+        changed = true;
+      }
       for (const menu of policy.menus || []) {
         const required = requirements[menu];
         if (required && !policy.permissions.includes(required)) {
@@ -357,7 +380,7 @@ app.use((req, res, next) => {
   if (isProduction)
     res.set(
       "Content-Security-Policy",
-      "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https://res.cloudinary.com; connect-src 'self'; media-src 'self' blob:",
+      "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https://res.cloudinary.com https://api.cloudinary.com; connect-src 'self'; media-src 'self' blob:",
     );
   next();
 });
@@ -375,17 +398,17 @@ cloudinary.config({ secure: true });
 const imageUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024, files: 1 },
-  fileFilter: (_req, file, done) =>
-    done(
-      null,
-      [
-        "image/jpeg",
-        "image/png",
-        "image/webp",
-        "image/heic",
-        "image/heif",
-      ].includes(file.mimetype),
-    ),
+  fileFilter: (req, file, done) => {
+    const allowed = [
+      "image/jpeg",
+      "image/png",
+      "image/webp",
+      "image/heic",
+      "image/heif",
+    ].includes(file.mimetype);
+    if (!allowed) req.invalidImageType = true;
+    done(null, allowed);
+  },
 });
 
 // ── Email / SMTP ─────────────────────────────────────────────────────────────
@@ -565,6 +588,20 @@ async function db() {
       version BIGINT NOT NULL DEFAULT 1,
       payload JSON NOT NULL,
       updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    )`);
+    await pool.execute(`CREATE TABLE IF NOT EXISTS media_upload_intents (
+      id VARCHAR(40) PRIMARY KEY,
+      organization_id VARCHAR(40) NOT NULL,
+      purpose VARCHAR(60) NOT NULL,
+      public_id VARCHAR(255) NOT NULL,
+      asset_id VARCHAR(255) NULL,
+      delivery_type VARCHAR(30) NOT NULL DEFAULT 'authenticated',
+      status ENUM('pending','committed','cleaned') NOT NULL DEFAULT 'pending',
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      committed_at TIMESTAMP NULL,
+      cleaned_at TIMESTAMP NULL,
+      INDEX idx_media_intent_cleanup (status, created_at),
+      INDEX idx_media_intent_org (organization_id)
     )`);
     await pool.execute(`CREATE TABLE IF NOT EXISTS organizations (
       id VARCHAR(40) PRIMARY KEY,
@@ -1767,6 +1804,8 @@ const configurablePermissions = new Set([
   "sale.void",
   "shipping.view",
   "shipping.manage",
+  "shipping.evidence.view",
+  "shipping.evidence.manage",
   "report.view",
   "report.export",
   "audit.location.view",
@@ -1901,7 +1940,10 @@ const demoCommandLocks = new Map();
 async function executeCommand(req, res, mutate) {
   const conn = await db();
   const actor = await currentUser(conn, req.auth);
-  if (!actor) return res.status(401).json({ message: "Akun tidak aktif" });
+  if (!actor) {
+    res.status(401).json({ message: "Akun tidak aktif" });
+    return { ok: false };
+  }
   const connection = conn ? await conn.getConnection() : null;
   let releaseDemoLock;
   let demoLockTail;
@@ -1976,12 +2018,14 @@ async function executeCommand(req, res, mutate) {
     const nextVersion = Number(loaded.version || 0) + 1;
     await commitCommandState(connection, req.auth.org, state, nextVersion);
     if (connection) await connection.commit();
-    return res.status(201).json({ version: nextVersion });
+    res.status(201).json({ version: nextVersion });
+    return { ok: true, version: nextVersion };
   } catch (error) {
     if (connection) await connection.rollback();
     if (!error?.status || error.status >= 500)
       console.error("Transactional command failed:", error);
-    return commandFailure(res, error);
+    commandFailure(res, error);
+    return { ok: false, error };
   } finally {
     connection?.release();
     if (releaseDemoLock) {
@@ -2460,6 +2504,129 @@ app.patch("/api/profile/password", requireAuth, async (req, res) => {
   // Not sending email for password changes anymore to save tokens
   res.json({ message: "Password berhasil diubah" });
 });
+
+const optimizeUploadedImage = async (
+  file,
+  { maxDimension = 1200, quality = 75 } = {},
+) =>
+  sharp(file.buffer, {
+    failOn: "error",
+    limitInputPixels: 40_000_000,
+  })
+    .rotate()
+    .resize({
+      width: maxDimension,
+      height: maxDimension,
+      fit: "inside",
+      withoutEnlargement: true,
+    })
+    .webp({ quality, effort: 5 })
+    .toBuffer();
+
+const uploadCloudinaryBuffer = async (buffer, options) =>
+  new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      {
+        resource_type: "image",
+        format: "webp",
+        overwrite: false,
+        backup: options.backup !== false,
+        ...options,
+      },
+      (error, value) => (error ? reject(error) : resolve(value)),
+    );
+    stream.end(buffer);
+  });
+
+const packingEvidenceCloudinaryPath = (
+  organizationId,
+  evidenceId,
+  capturedAt,
+) => {
+  const yearMonth = capturedAt.slice(0, 7).replace("-", "/");
+  const folder = `menengs/${organizationId}/shipping/packing/${yearMonth}`;
+  return { folder, publicId: `${folder}/${evidenceId}` };
+};
+
+const uploadPackingEvidence = async ({
+  file,
+  organizationId,
+  evidenceId,
+  capturedAt,
+}) => {
+  const { folder } = packingEvidenceCloudinaryPath(
+    organizationId,
+    evidenceId,
+    capturedAt,
+  );
+  const optimized = await optimizeUploadedImage(file, {
+    maxDimension: 1600,
+    quality: 78,
+  });
+  const result = await uploadCloudinaryBuffer(optimized, {
+    folder,
+    public_id: evidenceId,
+    type: "authenticated",
+    backup: false,
+    use_filename: false,
+    unique_filename: false,
+    tags: ["menengs-packing-evidence"],
+  });
+  return {
+    capturedAt,
+    assetId: result.asset_id,
+    publicId: result.public_id,
+    version: result.version,
+    width: result.width,
+    height: result.height,
+    bytes: result.bytes,
+    originalBytes: file.size,
+    format: result.format || "webp",
+  };
+};
+
+const deleteCloudinaryPackingEvidence = async ({ assetId, publicId }) => {
+  if (assetId) {
+    await cloudinary.api.delete_resources_by_asset_ids([assetId], {
+      invalidate: true,
+    });
+    return;
+  }
+  if (publicId)
+    await cloudinary.uploader.destroy(publicId, {
+      resource_type: "image",
+      type: "authenticated",
+      invalidate: true,
+    });
+};
+
+const createMediaUploadIntent = async (
+  conn,
+  { id, organizationId, publicId },
+) => {
+  if (!conn) return;
+  await conn.execute(
+    "INSERT INTO media_upload_intents (id, organization_id, purpose, public_id, delivery_type, status) VALUES (?, ?, 'shipping_packing', ?, 'authenticated', 'pending')",
+    [id, organizationId, publicId],
+  );
+};
+
+const updateMediaUploadIntent = async (conn, id, status, assetId) => {
+  if (!conn) return;
+  if (status === "uploaded") {
+    await conn.execute(
+      "UPDATE media_upload_intents SET asset_id=? WHERE id=? AND status='pending'",
+      [assetId || null, id],
+    );
+    return;
+  }
+  const timeColumn = status === "committed" ? "committed_at" : "cleaned_at";
+  await conn.execute(
+    `UPDATE media_upload_intents SET status=?, ${timeColumn}=CURRENT_TIMESTAMP WHERE id=?`,
+    [status, id],
+  );
+};
+
 app.post(
   "/api/uploads/image",
   requireAuth,
@@ -2477,28 +2644,9 @@ app.post(
         message: "Pilih gambar JPG, PNG, WebP, HEIC, atau HEIF maksimal 5 MB",
       });
     try {
-      const optimized = await sharp(req.file.buffer)
-        .rotate()
-        .resize({
-          width: 1200,
-          height: 1200,
-          fit: "inside",
-          withoutEnlargement: true,
-        })
-        .webp({ quality: 75, effort: 5 })
-        .toBuffer();
-      const result = await new Promise((resolve, reject) => {
-        const stream = cloudinary.uploader.upload_stream(
-          {
-            folder: `menengs/${req.auth.org}`,
-            resource_type: "image",
-            format: "webp",
-            overwrite: false,
-            transformation: [{ quality: "auto:eco", fetch_format: "auto" }],
-          },
-          (error, value) => (error ? reject(error) : resolve(value)),
-        );
-        stream.end(optimized);
+      const optimized = await optimizeUploadedImage(req.file);
+      const result = await uploadCloudinaryBuffer(optimized, {
+        folder: `menengs/${req.auth.org}`,
       });
       res.status(201).json({
         url: result.secure_url,
@@ -2577,11 +2725,18 @@ app.get("/api/state", requireAuth, async (req, res) => {
               entry,
           )
         : [];
-    const maskByPermissions = (source) =>
-      actor.role === "owner"
-        ? source
+    const maskByPermissions = (source) => {
+      const {
+        packingEvidenceDisposals: _packingEvidenceDisposals,
+        ...publicSource
+      } = source;
+      const safeShipments = (source.shipments || []).map((shipment) =>
+        publicShipmentEvidence(shipment),
+      );
+      return actor.role === "owner"
+        ? { ...publicSource, shipments: safeShipments }
         : {
-            ...source,
+            ...publicSource,
             rolePolicies: source.rolePolicies?.[actor.role]
               ? { [actor.role]: source.rolePolicies[actor.role] }
               : {},
@@ -2691,7 +2846,7 @@ app.get("/api/state", requireAuth, async (req, res) => {
               ? source.suppliers
               : [],
             shipments: hasAny("shipping.view", "shipping.manage")
-              ? source.shipments
+              ? safeShipments
               : [],
             shipmentHandovers: hasAny("shipping.view", "shipping.manage")
               ? source.shipmentHandovers
@@ -2744,6 +2899,7 @@ app.get("/api/state", requireAuth, async (req, res) => {
               ? source.pricing
               : undefined,
           };
+    };
     const scope = resolveUserScope(actor);
     if (scope.scopeType === "all") return maskByPermissions(data);
     const locationNames = new Map(
@@ -3052,9 +3208,22 @@ const ensureActiveShippingLocation = (state, actor, locationId) => {
 const recordReadyShipments = (
   state,
   actor,
-  { trackingNumbers, locationId, marketplace },
+  { trackingNumbers, locationId, marketplace, packingEvidence },
 ) => {
   ensureActiveShippingLocation(state, actor, locationId);
+  if (packingEvidence) {
+    const evidenceAuthorization = commandAuth(
+      actor,
+      "shipping.evidence.manage",
+      locationId,
+    );
+    if (!evidenceAuthorization.allowed)
+      throw forbiddenCommand(evidenceAuthorization.reason);
+    if (trackingNumbers.length !== 1)
+      throw invalidCommand(
+        "Satu foto packing hanya dapat dihubungkan ke satu nomor resi.",
+      );
+  }
   const packedAt = new Date().toISOString();
   trackingNumbers.forEach((trackingNumber) => {
     const detectedCarrier = detectShippingCarrier(trackingNumber);
@@ -3086,6 +3255,12 @@ const recordReadyShipments = (
     delete shipment.cancelledAt;
     delete shipment.cancelledBy;
     delete shipment.cancelReason;
+    if (existing?.packingEvidence?.provider) {
+      state.packingEvidenceDisposals ||= [];
+      state.packingEvidenceDisposals.push(existing.packingEvidence);
+      delete shipment.packingEvidence;
+    }
+    if (packingEvidence) shipment.packingEvidence = packingEvidence;
     if (!existing) state.shipments.unshift(shipment);
   });
 };
@@ -3158,6 +3333,187 @@ app.post("/api/commands/shipping/ready", requireAuth, async (req, res) => {
     });
   });
 });
+
+app.post(
+  "/api/commands/shipping/ready-with-evidence",
+  requireAuth,
+  imageUpload.single("image"),
+  async (req, res) => {
+    let upload;
+    let evidenceId;
+    let conn;
+    try {
+      if (req.invalidImageType)
+        throw invalidCommand(
+          "Format bukti packing harus JPG, PNG, WebP, HEIC, atau HEIF.",
+        );
+      const trackingNumbers = normalizeShippingTrackingNumbers(
+        req.body?.trackingNumber,
+      );
+      const trackingNumber = trackingNumbers[0];
+      const locationId = String(req.body?.locationId || "");
+      const marketplace = String(req.body?.marketplace || "Lainnya")
+        .trim()
+        .slice(0, 40);
+      conn = await db();
+      const actor = await currentUser(conn, req.auth);
+      if (!actor)
+        throw Object.assign(new Error("Akun tidak aktif"), { status: 401 });
+      const loaded = await loadStateForCommand(conn, req.auth.org);
+      if (!loaded.data)
+        throw invalidCommand(
+          "Data usaha belum siap. Muat ulang halaman lalu coba lagi.",
+        );
+      actor.rolePermissions =
+        loaded.data.rolePolicies?.[actor.role]?.permissions;
+      attachEmployeeLocation(loaded.data, actor);
+      ensureActiveShippingLocation(loaded.data, actor, locationId);
+      const existing = (loaded.data.shipments || []).find(
+        (item) => item.trackingNumber === trackingNumber,
+      );
+      if (existing && existing.status !== "cancelled")
+        throw invalidCommand(
+          existing.status === "handed_over"
+            ? `Resi ${trackingNumber} sudah diserahkan ke ekspedisi.`
+            : `Resi ${trackingNumber} sudah tercatat pada proses pengiriman.`,
+        );
+
+      let packingEvidence;
+      if (req.file) {
+        const evidenceAuthorization = commandAuth(
+          actor,
+          "shipping.evidence.manage",
+          locationId,
+        );
+        if (!evidenceAuthorization.allowed)
+          throw forbiddenCommand(evidenceAuthorization.reason);
+        if (!process.env.CLOUDINARY_URL)
+          throw Object.assign(
+            new Error("Penyimpanan bukti foto belum dikonfigurasi."),
+            { status: 503 },
+          );
+        evidenceId = commandId("pke");
+        const capturedAt = new Date().toISOString();
+        const { publicId } = packingEvidenceCloudinaryPath(
+          req.auth.org,
+          evidenceId,
+          capturedAt,
+        );
+        await createMediaUploadIntent(conn, {
+          id: evidenceId,
+          organizationId: req.auth.org,
+          publicId,
+        });
+        upload = await uploadPackingEvidence({
+          file: req.file,
+          organizationId: req.auth.org,
+          evidenceId,
+          capturedAt,
+        });
+        await updateMediaUploadIntent(
+          conn,
+          evidenceId,
+          "uploaded",
+          upload.assetId,
+        );
+        packingEvidence = buildPackingEvidence({
+          id: evidenceId,
+          capturedAt: upload.capturedAt,
+          capturedBy: actor.id,
+          upload,
+        });
+      }
+
+      const commandResult = await executeCommand(
+        req,
+        res,
+        async (state, commandActor) => {
+          recordReadyShipments(state, commandActor, {
+          trackingNumbers,
+          locationId,
+          marketplace,
+          packingEvidence,
+          });
+        },
+      );
+      if (commandResult.ok) {
+        if (evidenceId)
+          updateMediaUploadIntent(conn, evidenceId, "committed").catch(
+            (error) =>
+              console.error("Failed to commit media upload intent:", error),
+          );
+        return;
+      }
+      if (upload) {
+        try {
+          await deleteCloudinaryPackingEvidence(upload);
+          await updateMediaUploadIntent(conn, evidenceId, "cleaned");
+        } catch (cleanupError) {
+          console.error("Failed to clean rejected packing evidence:", cleanupError);
+        }
+      }
+    } catch (error) {
+      if (upload) {
+        try {
+          await deleteCloudinaryPackingEvidence(upload);
+          await updateMediaUploadIntent(conn, evidenceId, "cleaned");
+        } catch (cleanupError) {
+          console.error("Failed to clean packing evidence upload:", cleanupError);
+        }
+      }
+      if (!res.headersSent) commandFailure(res, error);
+    }
+  },
+);
+
+app.get(
+  "/api/shipping/packages/:id/packing-evidence",
+  requireAuth,
+  async (req, res) => {
+    const conn = await db();
+    const actor = await currentUser(conn, req.auth);
+    if (!actor) return res.status(401).json({ message: "Akun tidak aktif" });
+    const loaded = await loadStateForCommand(conn, req.auth.org);
+    actor.rolePermissions =
+      loaded.data?.rolePolicies?.[actor.role]?.permissions;
+    attachEmployeeLocation(loaded.data, actor);
+    const shipment = (loaded.data?.shipments || []).find(
+      (item) => item.id === String(req.params.id),
+    );
+    if (!shipment)
+      return res.status(404).json({ message: "Paket pengiriman tidak ditemukan." });
+    const authorization = commandAuth(
+      actor,
+      "shipping.evidence.view",
+      shipment.locationId,
+    );
+    if (!authorization.allowed)
+      return res.status(403).json({ message: authorization.reason });
+    const visibleEvidence = publicShipmentEvidence(shipment).packingEvidence;
+    if (!visibleEvidence?.available || !shipment.packingEvidence?.provider)
+      return res.status(410).json({
+        message: "Bukti foto telah dihapus sesuai retensi 30 hari.",
+        status: "resolved",
+      });
+    if (!process.env.CLOUDINARY_URL)
+      return res
+        .status(503)
+        .json({ message: "Penyimpanan bukti foto belum dikonfigurasi." });
+    const provider = shipment.packingEvidence.provider;
+    const expiresAt = Math.floor(Date.now() / 1000) + 5 * 60;
+    const url = cloudinary.utils.private_download_url(
+      provider.publicId,
+      shipment.packingEvidence.format || "webp",
+      {
+        type: provider.deliveryType || "authenticated",
+        expires_at: expiresAt,
+        attachment: false,
+      },
+    );
+    res.set("Cache-Control", "private, no-store");
+    return res.json({ url, expiresAt });
+  },
+);
 
 app.post("/api/commands/shipping/ready/bulk", requireAuth, async (req, res) => {
   await executeCommand(req, res, async (state, actor) => {
@@ -4024,6 +4380,16 @@ app.post("/api/commands/role-policies", requireAuth, async (req, res) => {
       throw invalidCommand("Kebijakan peran tidak valid.");
     const menus = [...new Set(policy.menus.map(String))];
     const permissions = [...new Set(policy.permissions.map(String))];
+    if (permissions.includes("shipping.evidence.view"))
+      permissions.push(
+        ...["shipping.view"].filter((item) => !permissions.includes(item)),
+      );
+    if (permissions.includes("shipping.evidence.manage"))
+      permissions.push(
+        ...["shipping.view", "shipping.manage", "shipping.evidence.view"].filter(
+          (item) => !permissions.includes(item),
+        ),
+      );
     if (
       menus.some((menu) => !configurableMenus.has(menu)) ||
       permissions.some((permission) => !configurablePermissions.has(permission))
@@ -5955,6 +6321,166 @@ app.patch("/api/commands/locations/:id", requireAuth, async (req, res) => {
   });
 });
 
+const deletePackingEvidenceBatch = async (evidences) => {
+  const assetIds = [
+    ...new Set(
+      evidences.map((item) => item.provider?.assetId).filter(Boolean),
+    ),
+  ];
+  const publicIds = [
+    ...new Set(
+      evidences
+        .filter((item) => !item.provider?.assetId)
+        .map((item) => item.provider?.publicId)
+        .filter(Boolean),
+    ),
+  ];
+  if (assetIds.length)
+    await cloudinary.api.delete_resources_by_asset_ids(assetIds, {
+      invalidate: true,
+    });
+  if (publicIds.length)
+    await cloudinary.api.delete_resources(publicIds, {
+      resource_type: "image",
+      type: "authenticated",
+      invalidate: true,
+    });
+};
+
+const sweepOrganizationPackingEvidence = async (conn, organizationId) => {
+  const connection = await conn.getConnection();
+  try {
+    await connection.beginTransaction();
+    const [rows] = await connection.execute(
+      "SELECT version, payload FROM app_state WHERE id=? FOR UPDATE",
+      [organizationId],
+    );
+    if (!rows.length) {
+      await connection.rollback();
+      return;
+    }
+    const state =
+      typeof rows[0].payload === "string"
+        ? JSON.parse(rows[0].payload)
+        : rows[0].payload;
+    const dueShipments = (state.shipments || []).filter((shipment) =>
+      packingEvidenceDeletionDue(shipment.packingEvidence),
+    );
+    const disposals = (state.packingEvidenceDisposals || []).filter(
+      (evidence) => evidence?.provider?.publicId,
+    );
+    const queue = [
+      ...dueShipments.map((shipment) => ({
+        evidence: shipment.packingEvidence,
+        shipment,
+      })),
+      ...disposals.map((evidence) => ({ evidence })),
+    ].slice(0, 500);
+    if (!queue.length) {
+      await connection.rollback();
+      return;
+    }
+    const attemptedAt = new Date().toISOString();
+    for (let index = 0; index < queue.length; index += 100) {
+      const batch = queue.slice(index, index + 100);
+      try {
+        await deletePackingEvidenceBatch(batch.map((item) => item.evidence));
+        for (const item of batch)
+          if (item.shipment)
+            item.shipment.packingEvidence = resolvePackingEvidence(
+              item.evidence,
+              attemptedAt,
+            );
+          else
+            state.packingEvidenceDisposals = (
+              state.packingEvidenceDisposals || []
+            ).filter((evidence) => evidence.id !== item.evidence.id);
+      } catch (error) {
+        console.error("Packing evidence retention batch failed:", {
+          organizationId,
+          count: batch.length,
+          message: error?.message,
+        });
+        for (const item of batch)
+          if (item.shipment)
+            item.shipment.packingEvidence = failPackingEvidenceDeletion(
+              item.evidence,
+              attemptedAt,
+            );
+      }
+    }
+    const nextVersion = Number(rows[0].version || 0) + 1;
+    await connection.execute(
+      "UPDATE app_state SET version=?, payload=? WHERE id=?",
+      [nextVersion, JSON.stringify(state), organizationId],
+    );
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+};
+
+const sweepOrphanedMediaIntents = async (conn) => {
+  const [rows] = await conn.execute(
+    "SELECT id, organization_id, public_id, asset_id FROM media_upload_intents WHERE status='pending' AND created_at < (CURRENT_TIMESTAMP - INTERVAL 24 HOUR) ORDER BY created_at LIMIT 100",
+  );
+  const states = new Map();
+  for (const intent of rows) {
+    if (!states.has(intent.organization_id)) {
+      const [stateRows] = await conn.execute(
+        "SELECT payload FROM app_state WHERE id=? LIMIT 1",
+        [intent.organization_id],
+      );
+      const raw = stateRows[0]?.payload;
+      states.set(
+        intent.organization_id,
+        typeof raw === "string" ? JSON.parse(raw) : raw,
+      );
+    }
+    const state = states.get(intent.organization_id);
+    const referenced = (state?.shipments || []).some(
+      (shipment) => shipment.packingEvidence?.id === intent.id,
+    );
+    if (referenced) {
+      await updateMediaUploadIntent(conn, intent.id, "committed");
+      continue;
+    }
+    try {
+      await deleteCloudinaryPackingEvidence({
+        assetId: intent.asset_id,
+        publicId: intent.public_id,
+      });
+      await updateMediaUploadIntent(conn, intent.id, "cleaned");
+    } catch (error) {
+      console.error("Orphaned media cleanup failed:", {
+        intentId: intent.id,
+        message: error?.message,
+      });
+    }
+  }
+};
+
+let packingEvidenceSweepRunning = false;
+const runPackingEvidenceRetentionSweep = async () => {
+  if (packingEvidenceSweepRunning || !process.env.CLOUDINARY_URL) return;
+  packingEvidenceSweepRunning = true;
+  try {
+    const conn = await db();
+    if (!conn) return;
+    const [organizations] = await conn.execute("SELECT id FROM app_state");
+    for (const organization of organizations)
+      await sweepOrganizationPackingEvidence(conn, organization.id);
+    await sweepOrphanedMediaIntents(conn);
+  } catch (error) {
+    console.error("Packing evidence retention sweep failed:", error);
+  } finally {
+    packingEvidenceSweepRunning = false;
+  }
+};
+
 app.use((error, req, res, next) => {
   if (error?.type === "entity.too.large" || error?.status === 413) {
     return res.status(413).json({
@@ -5992,4 +6518,13 @@ app.use((_req, res) => res.sendFile(path.join(root, "dist", "index.html")));
 app.listen(port, () =>
   console.log(`MENENGS server running on http://localhost:${port}`),
 );
-setInterval(() => {}, 1000 * 60 * 60);
+const firstPackingEvidenceSweep = setTimeout(
+  () => void runPackingEvidenceRetentionSweep(),
+  15_000,
+);
+firstPackingEvidenceSweep.unref?.();
+const packingEvidenceSweepTimer = setInterval(
+  () => void runPackingEvidenceRetentionSweep(),
+  60 * 60 * 1000,
+);
+packingEvidenceSweepTimer.unref?.();

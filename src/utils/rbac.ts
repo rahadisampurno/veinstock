@@ -7,7 +7,7 @@ export type ActionType =
   | 'stock.view' | 'stock.initial_balance' | 'stock.in' | 'stock.out' | 'stock.adjust' | 'stock.opname'
   | 'transfer.view' | 'transfer.create' | 'transfer.send' | 'transfer.receive' | 'transfer.cancel'
   | 'sale.view' | 'sale.create' | 'sale.void'
-  | 'shipping.view' | 'shipping.manage'
+  | 'shipping.view' | 'shipping.manage' | 'shipping.evidence.view' | 'shipping.evidence.manage'
   | 'report.view' | 'report.export'
   | 'audit.location.view' | 'audit.view'
   | 'supplier.view' | 'supplier.manage'
@@ -48,7 +48,7 @@ export function resolveUserScope(user?: SessionUser | null, policies?: RolePolic
      'user.view', 'user.create', 'user.update', 'user.assign_location',
      'stock.view', 'stock.initial_balance', 'stock.in', 'stock.out', 'stock.adjust', 'stock.opname',
      'transfer.view', 'transfer.create', 'transfer.send', 'transfer.receive', 'transfer.cancel',
-     'sale.view', 'sale.create', 'sale.void', 'shipping.view', 'shipping.manage',
+     'sale.view', 'sale.create', 'sale.void', 'shipping.view', 'shipping.manage', 'shipping.evidence.view', 'shipping.evidence.manage',
      'report.view', 'report.export', 'audit.location.view', 'audit.view', 'supplier.view', 'supplier.manage',
      'pricing.view', 'pricing.manage', 'attendance.view', 'attendance.record', 'attendance.manage', 'payroll.view', 'payroll.manage',
      'cashbook.view', 'cashbook.manage', 'debt.view', 'debt.manage'].forEach(p => permissions.add(p as ActionType));
@@ -58,17 +58,17 @@ export function resolveUserScope(user?: SessionUser | null, policies?: RolePolic
      'user.view', 'user.create', 'user.assign_location',
      'stock.view', 'stock.initial_balance', 'stock.in', 'stock.out', 'stock.adjust', 'stock.opname',
      'transfer.view', 'transfer.create', 'transfer.send', 'transfer.receive', 'transfer.cancel',
-     'sale.view', 'sale.create', 'sale.void', 'shipping.view', 'shipping.manage',
+     'sale.view', 'sale.create', 'sale.void', 'shipping.view', 'shipping.manage', 'shipping.evidence.view', 'shipping.evidence.manage',
      'report.view', 'report.export', 'audit.location.view', 'audit.view', 'supplier.view', 'supplier.manage', 'pricing.view', 'pricing.manage', 'attendance.view', 'attendance.record',
      'cashbook.view', 'cashbook.manage', 'debt.view', 'debt.manage'].forEach(p => permissions.add(p as ActionType));
   } else if (role === 'finance') {
     ['stock.view', 'report.view', 'report.export', 'pricing.view', 'cashbook.view', 'cashbook.manage', 'debt.view', 'debt.manage'].forEach(p => permissions.add(p as ActionType));
   } else if (role === 'warehouse') {
     ['product.view', 'location.view', 'stock.view', 'stock.in', 'stock.out', 'stock.opname',
-     'transfer.view', 'transfer.create', 'transfer.send', 'shipping.view', 'shipping.manage', 'audit.location.view', 'attendance.view', 'attendance.record'].forEach(p => permissions.add(p as ActionType));
+     'transfer.view', 'transfer.create', 'transfer.send', 'shipping.view', 'shipping.manage', 'shipping.evidence.view', 'shipping.evidence.manage', 'audit.location.view', 'attendance.view', 'attendance.record'].forEach(p => permissions.add(p as ActionType));
   } else if (role === 'pic') {
     ['product.view', 'location.view', 'stock.view', 'stock.out', 'stock.opname',
-     'transfer.view', 'transfer.receive', 'transfer.create', 'transfer.send', 'sale.view', 'sale.create', 'sale.void', 'shipping.view', 'shipping.manage', 'audit.location.view', 'attendance.view', 'attendance.record'].forEach(p => permissions.add(p as ActionType));
+     'transfer.view', 'transfer.receive', 'transfer.create', 'transfer.send', 'sale.view', 'sale.create', 'sale.void', 'shipping.view', 'shipping.manage', 'shipping.evidence.view', 'shipping.evidence.manage', 'audit.location.view', 'attendance.view', 'attendance.record'].forEach(p => permissions.add(p as ActionType));
   } else if (role === 'cashier') {
     ['product.view', 'location.view', 'stock.view', 'sale.create', 'sale.view', 'attendance.view', 'attendance.record'].forEach(p => permissions.add(p as ActionType));
   } else if (role === 'employee') {

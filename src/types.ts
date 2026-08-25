@@ -329,6 +329,20 @@ export interface ShipmentPackage {
   cancelledAt?: string;
   cancelledBy?: string;
   cancelReason?: string;
+  packingEvidence?: {
+    id: string;
+    status: "available" | "resolved";
+    available: boolean;
+    capturedAt: string;
+    capturedBy: string;
+    expiresAt: string;
+    bytes: number;
+    width: number;
+    height: number;
+    format: string;
+    deletedAt?: string;
+    deletionReason?: "retention_30_days";
+  };
 }
 export interface ShipmentHandover {
   id: string;

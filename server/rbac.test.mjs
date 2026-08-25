@@ -7,6 +7,8 @@ describe('server RBAC policy', () => {
   it('gives Owner full operational access', () => {
     expect(authorizeAction({ user: user('owner'), action: 'user.create' }).allowed).toBe(true);
     expect(authorizeAction({ user: user('owner'), action: 'stock.adjust', locationId: 'outlet-b' }).allowed).toBe(true);
+    expect(authorizeAction({ user: user('owner'), action: 'shipping.evidence.view', locationId: 'outlet-b' }).allowed).toBe(true);
+    expect(authorizeAction({ user: user('owner'), action: 'shipping.evidence.manage', locationId: 'outlet-b' }).allowed).toBe(true);
   });
 
   it('keeps Finance read-only', () => {

@@ -252,6 +252,16 @@ const permissionOptions: Array<{
   { id: "sale.void", label: "Batalkan penjualan", group: "Penjualan" },
   { id: "shipping.view", label: "Lihat pengiriman", group: "Pengiriman" },
   { id: "shipping.manage", label: "Kelola pengiriman", group: "Pengiriman" },
+  {
+    id: "shipping.evidence.view",
+    label: "Lihat bukti foto packing",
+    group: "Pengiriman",
+  },
+  {
+    id: "shipping.evidence.manage",
+    label: "Ambil bukti foto packing",
+    group: "Pengiriman",
+  },
   { id: "report.view", label: "Lihat laporan", group: "Laporan" },
   { id: "report.export", label: "Ekspor laporan", group: "Laporan" },
   {
@@ -1322,11 +1332,19 @@ function BarcodeScanControl({
 function ContinuousResiScanner({
   onDetected,
   onDetectedMany,
+  paused = false,
+  inlinePhotoCapture = false,
+  photoReady = false,
+  onPhotoCaptured,
 }: {
   onDetected: (value: string) => Promise<{ ok: boolean; message: string }>;
   onDetectedMany?: (
     values: string[],
   ) => Promise<{ ok: boolean; message: string }>;
+  paused?: boolean;
+  inlinePhotoCapture?: boolean;
+  photoReady?: boolean;
+  onPhotoCaptured?: (file: File) => void;
 }) {
   const [open, setOpen] = useState(false),
     [feedback, setFeedback] = useState<{
@@ -1342,7 +1360,9 @@ function ContinuousResiScanner({
     streamRef = useRef<MediaStream | null>(null),
     fallbackControlsRef = useRef<{ stop: () => void } | null>(null),
     busyRef = useRef(false),
-    recentRef = useRef(new Map<string, number>());
+    recentRef = useRef(new Map<string, number>()),
+    resumeAfterPauseRef = useRef(false),
+    wasPausedRef = useRef(false);
   const stop = useCallback(() => {
     fallbackControlsRef.current?.stop();
     fallbackControlsRef.current = null;
@@ -1368,9 +1388,9 @@ function ContinuousResiScanner({
   const record = useCallback(
     async (raw: string) => {
       const value = raw.trim().toUpperCase();
-      if (!value || busyRef.current) return;
+      if (!value || paused || busyRef.current) return;
       const last = recentRef.current.get(value) || 0;
-      if (Date.now() - last < 2500) return;
+      if (Date.now() - last < 1500) return;
       recentRef.current.set(value, Date.now());
       busyRef.current = true;
       setProcessing(true);
@@ -1387,7 +1407,7 @@ function ContinuousResiScanner({
         setProcessing(false);
       }
     },
-    [onDetected, sound],
+    [onDetected, paused, sound],
   );
   const manualValues = Array.from(
     new Set(
@@ -1398,7 +1418,7 @@ function ContinuousResiScanner({
     ),
   );
   const submitManual = async () => {
-    if (!manualValues.length || processing || busyRef.current) return;
+    if (!manualValues.length || paused || processing || busyRef.current) return;
     if (manualValues.length > 200) {
       setFeedback({
         tone: "error",
@@ -1425,21 +1445,37 @@ function ContinuousResiScanner({
       setProcessing(false);
     }
   };
-  const start = async () => {
+  const start = useCallback(async () => {
     if (!navigator.mediaDevices?.getUserMedia)
       return setFeedback({
         tone: "error",
         message: "Kamera tidak tersedia. Gunakan input resi manual.",
       });
     try {
-      streamRef.current = await navigator.mediaDevices.getUserMedia({
+      const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: { ideal: "environment" },
           width: { ideal: 1280 },
           height: { ideal: 720 },
+          frameRate: { ideal: 30, min: 20 },
         },
         audio: false,
       });
+      const track = stream.getVideoTracks()[0];
+      if (track?.applyConstraints) {
+        try {
+          const capabilities = track.getCapabilities?.() as MediaTrackCapabilities & {
+            focusMode?: string[];
+          };
+          if (capabilities?.focusMode?.includes("continuous"))
+            await track.applyConstraints({
+              advanced: [{ focusMode: "continuous" } as MediaTrackConstraintSet],
+            });
+        } catch {
+          /* Sebagian browser tidak mengekspos kontrol fokus; autofocus bawaan tetap dipakai. */
+        }
+      }
+      streamRef.current = stream;
       setOpen(true);
     } catch {
       setFeedback({
@@ -1447,11 +1483,84 @@ function ContinuousResiScanner({
         message: "Kamera tidak dapat dibuka. Periksa izin kamera pada browser.",
       });
     }
-  };
+  }, []);
+  const captureCurrentFrame = useCallback(() => {
+    const video = videoRef.current;
+    if (!video || video.readyState < 2 || !video.videoWidth) {
+      setFeedback({
+        tone: "error",
+        message: "Kamera belum siap. Tunggu sebentar lalu ambil foto kembali.",
+      });
+      return;
+    }
+    const maxSide = 1600;
+    const scale = Math.min(1, maxSide / Math.max(video.videoWidth, video.videoHeight));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+    canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+    const context = canvas.getContext("2d");
+    if (!context) {
+      setFeedback({
+        tone: "error",
+        message: "Foto gagal diproses. Gunakan tombol pilih dari galeri.",
+      });
+      return;
+    }
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    canvas.toBlob(
+      (blob) => {
+        if (!blob) {
+          setFeedback({
+            tone: "error",
+            message: "Foto gagal diproses. Silakan ambil foto kembali.",
+          });
+          return;
+        }
+        const file = new File([blob], `packing-${Date.now()}.jpg`, {
+          type: "image/jpeg",
+          lastModified: Date.now(),
+        });
+        onPhotoCaptured?.(file);
+        sound(true);
+        navigator.vibrate?.(80);
+        setFeedback({
+          tone: "success",
+          message: "Foto packing berhasil diambil. Sedang menyimpan otomatis…",
+        });
+        stop();
+      },
+      "image/jpeg",
+      0.86,
+    );
+  }, [onPhotoCaptured, sound, stop]);
   useEffect(() => {
-    if (!open || !streamRef.current) return;
+    if (paused && open) {
+      wasPausedRef.current = true;
+      resumeAfterPauseRef.current = true;
+      if (!inlinePhotoCapture || photoReady) stop();
+      return;
+    }
+    if (paused) {
+      wasPausedRef.current = true;
+      return;
+    }
+    if (wasPausedRef.current) {
+      wasPausedRef.current = false;
+      setFeedback({
+        tone: "info",
+        message: "Siap memindai resi berikutnya.",
+      });
+    }
+    if (!paused && resumeAfterPauseRef.current) {
+      resumeAfterPauseRef.current = false;
+      if (!open) void start();
+    }
+  }, [inlinePhotoCapture, open, paused, photoReady, start, stop]);
+  useEffect(() => {
+    if (!open || !streamRef.current || paused) return;
     let cancelled = false,
-      timer: number | undefined;
+      timer: number | undefined,
+      localFallbackControls: { stop: () => void } | null = null;
     void (async () => {
       if (videoRef.current) {
         videoRef.current.srcObject = streamRef.current;
@@ -1474,25 +1583,30 @@ function ContinuousResiScanner({
         const detector = wanted.length
           ? new Detector({ formats: wanted })
           : new Detector();
-        timer = window.setInterval(async () => {
+        const scanNextFrame = async () => {
           if (
             cancelled ||
             busyRef.current ||
             !videoRef.current ||
             videoRef.current.readyState < 2
-          )
+          ) {
+            if (!cancelled) timer = window.setTimeout(scanNextFrame, 80);
             return;
+          }
           try {
             const code = (await detector.detect(videoRef.current))[0]?.rawValue;
             if (code) await record(code);
           } catch {
             /* frame berikutnya */
+          } finally {
+            if (!cancelled) timer = window.setTimeout(scanNextFrame, 80);
           }
-        }, 220);
+        };
+        void scanNextFrame();
       } else {
         const { BrowserMultiFormatReader } = await import("@zxing/browser");
         const reader = new BrowserMultiFormatReader();
-        fallbackControlsRef.current = await reader.decodeFromStream(
+        localFallbackControls = await reader.decodeFromStream(
           streamRef.current!,
           videoRef.current || undefined,
           (result) => {
@@ -1500,6 +1614,8 @@ function ContinuousResiScanner({
             if (code) void record(code);
           },
         );
+        if (cancelled) localFallbackControls.stop();
+        else fallbackControlsRef.current = localFallbackControls;
       }
     })().catch(() =>
       setFeedback({
@@ -1509,30 +1625,61 @@ function ContinuousResiScanner({
     );
     return () => {
       cancelled = true;
-      if (timer) window.clearInterval(timer);
+      if (timer) window.clearTimeout(timer);
+      localFallbackControls?.stop();
+      if (fallbackControlsRef.current === localFallbackControls)
+        fallbackControlsRef.current = null;
     };
-  }, [open, record]);
+  }, [open, paused, record]);
   useEffect(() => () => stop(), [stop]);
   return (
     <div className="continuous-resi-scanner">
-      <div className={`continuous-scan-status ${feedback.tone}`} role="status">
+      <div
+        className={`continuous-scan-status ${paused ? "info" : feedback.tone}`}
+        role="status"
+      >
         <span className="scan-status-dot" />
-        <b>{feedback.message}</b>
+        <b>
+          {paused
+            ? "Resi sudah terbaca. Selesaikan bukti packing sebelum scan berikutnya."
+            : feedback.message}
+        </b>
       </div>
       {open ? (
-        <div className="continuous-camera">
+        <div
+          className={`continuous-camera ${paused && inlinePhotoCapture ? "photo-mode" : "scan-mode"}`}
+        >
           <video ref={videoRef} muted playsInline />
-          <div className="scan-reticle">
-            <span>Arahkan barcode resi ke area ini</span>
+          <div className={`scan-reticle ${paused && inlinePhotoCapture ? "photo-mode" : ""}`}>
+            <span>
+              {paused && inlinePhotoCapture
+                ? "Posisikan paket dan label resi di area ini"
+                : "Arahkan barcode resi ke area ini"}
+            </span>
           </div>
-          <button type="button" onClick={stop}>
-            <X /> Selesai scan
+          <button
+            type="button"
+            className="continuous-camera-close"
+            aria-label={paused ? "Tutup kamera" : "Selesai scan"}
+            onClick={stop}
+          >
+            <X /> {paused ? "Tutup kamera" : "Selesai scan"}
           </button>
+          {paused && inlinePhotoCapture && !photoReady && (
+            <button
+              type="button"
+              className="inline-photo-shutter"
+              onClick={captureCurrentFrame}
+            >
+              <Camera /> Ambil foto packing
+            </button>
+          )}
         </div>
       ) : (
         <button
           type="button"
           className="primary continuous-start"
+          disabled={paused}
           onClick={() => void start()}
         >
           <Camera /> Mulai scan kontinu
@@ -1547,13 +1694,14 @@ function ContinuousResiScanner({
       >
         <textarea
           value={manual}
+          disabled={paused}
           onChange={(event) => setManual(event.target.value)}
           placeholder="Masukkan satu resi, atau tempel banyak resi dipisahkan baris/koma"
           rows={manualValues.length > 1 ? 4 : 2}
         />
         <button
           className="secondary"
-          disabled={!manualValues.length || processing}
+          disabled={paused || !manualValues.length || processing}
         >
           {processing
             ? "Mencatat…"
@@ -2007,6 +2155,20 @@ function App() {
   // dari state terbaru. Frontend tidak lagi mengirim snapshot organisasi untuk
   // ketiga alur tersebut, sehingga refresh/perangkat lain tidak dapat menimpa
   // stok yang baru saja berubah.
+  const refreshCommandState = async () => {
+    const latest = await fetch("/api/state", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!latest.ok)
+      throw new Error(
+        "Transaksi tersimpan, tetapi data terbaru gagal dimuat. Muat ulang halaman.",
+      );
+    const current = await latest.json();
+    serverVersion.current = Number(current.version || serverVersion.current);
+    dataRef.current = normalizeData(current.data);
+    setDataState(dataRef.current);
+    return current.data;
+  };
   const runCommand = async (
     path: string,
     payload: object,
@@ -2027,21 +2189,39 @@ function App() {
       if (!response.ok)
         throw new Error(result.message || "Transaksi tidak dapat disimpan");
       serverVersion.current = Number(result.version || serverVersion.current);
-      const latest = await fetch("/api/state", {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!latest.ok)
-        throw new Error(
-          "Transaksi tersimpan, tetapi data terbaru gagal dimuat. Muat ulang halaman.",
-        );
-      const current = await latest.json();
-      serverVersion.current = Number(current.version || serverVersion.current);
-      dataRef.current = normalizeData(current.data);
-      setDataState(dataRef.current);
-      return current.data;
+      return refreshCommandState();
     } finally {
       hasPendingLocalChanges.current = false;
     }
+  };
+  const runFormCommand = async (path: string, body: FormData) => {
+    if (!token) throw new Error("Sesi tidak ditemukan. Silakan masuk kembali.");
+    hasPendingLocalChanges.current = true;
+    try {
+      const response = await fetch(path, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body,
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok)
+        throw new Error(result.message || "Transaksi tidak dapat disimpan");
+      serverVersion.current = Number(result.version || serverVersion.current);
+      return refreshCommandState();
+    } finally {
+      hasPendingLocalChanges.current = false;
+    }
+  };
+  const getPackingEvidenceUrl = async (shipmentId: string) => {
+    if (!token) throw new Error("Sesi tidak ditemukan. Silakan masuk kembali.");
+    const response = await fetch(
+      `/api/shipping/packages/${encodeURIComponent(shipmentId)}/packing-evidence`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok)
+      throw new Error(result.message || "Bukti foto tidak dapat dibuka.");
+    return result.url as string;
   };
 
   // Gunakan can() ketika izin dibaca saat render. checkAuth() hanya untuk
@@ -2784,9 +2964,13 @@ function App() {
               data={data}
               user={user}
               runCommand={runCommand}
+              runFormCommand={runFormCommand}
+              getPackingEvidenceUrl={getPackingEvidenceUrl}
               uploadImage={uploadImage}
               notify={notify}
               canManage={can("shipping.manage")}
+              canViewEvidence={can("shipping.evidence.view")}
+              canManageEvidence={can("shipping.evidence.manage")}
             />
           )}
           {page === "stock-outs" && (
@@ -19397,9 +19581,13 @@ function ShippingPage({
   data,
   user,
   runCommand,
+  runFormCommand,
+  getPackingEvidenceUrl,
   uploadImage,
   notify,
   canManage,
+  canViewEvidence,
+  canManageEvidence,
 }: any) {
   const shipments = data.shipments || [],
     handovers = data.shipmentHandovers || [];
@@ -19440,6 +19628,14 @@ function ShippingPage({
     [courierName, setCourierName] = useState(""),
     [vehicleNumber, setVehicleNumber] = useState(""),
     [proofFile, setProofFile] = useState<File | null>(null),
+    [packingCandidate, setPackingCandidate] = useState(""),
+    [packingProofFile, setPackingProofFile] = useState<File | null>(null),
+    [savingPacking, setSavingPacking] = useState(false),
+    [evidencePreview, setEvidencePreview] = useState<null | {
+      shipment: any;
+      url: string;
+    }>(null),
+    [loadingEvidenceId, setLoadingEvidenceId] = useState(""),
     [finishing, setFinishing] = useState(false),
     [correction, setCorrection] = useState<null | {
       kind: "cancel" | "remove";
@@ -19447,6 +19643,7 @@ function ShippingPage({
     }>(null),
     [correctionReason, setCorrectionReason] = useState(""),
     [correcting, setCorrecting] = useState(false);
+  const packingSaveInFlightRef = useRef(false);
   const [batchCode, setBatchCode] = useState(
     () => draftBatches[0]?.batchCode || newShippingBatchCode(),
   );
@@ -19491,23 +19688,79 @@ function ShippingPage({
       "Website",
       "Lainnya",
     ];
-  const recordReady = async (trackingNumber: string) => {
-    try {
-      await runCommand("/api/commands/shipping/ready", {
-        trackingNumber,
-        locationId,
-        marketplace,
-      });
-      return {
-        ok: true,
-        message: `${trackingNumber} tercatat dan siap diangkut.`,
-      };
-    } catch (error) {
+  const queueReady = async (trackingNumber: string) => {
+    if (packingCandidate)
       return {
         ok: false,
-        message:
-          error instanceof Error ? error.message : "Resi tidak dapat dicatat.",
+        message: "Selesaikan resi sebelumnya sebelum memindai resi baru.",
       };
+    setPackingProofFile(null);
+    setPackingCandidate(trackingNumber);
+    return {
+      ok: true,
+      message: `${trackingNumber} terbaca. Ambil foto packing; foto akan tersimpan otomatis.`,
+    };
+  };
+  const savePackingCandidate = async (
+    photo: File | null = packingProofFile,
+    trackingNumber = packingCandidate,
+  ) => {
+    if (!trackingNumber || packingSaveInFlightRef.current) return;
+    packingSaveInFlightRef.current = true;
+    setSavingPacking(true);
+    try {
+      const body = new FormData();
+      body.append("trackingNumber", trackingNumber);
+      body.append("locationId", locationId);
+      body.append("marketplace", marketplace);
+      if (photo) body.append("image", photo);
+      await runFormCommand(
+        "/api/commands/shipping/ready-with-evidence",
+        body,
+      );
+      notify(
+        photo
+          ? `${trackingNumber} tersimpan dengan bukti packing selama 30 hari.`
+          : `${trackingNumber} tersimpan tanpa foto dan siap diangkut.`,
+      );
+      setPackingCandidate("");
+      setPackingProofFile(null);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Resi tidak dapat dicatat.";
+      // Command dapat sudah sukses di server ketika refresh state sesudahnya
+      // terputus. Jangan biarkan operator mengirim resi yang sama dua kali;
+      // polling berikutnya akan mengambil state kanonis dari server.
+      if (/^Transaksi tersimpan,/i.test(message)) {
+        setPackingCandidate("");
+        setPackingProofFile(null);
+      }
+      notify(
+        message,
+      );
+    } finally {
+      packingSaveInFlightRef.current = false;
+      setSavingPacking(false);
+    }
+  };
+  const selectPackingProof = (file: File | null) => {
+    setPackingProofFile(file);
+    if (file && packingCandidate) void savePackingCandidate(file, packingCandidate);
+  };
+  const openPackingEvidence = async (shipment: any) => {
+    if (!canViewEvidence || loadingEvidenceId) return;
+    setLoadingEvidenceId(shipment.id);
+    try {
+      const url = await getPackingEvidenceUrl(shipment.id);
+      setEvidencePreview({ shipment, url });
+    } catch (error) {
+      notify(
+        error instanceof Error
+          ? error.message
+          : "Bukti foto tidak dapat dibuka.",
+      );
+    } finally {
+      setLoadingEvidenceId("");
     }
   };
   const recordReadyMany = async (trackingNumbers: string[]) => {
@@ -19756,7 +20009,9 @@ function ShippingPage({
           <Field label="Lokasi">
             <AppSelect
               value={locationId}
-              disabled={tab === "handover" && batchLocked}
+              disabled={
+                (tab === "handover" && batchLocked) || Boolean(packingCandidate)
+              }
               onChange={(event: any) => setLocationId(event.target.value)}
             >
               {locations.map((item: any) => (
@@ -19770,6 +20025,7 @@ function ShippingPage({
             <Field label="Marketplace">
               <AppSelect
                 value={marketplace}
+                disabled={Boolean(packingCandidate)}
                 onChange={(event: any) => setMarketplace(event.target.value)}
               >
                 {marketplaces.map((item) => (
@@ -19839,15 +20095,83 @@ function ShippingPage({
               <small>CHECKPOINT 1</small>
               <h3>Scan setelah packing selesai</h3>
               <p>
-                Setiap scan langsung menjadikan paket berstatus Siap Diangkut.
+                Scan satu resi, lampirkan bukti packing bila diperlukan, lalu
+                lanjutkan ke resi berikutnya.
               </p>
             </div>
             <span>{ready.length} siap</span>
           </div>
           <ContinuousResiScanner
-            onDetected={recordReady}
+            onDetected={queueReady}
             onDetectedMany={recordReadyMany}
+            paused={Boolean(packingCandidate)}
+            inlinePhotoCapture={Boolean(
+              packingCandidate && canManageEvidence,
+            )}
+            photoReady={Boolean(packingProofFile)}
+            onPhotoCaptured={selectPackingProof}
           />
+          {packingCandidate && (
+            <section className="packing-evidence-step" aria-live="polite">
+              <header>
+                <div>
+                  <small>RESI TERBACA</small>
+                  <h4>{packingCandidate}</h4>
+                  <p>
+                    Foto akan dioptimalkan dan dihapus otomatis 30 hari setelah
+                    diambil.
+                  </p>
+                </div>
+                <span>
+                  {savingPacking
+                    ? "Menyimpan otomatis…"
+                    : packingProofFile
+                      ? "Siap dicoba lagi"
+                      : "Foto langsung aktif"}
+                </span>
+              </header>
+              {canManageEvidence ? (
+                <Field label="Foto bukti packing (opsional)">
+                  <EvidencePhotoPicker
+                    file={packingProofFile}
+                    setFile={selectPackingProof}
+                    subject="packing"
+                  />
+                </Field>
+              ) : (
+                <div className="packing-evidence-permission">
+                  Akun ini dapat mencatat resi, tetapi tidak memiliki izin
+                  mengambil bukti foto packing.
+                </div>
+              )}
+              <footer>
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={savingPacking}
+                  onClick={() => {
+                    setPackingCandidate("");
+                    setPackingProofFile(null);
+                  }}
+                >
+                  Batal
+                </button>
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={savingPacking}
+                  onClick={() => void savePackingCandidate()}
+                >
+                  <Check />
+                  {savingPacking
+                    ? "Menyimpan & menyiapkan scanner…"
+                    : packingProofFile
+                      ? "Coba simpan lagi"
+                      : "Simpan tanpa foto"}
+                </button>
+              </footer>
+            </section>
+          )}
           <RecentShipmentList
             items={scoped
               .filter((item: any) => item.status === "ready")
@@ -19855,6 +20179,9 @@ function ShippingPage({
             users={data.users}
             actionLabel="Batalkan"
             onAction={(shipment: any) => openCorrection("cancel", shipment)}
+            canViewEvidence={canViewEvidence}
+            loadingEvidenceId={loadingEvidenceId}
+            onViewEvidence={openPackingEvidence}
           />
         </section>
       )}
@@ -19880,6 +20207,9 @@ function ShippingPage({
                 ? (shipment: any) => openCorrection("cancel", shipment)
                 : undefined
             }
+            canViewEvidence={canViewEvidence}
+            loadingEvidenceId={loadingEvidenceId}
+            onViewEvidence={openPackingEvidence}
           />
         </section>
       )}
@@ -19928,6 +20258,9 @@ function ShippingPage({
             empty="Belum ada resi pada batch ini."
             actionLabel="Keluarkan"
             onAction={(shipment: any) => openCorrection("remove", shipment)}
+            canViewEvidence={canViewEvidence}
+            loadingEvidenceId={loadingEvidenceId}
+            onViewEvidence={openPackingEvidence}
           />
           <footer className="shipping-finalize">
             <span>
@@ -19969,6 +20302,9 @@ function ShippingPage({
             shipments={shipments}
             locations={data.locations}
             users={data.users}
+            canViewEvidence={canViewEvidence}
+            loadingEvidenceId={loadingEvidenceId}
+            onViewEvidence={openPackingEvidence}
           />
         </section>
       )}
@@ -20023,15 +20359,76 @@ function ShippingPage({
           </form>
         </Modal>
       )}
+      {evidencePreview && (
+        <Modal
+          title="Bukti packing"
+          desc={`Resi ${evidencePreview.shipment.trackingNumber}. Foto tersedia maksimal 30 hari sejak pengambilan.`}
+          close={() => setEvidencePreview(null)}
+        >
+          <img
+            className="packing-evidence-preview"
+            src={evidencePreview.url}
+            alt={`Bukti packing resi ${evidencePreview.shipment.trackingNumber}`}
+          />
+          <div className="modal-actions">
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => setEvidencePreview(null)}
+            >
+              Tutup
+            </button>
+          </div>
+        </Modal>
+      )}
     </PageBlock>
   );
 }
+function PackingEvidenceAction({
+  shipment,
+  canView,
+  loading,
+  onView,
+}: any) {
+  const evidence = shipment.packingEvidence;
+  if (!evidence) return <span className="packing-evidence-none">Tanpa foto</span>;
+  if (evidence.status === "resolved" || !evidence.available)
+    return (
+      <span
+        className="packing-evidence-status resolved"
+        title="File fisik telah atau sedang dihapus sesuai retensi 30 hari"
+      >
+        <Check /> Resolved
+      </span>
+    );
+  if (!canView)
+    return (
+      <span className="packing-evidence-status available">
+        <KeyRound /> Bukti tersimpan
+      </span>
+    );
+  return (
+    <button
+      type="button"
+      className="packing-evidence-view"
+      disabled={loading}
+      title={`Tersedia sampai ${jakartaDateTime(evidence.expiresAt)}`}
+      onClick={() => onView?.(shipment)}
+    >
+      <Eye /> {loading ? "Membuka…" : "Lihat bukti"}
+    </button>
+  );
+}
+
 function RecentShipmentList({
   items,
   users,
   empty = "Belum ada resi tercatat.",
   actionLabel,
   onAction,
+  canViewEvidence,
+  loadingEvidenceId,
+  onViewEvidence,
 }: any) {
   return items.length ? (
     <div className="shipment-list">
@@ -20052,6 +20449,12 @@ function RecentShipmentList({
               (user: any) => user.id === (item.handedOverBy || item.packedBy),
             )?.name || "Petugas"}
           </time>
+          <PackingEvidenceAction
+            shipment={item}
+            canView={canViewEvidence}
+            loading={loadingEvidenceId === item.id}
+            onView={onViewEvidence}
+          />
           {onAction && actionLabel && (
             <button
               type="button"
@@ -20072,7 +20475,15 @@ function RecentShipmentList({
   );
 }
 
-function ShipmentBatchHistory({ handovers, shipments, locations, users }: any) {
+function ShipmentBatchHistory({
+  handovers,
+  shipments,
+  locations,
+  users,
+  canViewEvidence,
+  loadingEvidenceId,
+  onViewEvidence,
+}: any) {
   const [query, setQuery] = useState(""),
     [locationFilter, setLocationFilter] = useState("all"),
     [carrierFilter, setCarrierFilter] = useState("all"),
@@ -20260,6 +20671,12 @@ function ShipmentBatchHistory({ handovers, shipments, locations, users }: any) {
                         {jakartaDateTime(item.packedAt)} ·{" "}
                         {userName(item.packedBy)}
                       </time>
+                      <PackingEvidenceAction
+                        shipment={item}
+                        canView={canViewEvidence}
+                        loading={loadingEvidenceId === item.id}
+                        onView={onViewEvidence}
+                      />
                     </article>
                   ))}
                 </div>
@@ -20290,7 +20707,15 @@ function ShipmentBatchHistory({ handovers, shipments, locations, users }: any) {
   );
 }
 
-function GroupedShipmentList({ items, users, locations, onCancel }: any) {
+function GroupedShipmentList({
+  items,
+  users,
+  locations,
+  onCancel,
+  canViewEvidence,
+  loadingEvidenceId,
+  onViewEvidence,
+}: any) {
   const [query, setQuery] = useState(""),
     [carrier, setCarrier] = useState("all"),
     [marketplace, setMarketplace] = useState("all"),
@@ -20460,6 +20885,9 @@ function GroupedShipmentList({ items, users, locations, onCancel }: any) {
                       users={users}
                       actionLabel={onCancel ? "Batalkan" : undefined}
                       onAction={onCancel}
+                      canViewEvidence={canViewEvidence}
+                      loadingEvidenceId={loadingEvidenceId}
+                      onViewEvidence={onViewEvidence}
                     />
                   </details>
                 ))}
@@ -20590,13 +21018,33 @@ function EvidencePhotoPicker({
   setFile: (file: File | null) => void;
   subject?: string;
 }) {
+  const [error, setError] = useState("");
+  const previewUrl = useMemo(() => (file ? URL.createObjectURL(file) : ""), [file]);
+  useEffect(
+    () => () => {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+    },
+    [previewUrl],
+  );
   const choose = (event: React.ChangeEvent<HTMLInputElement>) => {
     const selected = event.target.files?.[0] || null;
-    if (selected) setFile(selected);
+    if (selected && selected.size > 5 * 1024 * 1024)
+      setError("Ukuran gambar maksimal 5 MB.");
+    else if (selected) {
+      setError("");
+      setFile(selected);
+    }
     event.target.value = "";
   };
   return (
     <div className={`evidence-photo-picker ${file ? "selected" : ""}`}>
+      {previewUrl && (
+        <img
+          className="evidence-photo-preview"
+          src={previewUrl}
+          alt={`Pratinjau foto ${subject}`}
+        />
+      )}
       <div className="evidence-photo-actions">
         <label>
           <Camera size={18} />
@@ -20623,6 +21071,19 @@ function EvidencePhotoPicker({
           `Belum ada foto ${subject} dipilih.`
         )}
       </small>
+      {file && (
+        <button
+          type="button"
+          className="evidence-photo-remove"
+          onClick={() => {
+            setError("");
+            setFile(null);
+          }}
+        >
+          <Trash2 size={14} /> Hapus foto
+        </button>
+      )}
+      {error && <small className="evidence-photo-error">{error}</small>}
     </div>
   );
 }

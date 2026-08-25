@@ -139,6 +139,82 @@ describe('multi-tenant API', () => {
     expect(afterPaid.body.data.debtEntries[0].paidProofUrl).toBe(paidProofUrl);
   });
 
+  it('records one packing scan through multipart and never exposes Cloudinary identifiers', async () => {
+    const suffix = `${Date.now()}-packing-evidence`;
+    const owner = await post('/api/register', {
+      organizationName: 'Packing Evidence', name: 'Owner',
+      email: `owner-${suffix}@test.local`, password: 'Password123!',
+    });
+    const initial = await request('/api/state', {
+      headers: { authorization: `Bearer ${owner.body.token}` },
+    });
+    const locationId = initial.body.data.locations[0].id;
+    const invalidForm = new FormData();
+    invalidForm.append('trackingNumber', 'SPXIDINVALIDPHOTO');
+    invalidForm.append('locationId', locationId);
+    invalidForm.append('marketplace', 'Shopee');
+    invalidForm.append('image', new Blob(['bukan gambar'], { type: 'text/plain' }), 'packing.txt');
+    expect((await request('/api/commands/shipping/ready-with-evidence', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${owner.body.token}` },
+      body: invalidForm,
+    })).status).toBe(400);
+    const afterInvalid = await request('/api/state', {
+      headers: { authorization: `Bearer ${owner.body.token}` },
+    });
+    expect(afterInvalid.body.data.shipments).toHaveLength(0);
+
+    const form = new FormData();
+    form.append('trackingNumber', 'SPXID1234567890');
+    form.append('locationId', locationId);
+    form.append('marketplace', 'Shopee');
+    const recorded = await request('/api/commands/shipping/ready-with-evidence', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${owner.body.token}` },
+      body: form,
+    });
+    expect(recorded.status).toBe(201);
+    const afterScan = await request('/api/state', {
+      headers: { authorization: `Bearer ${owner.body.token}` },
+    });
+    expect(afterScan.body.data.shipments[0]).toMatchObject({
+      trackingNumber: 'SPXID1234567890', status: 'ready', marketplace: 'Shopee',
+    });
+    expect(afterScan.body.data.shipments[0].packingEvidence).toBeUndefined();
+
+    const capturedAt = '2026-01-01T00:00:00.000Z';
+    const expiresAt = '2026-01-31T00:00:00.000Z';
+    const injected = structuredClone(afterScan.body.data);
+    injected.shipments[0].packingEvidence = {
+      id: 'pke-private-test', status: 'available', available: true,
+      capturedAt, capturedBy: owner.body.user.id, expiresAt,
+      bytes: 200000, width: 1200, height: 900, format: 'webp',
+      provider: {
+        assetId: 'must-never-leak', publicId: 'menengs/private/evidence',
+        version: 1, deliveryType: 'authenticated',
+      },
+    };
+    expect((await request('/api/state', {
+      method: 'PUT',
+      headers: {
+        authorization: `Bearer ${owner.body.token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ data: injected, version: afterScan.body.version }),
+    })).status).toBe(200);
+    const sanitized = await request('/api/state', {
+      headers: { authorization: `Bearer ${owner.body.token}` },
+    });
+    expect(sanitized.body.data.shipments[0].packingEvidence).toMatchObject({
+      status: 'resolved', available: false, capturedAt, expiresAt,
+    });
+    expect(JSON.stringify(sanitized.body.data)).not.toContain('must-never-leak');
+    expect((await request(
+      `/api/shipping/packages/${sanitized.body.data.shipments[0].id}/packing-evidence`,
+      { headers: { authorization: `Bearer ${owner.body.token}` } },
+    )).status).toBe(410);
+  });
+
   it('deactivates and reactivates an employee account and work record together', async () => {
     const suffix = `${Date.now()}-employee-status`;
     const password = 'Password123!';
