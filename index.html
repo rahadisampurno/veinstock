@@ -8,6 +8,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#bc2018" />
     <meta name="description" content="Menengs — sistem stok dan penjualan untuk seluruh outlet Menengs." />
+    <!-- Hostinger CDN dapat mengganti header CSP upstream. Meta policy ini
+         mempertahankan pembatasan resource pada dokumen aplikasi. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; base-uri 'self'; object-src 'none'; form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https://res.cloudinary.com https://api.cloudinary.com; connect-src 'self'; media-src 'self' blob:"
+    />
     <title>Menengs — Stok akurat, kerja lebih mudah.</title>
   </head>
   <body>

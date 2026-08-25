@@ -997,13 +997,18 @@ const printBarcodeLabel = (
   const printable = window.open(
     "",
     "_blank",
-    "noopener,noreferrer,width=420,height=320",
+    "width=420,height=320",
   );
   if (!printable) return;
+  printable.opener = null;
   printable.document.write(
-    `<!doctype html><html><head><title>Label barcode</title><style>body{font-family:Arial,sans-serif;margin:24px;text-align:center;color:#172033}h1{font-size:18px;margin:0 0 5px}p{margin:0 0 18px;color:#536274}svg{display:block;width:100%;height:100px;color:#000}code{letter-spacing:3px;font-size:16px}</style></head><body><h1>${escapeHtml(productName)}</h1><p>${escapeHtml(variantName)}</p><svg viewBox="0 0 ${modules.length} 44" preserveAspectRatio="none">${bars}</svg><code>${escapeHtml(String(barcode))}</code><script>window.onload=()=>window.print()</script></body></html>`,
+    `<!doctype html><html><head><title>Label barcode</title><style>body{font-family:Arial,sans-serif;margin:24px;text-align:center;color:#172033}h1{font-size:18px;margin:0 0 5px}p{margin:0 0 18px;color:#536274}svg{display:block;width:100%;height:100px;color:#000}code{letter-spacing:3px;font-size:16px}</style></head><body><h1>${escapeHtml(productName)}</h1><p>${escapeHtml(variantName)}</p><svg viewBox="0 0 ${modules.length} 44" preserveAspectRatio="none">${bars}</svg><code>${escapeHtml(String(barcode))}</code></body></html>`,
   );
   printable.document.close();
+  window.setTimeout(() => {
+    printable.focus();
+    printable.print();
+  }, 100);
 };
 type BarcodeLabelItem = {
   productName: string;
