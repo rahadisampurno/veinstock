@@ -71,6 +71,100 @@ const assignMissingBarcodes = (state, organizationId) => {
     }
   return changed;
 };
+const normalizeChannelPricingState = (state) => {
+  let changed = false;
+  for (const product of state?.products || []) {
+    for (const variant of product.variants || []) {
+      const offlineCost = Number(variant.cost || 0);
+      const offlinePrice = Number(variant.price || 0);
+      if (
+        variant.onlineCost == null ||
+        !Number.isFinite(Number(variant.onlineCost))
+      ) {
+        variant.onlineCost = offlineCost;
+        changed = true;
+      }
+      if (
+        variant.onlinePrice == null ||
+        !Number.isFinite(Number(variant.onlinePrice)) ||
+        Number(variant.onlinePrice) <= 0
+      ) {
+        variant.onlinePrice = offlinePrice;
+        changed = true;
+      }
+    }
+  }
+  for (const sale of state?.sales || []) {
+    if (!["offline", "online", "reseller"].includes(sale.channel)) {
+      const location = (state?.locations || []).find(
+        (item) => item.id === sale.locationId,
+      );
+      sale.channel = location?.type === "outlet" ? "offline" : "online";
+      changed = true;
+    }
+    for (const item of sale.items || []) {
+      if (item.discount == null || !Number.isFinite(Number(item.discount))) {
+        item.discount = 0;
+        changed = true;
+      }
+      if (
+        item.price == null ||
+        !Number.isFinite(Number(item.price)) ||
+        (Number(item.price) <= 0 &&
+          Number(item.quantity || 0) > 0 &&
+          Number(item.subtotal || 0) > 0)
+      ) {
+        item.price =
+          Number(item.quantity || 0) > 0
+            ? Number(item.subtotal || 0) / Number(item.quantity)
+            : 0;
+        changed = true;
+      }
+      if (item.subtotal == null || !Number.isFinite(Number(item.subtotal))) {
+        item.subtotal = Number(item.quantity || 0) * Number(item.price || 0);
+        changed = true;
+      }
+    }
+    const allocatedDiscount = (sale.items || []).reduce(
+      (sum, item) => sum + Number(item.discount || 0),
+      0,
+    );
+    if (
+      sale.discountAmount == null ||
+      !Number.isFinite(Number(sale.discountAmount))
+    ) {
+      sale.discountAmount = allocatedDiscount;
+      changed = true;
+    }
+    const lineGrossTotal = (sale.items || []).reduce(
+      (sum, item) => sum + Number(item.subtotal || 0),
+      0,
+    );
+    if (sale.grossTotal == null || !Number.isFinite(Number(sale.grossTotal))) {
+      sale.grossTotal =
+        lineGrossTotal ||
+        Number(sale.total || 0) + Number(sale.discountAmount || 0);
+      changed = true;
+    }
+    if (!["nominal", "percentage"].includes(sale.discountType)) {
+      sale.discountType = "nominal";
+      changed = true;
+    }
+    if (
+      sale.discountValue == null ||
+      !Number.isFinite(Number(sale.discountValue)) ||
+      Number(sale.discountValue) < 0 ||
+      (sale.discountType === "percentage" && Number(sale.discountValue) > 100)
+    ) {
+      sale.discountValue =
+        sale.discountType === "percentage" && Number(sale.grossTotal) > 0
+          ? (Number(sale.discountAmount || 0) / Number(sale.grossTotal)) * 100
+          : Number(sale.discountAmount || 0);
+      changed = true;
+    }
+  }
+  return changed;
+};
 async function backfillBarcodes(pool) {
   const [states] = await pool.execute("SELECT id, payload FROM app_state");
   for (const row of states) {
@@ -88,6 +182,18 @@ async function backfillBarcodes(pool) {
           [variant.barcode, variant.id, row.id],
         );
       }
+  }
+}
+async function backfillChannelPricing(pool) {
+  const [states] = await pool.execute("SELECT id, payload FROM app_state");
+  for (const row of states) {
+    const state =
+      typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload;
+    if (!state || !normalizeChannelPricingState(state)) continue;
+    await pool.execute("UPDATE app_state SET payload = ? WHERE id = ?", [
+      JSON.stringify(state),
+      row.id,
+    ]);
   }
 }
 
@@ -731,7 +837,9 @@ async function db() {
       flavor VARCHAR(100) NULL,
       spice_level VARCHAR(50) NULL,
       cost INT NOT NULL DEFAULT 0,
+      online_cost INT NOT NULL DEFAULT 0,
       price INT NOT NULL DEFAULT 0,
+      online_price INT NOT NULL DEFAULT 0,
       reseller_price INT NOT NULL DEFAULT 0,
       min_stock INT NOT NULL DEFAULT 0,
       grams_per_cup INT,
@@ -757,7 +865,40 @@ async function db() {
         if (error?.code !== "ER_DUP_FIELDNAME") throw error;
       }
     }
+    const [onlineCostColumn] = await pool.query(
+      "SHOW COLUMNS FROM variants LIKE 'online_cost'",
+    );
+    if (!onlineCostColumn.length) {
+      await pool.execute(
+        "ALTER TABLE variants ADD COLUMN online_cost INT NULL AFTER cost",
+      );
+    }
+    if (!onlineCostColumn.length || onlineCostColumn[0].Null === "YES") {
+      await pool.execute(
+        "UPDATE variants SET online_cost = cost WHERE online_cost IS NULL",
+      );
+      await pool.execute(
+        "ALTER TABLE variants MODIFY online_cost INT NOT NULL DEFAULT 0",
+      );
+    }
+    const [onlinePriceColumn] = await pool.query(
+      "SHOW COLUMNS FROM variants LIKE 'online_price'",
+    );
+    if (!onlinePriceColumn.length) {
+      await pool.execute(
+        "ALTER TABLE variants ADD COLUMN online_price INT NULL AFTER price",
+      );
+    }
+    if (!onlinePriceColumn.length || onlinePriceColumn[0].Null === "YES") {
+      await pool.execute(
+        "UPDATE variants SET online_price = price WHERE online_price IS NULL",
+      );
+      await pool.execute(
+        "ALTER TABLE variants MODIFY online_price INT NOT NULL DEFAULT 0",
+      );
+    }
     await backfillBarcodes(pool);
+    await backfillChannelPricing(pool);
     await backfillRolePolicyDependencies(pool);
     await pool.execute(`CREATE TABLE IF NOT EXISTS variant_location_min_stock (
       variant_id VARCHAR(40) NOT NULL,
@@ -791,6 +932,10 @@ async function db() {
       id VARCHAR(40) PRIMARY KEY,
       organization_id VARCHAR(40) NOT NULL,
       location_id VARCHAR(40) NOT NULL,
+      gross_total INT NOT NULL DEFAULT 0,
+      discount_amount INT NOT NULL DEFAULT 0,
+      discount_type VARCHAR(20) NOT NULL DEFAULT 'nominal',
+      discount_value DECIMAL(12,2) NOT NULL DEFAULT 0,
       total INT NOT NULL,
       channel VARCHAR(20) NOT NULL DEFAULT 'offline',
       method VARCHAR(50) NOT NULL,
@@ -806,6 +951,49 @@ async function db() {
       );
     } catch (error) {
       if (error?.code !== "ER_DUP_FIELDNAME") throw error;
+    }
+    const [grossTotalColumn] = await pool.query(
+      "SHOW COLUMNS FROM sales LIKE 'gross_total'",
+    );
+    if (!grossTotalColumn.length) {
+      await pool.execute(
+        "ALTER TABLE sales ADD COLUMN gross_total INT NULL AFTER location_id",
+      );
+    }
+    if (!grossTotalColumn.length || grossTotalColumn[0].Null === "YES") {
+      await pool.execute(
+        "UPDATE sales SET gross_total = total WHERE gross_total IS NULL",
+      );
+      await pool.execute(
+        "ALTER TABLE sales MODIFY gross_total INT NOT NULL DEFAULT 0",
+      );
+    }
+    const [discountAmountColumn] = await pool.query(
+      "SHOW COLUMNS FROM sales LIKE 'discount_amount'",
+    );
+    if (!discountAmountColumn.length) {
+      await pool.execute(
+        "ALTER TABLE sales ADD COLUMN discount_amount INT NOT NULL DEFAULT 0 AFTER gross_total",
+      );
+    }
+    const [discountTypeColumn] = await pool.query(
+      "SHOW COLUMNS FROM sales LIKE 'discount_type'",
+    );
+    if (!discountTypeColumn.length) {
+      await pool.execute(
+        "ALTER TABLE sales ADD COLUMN discount_type VARCHAR(20) NOT NULL DEFAULT 'nominal' AFTER discount_amount",
+      );
+    }
+    const [discountValueColumn] = await pool.query(
+      "SHOW COLUMNS FROM sales LIKE 'discount_value'",
+    );
+    if (!discountValueColumn.length) {
+      await pool.execute(
+        "ALTER TABLE sales ADD COLUMN discount_value DECIMAL(12,2) NOT NULL DEFAULT 0 AFTER discount_type",
+      );
+      await pool.execute(
+        "UPDATE sales SET discount_value = discount_amount",
+      );
     }
     await backfillLegacySaleCashiers(pool);
     await pool.execute(`CREATE TABLE IF NOT EXISTS sale_items (
@@ -1053,6 +1241,56 @@ const emptyState = (organizationName, owner) => ({
   debtEntries: [],
   rolePolicies: defaultRolePolicyState(),
 });
+
+// Akun demo bawaan tetap tersedia setiap kali service dinyalakan, sedangkan
+// state demo hanya hidup di memori. Pastikan keduanya selalu dibuat bersama;
+// tanpa ini frontend dapat menampilkan seed lokal, tetapi command operasional
+// akan ditolak karena backend masih memiliki state `null`.
+const ensureDemoState = (organizationId) => {
+  const existing = demoStates.get(organizationId);
+  if (existing?.data) return existing;
+
+  const owner = demoUsers.find(
+    (user) =>
+      user.organization_id === organizationId &&
+      user.role === "owner" &&
+      user.active !== false,
+  );
+  if (!owner) return existing || { version: 0, data: null };
+
+  const organizationName = owner.organization_name || "Usaha Saya";
+  const data = emptyState(organizationName, owner);
+  data.users = demoUsers
+    .filter((user) => user.organization_id === organizationId)
+    .map(safeUser);
+
+  const assignedOutletIds = [
+    ...new Set(
+      demoUsers
+        .filter((user) => user.organization_id === organizationId)
+        .map((user) => user.outlet_id || user.outletId)
+        .filter(Boolean),
+    ),
+  ];
+  assignedOutletIds.forEach((outletId, index) => {
+    if (data.locations.some((location) => location.id === outletId)) return;
+    data.locations.push({
+      id: outletId,
+      name: `Outlet ${organizationName} ${index + 1}`,
+      type: "outlet",
+      active: true,
+    });
+  });
+  if (organizationId === "org-meneng")
+    data.locations[0].name = "Gudang Owner";
+
+  const initialized = {
+    version: Math.max(1, Number(existing?.version || 0)),
+    data,
+  };
+  demoStates.set(organizationId, initialized);
+  return initialized;
+};
 app.post("/api/login", async (req, res) => {
   const email = String(req.body?.email || "")
     .trim()
@@ -1606,6 +1844,16 @@ function validateState(data) {
     data.sales.some(
       (sale) =>
         !locations.has(sale.locationId) ||
+        !["offline", "online", "reseller"].includes(sale.channel) ||
+        !isNumber(sale.grossTotal) ||
+        sale.grossTotal < 0 ||
+        !isNumber(sale.discountAmount) ||
+        sale.discountAmount < 0 ||
+        sale.discountAmount > sale.grossTotal ||
+        !["nominal", "percentage"].includes(sale.discountType) ||
+        !isNumber(sale.discountValue) ||
+        sale.discountValue < 0 ||
+        (sale.discountType === "percentage" && sale.discountValue > 100) ||
         !isNumber(sale.total) ||
         sale.total < 0 ||
         !Array.isArray(sale.items) ||
@@ -1613,7 +1861,16 @@ function validateState(data) {
           (item) =>
             !variants.has(item.variantId) ||
             !isNumber(item.quantity) ||
-            item.quantity <= 0,
+            item.quantity <= 0 ||
+            !isNumber(item.price) ||
+            item.price < 0 ||
+            !isNumber(item.discount) ||
+            item.discount < 0 ||
+            !isNumber(item.subtotal) ||
+            item.subtotal < 0 ||
+            item.discount > item.subtotal ||
+            (item.unitCost != null &&
+              (!isNumber(item.unitCost) || item.unitCost < 0)),
         ),
     )
   )
@@ -1895,7 +2152,9 @@ const validateCommandProduct = (product) => {
   const skuSet = new Set();
   for (const variant of product.variants) {
     const cost = Number(variant?.cost),
-      price = Number(variant?.price);
+      price = Number(variant?.price),
+      onlineCost = Number(variant?.onlineCost ?? variant?.cost),
+      onlinePrice = Number(variant?.onlinePrice ?? variant?.price);
     const sku = String(variant?.sku || "")
       .trim()
       .toLowerCase();
@@ -1904,7 +2163,11 @@ const validateCommandProduct = (product) => {
     if (!Number.isFinite(cost) || cost < 0)
       return "Harga modal varian tidak valid.";
     if (!Number.isFinite(price) || price <= 0)
-      return "Harga jual varian harus lebih dari nol.";
+      return "Harga jual offline varian harus lebih dari nol.";
+    if (!Number.isFinite(onlineCost) || onlineCost < 0)
+      return "HPP online varian tidak valid.";
+    if (!Number.isFinite(onlinePrice) || onlinePrice <= 0)
+      return "Harga jual online varian harus lebih dari nol.";
     if (sku && skuSet.has(sku))
       return "SKU varian tidak boleh duplikat dalam satu produk.";
     if (sku) skuSet.add(sku);
@@ -1921,7 +2184,7 @@ const forbiddenCommand = (message) =>
   Object.assign(new Error(message), { status: 403 });
 
 async function loadStateForCommand(conn, orgId) {
-  if (!conn) return demoStates.get(orgId) || { version: 0, data: null };
+  if (!conn) return ensureDemoState(orgId);
   return getStateFromSQL(conn, orgId);
 }
 async function commitCommandState(conn, orgId, state, version) {
@@ -2010,8 +2273,10 @@ async function executeCommand(req, res, mutate) {
     state.shipments ||= [];
     state.shipmentHandovers ||= [];
     for (const sale of state.sales) sale.cashierId ||= "system-migration";
+    normalizeChannelPricingState(state);
     assignMissingBarcodes(state, req.auth.org);
     await mutate(state, actor, connection);
+    normalizeChannelPricingState(state);
     assignMissingBarcodes(state, req.auth.org);
     const invalid = validateState(state);
     if (invalid) throw invalidCommand(invalid);
@@ -2057,7 +2322,7 @@ app.put("/api/organization", requireAuth, async (req, res) => {
 
   if (!conn) {
     // Demo mode: just update app_state
-    const state = demoStates.get(req.auth.org);
+    const state = ensureDemoState(req.auth.org);
     if (state && state.data) {
       state.data.business = {
         name,
@@ -2696,6 +2961,7 @@ app.get("/api/state", requireAuth, async (req, res) => {
         if (canViewCosts) return variant;
         const {
           cost: _cost,
+          onlineCost: _onlineCost,
           hppProfileId: _profile,
           hppBatchId: _batch,
           hppPackageId: _package,
@@ -2990,7 +3256,7 @@ app.get("/api/state", requireAuth, async (req, res) => {
   };
 
   if (!conn) {
-    const state = demoStates.get(req.auth.org) || { version: 0, data: null };
+    const state = ensureDemoState(req.auth.org);
     if (state.data) assignMissingBarcodes(state.data, req.auth.org);
     const users = demoUsers
       .filter((item) => item.organization_id === req.auth.org)
@@ -3093,10 +3359,11 @@ app.put("/api/state", requireAuth, async (req, res) => {
       .json({ message: "Akun Keuangan hanya memiliki akses baca" });
 
   if (!conn) {
-    const state = demoStates.get(req.auth.org) || { version: 0, data: null };
+    const state = ensureDemoState(req.auth.org);
     const nextData = state.data
       ? mergeScopedState(state.data, data, actor)
       : data;
+    normalizeChannelPricingState(nextData);
     assignMissingBarcodes(nextData, req.auth.org);
     const invalid = validateState(nextData);
     if (invalid) return res.status(400).json({ message: invalid });
@@ -3134,6 +3401,7 @@ app.put("/api/state", requireAuth, async (req, res) => {
     const sqlState = await getStateFromSQL(connection, req.auth.org);
     const previous = sqlState.data || null;
     const nextData = previous ? mergeScopedState(previous, data, actor) : data;
+    normalizeChannelPricingState(nextData);
     assignMissingBarcodes(nextData, req.auth.org);
     const invalid = validateState(nextData);
     if (invalid) {
@@ -5040,6 +5308,9 @@ app.post("/api/commands/sales", requireAuth, async (req, res) => {
       channel,
       payment,
       items,
+      discountAmount = 0,
+      discountType = "nominal",
+      discountValue,
       requiresPrint = false,
       note,
     } = req.body || {};
@@ -5059,12 +5330,14 @@ app.post("/api/commands/sales", requireAuth, async (req, res) => {
       throw invalidCommand("Pilih minimal satu varian untuk penjualan.");
 
     const variants = new Map(
-      state.products.flatMap((product) =>
-        (product.variants || []).map((variant) => [
-          variant.id,
-          { ...variant, unit: product.unit, productName: product.name },
-        ]),
-      ),
+      state.products
+        .filter((product) => product.active !== false)
+        .flatMap((product) =>
+          (product.variants || []).map((variant) => [
+            variant.id,
+            { ...variant, unit: product.unit, productName: product.name },
+          ]),
+        ),
     );
     const combined = new Map();
     for (const item of items) {
@@ -5079,7 +5352,7 @@ app.post("/api/commands/sales", requireAuth, async (req, res) => {
 
     const saleItems = [];
     let balances = state.balances;
-    let total = 0;
+    let grossTotal = 0;
     const movements = [];
     for (const [variantId, quantity] of combined) {
       const variant = variants.get(variantId);
@@ -5092,23 +5365,40 @@ app.post("/api/commands/sales", requireAuth, async (req, res) => {
         throw invalidCommand(
           `Stok ${variant.productName} ${variant.name} tidak mencukupi. Tersedia ${available} ${variant.unit}.`,
         );
-      const price =
+      const price = Math.round(
         channel === "reseller"
           ? Number(variant.resellerPrice || 0)
-          : Number(variant.price || 0);
+          : channel === "online"
+            ? Number(variant.onlinePrice ?? variant.price ?? 0)
+            : Number(variant.price || 0),
+      );
+      const unitCost = Math.round(
+        channel === "online"
+          ? Number(variant.onlineCost ?? variant.cost ?? 0)
+          : Number(variant.cost || 0),
+      );
+      if (!Number.isFinite(price) || price <= 0)
+        throw invalidCommand(
+          `Harga jual ${channel} untuk ${variant.productName} ${variant.name} belum valid.`,
+        );
+      if (!Number.isFinite(unitCost) || unitCost < 0)
+        throw invalidCommand(
+          `HPP ${channel} untuk ${variant.productName} ${variant.name} belum valid.`,
+        );
       balances = commandAdjustBalance(
         balances,
         locationId,
         variantId,
         -quantity,
       );
-      total += quantity * price;
+      grossTotal += quantity * price;
       saleItems.push({
         variantId,
         quantity,
         unit: variant.unit,
-        unitCost: Number(variant.cost || 0),
+        unitCost,
         price,
+        discount: 0,
         subtotal: quantity * price,
       });
       movements.push(
@@ -5122,11 +5412,59 @@ app.post("/api/commands/sales", requireAuth, async (req, res) => {
         ),
       );
     }
+    if (!["nominal", "percentage"].includes(discountType))
+      throw invalidCommand("Jenis diskon pembeli tidak valid.");
+    const normalizedDiscountValue = Number(
+      discountValue ?? (discountType === "nominal" ? discountAmount : 0),
+    );
+    if (
+      !Number.isFinite(normalizedDiscountValue) ||
+      normalizedDiscountValue < 0 ||
+      (discountType === "percentage" && normalizedDiscountValue > 100)
+    )
+      throw invalidCommand(
+        discountType === "percentage"
+          ? "Diskon persentase harus berada di antara 0 sampai 100%."
+          : "Diskon pembeli harus berupa nominal rupiah yang tidak melebihi total belanja.",
+      );
+    const normalizedDiscount =
+      discountType === "percentage"
+        ? Math.round((grossTotal * normalizedDiscountValue) / 100)
+        : normalizedDiscountValue;
+    if (
+      !Number.isInteger(normalizedDiscount) ||
+      normalizedDiscount > grossTotal
+    )
+      throw invalidCommand(
+        "Diskon pembeli harus berupa nominal rupiah yang tidak melebihi total belanja.",
+      );
+    let remainingDiscount = normalizedDiscount;
+    saleItems.forEach((item, index) => {
+      const allocated =
+        index === saleItems.length - 1
+          ? remainingDiscount
+          : Math.min(
+              remainingDiscount,
+              Math.floor(
+                normalizedDiscount * (Number(item.subtotal || 0) / grossTotal),
+              ),
+            );
+      item.discount = allocated;
+      remainingDiscount -= allocated;
+    });
+    const total = grossTotal - normalizedDiscount;
     state.balances = balances;
     state.sales.unshift({
       id: commandId("sale"),
       locationId,
       channel,
+      grossTotal,
+      discountAmount: normalizedDiscount,
+      discountType,
+      discountValue:
+        discountType === "percentage"
+          ? normalizedDiscountValue
+          : normalizedDiscount,
       total,
       payment: String(payment || "Tunai"),
       note:
@@ -5368,31 +5706,56 @@ app.post("/api/commands/receipts", requireAuth, async (req, res) => {
       throw invalidCommand("Pilih supplier untuk pembelian stok.");
     if (!Array.isArray(items) || !items.length)
       throw invalidCommand("Pilih minimal satu varian.");
-    const variants = new Set(
+    // ID dari data lama dapat berupa angka, sementara key object di browser
+    // selalu berubah menjadi string. Cocokkan melalui bentuk string, lalu
+    // simpan kembali ID kanonis dari master agar relasi saldo tetap konsisten.
+    const variants = new Map(
       state.products.flatMap((product) =>
-        (product.variants || [])
-          .filter((variant) => variant.active !== false)
-          .map((variant) => variant.id),
+        product.active === false
+          ? []
+          : (product.variants || [])
+              .filter((variant) => variant.active !== false)
+              .map((variant) => [
+                String(variant.id),
+                {
+                  id: variant.id,
+                  label: `${String(product.name || "Produk").trim()} · ${String(variant.name || "Varian").trim()}`,
+                },
+              ]),
       ),
     );
+    const seenVariantIds = new Set();
+    const validatedItems = items.map((item, index) => {
+      const requestedVariantId = String(item?.variantId ?? "").trim();
+      const variant = variants.get(requestedVariantId);
+      const quantity = Number(item?.quantity);
+      const unitCost = Number(item?.unitCost);
+      const rowLabel = variant?.label || `baris ${index + 1}`;
+      if (!variant)
+        throw invalidCommand(
+          `Varian pada baris ${index + 1} tidak ditemukan atau sudah tidak aktif. Muat ulang data produk lalu pilih ulang varian.`,
+        );
+      if (seenVariantIds.has(requestedVariantId))
+        throw invalidCommand(`${rowLabel} dipilih lebih dari satu kali.`);
+      if (!Number.isInteger(quantity) || quantity <= 0)
+        throw invalidCommand(
+          `Jumlah stok ${rowLabel} harus berupa bilangan bulat minimal 1.`,
+        );
+      if (!Number.isFinite(unitCost) || unitCost < 0)
+        throw invalidCommand(
+          `Harga modal ${rowLabel} harus berupa nominal valid minimal Rp0.`,
+        );
+      seenVariantIds.add(requestedVariantId);
+      return { variantId: variant.id, quantity, unitCost };
+    });
     let balances = state.balances;
     const receiptCode = commandId("rcv");
     const createdAt = new Date().toISOString();
-    for (const item of items) {
-      const quantity = Number(item?.quantity),
-        unitCost = Number(item?.unitCost);
-      if (
-        !variants.has(item?.variantId) ||
-        !Number.isInteger(quantity) ||
-        quantity <= 0 ||
-        !Number.isFinite(unitCost) ||
-        unitCost < 0
-      )
-        throw invalidCommand("Data stok masuk tidak valid.");
+    for (const { variantId, quantity, unitCost } of validatedItems) {
       balances = commandAdjustBalance(
         balances,
         locationId,
-        item.variantId,
+        variantId,
         quantity,
       );
       state.receipts.unshift({
@@ -5402,7 +5765,7 @@ app.post("/api/commands/receipts", requireAuth, async (req, res) => {
         supplierId,
         supplierName,
         locationId,
-        variantId: item.variantId,
+        variantId,
         quantity,
         unitCost,
         note: String(note || ""),
@@ -5413,7 +5776,7 @@ app.post("/api/commands/receipts", requireAuth, async (req, res) => {
       });
       state.movements.unshift(
         commandMovement(
-          item.variantId,
+          variantId,
           locationId,
           sourceType === "production"
             ? "Hasil produksi"

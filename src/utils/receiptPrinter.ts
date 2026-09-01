@@ -195,6 +195,10 @@ export function disconnectPrinter(mode: PrinterMode) {
 }
 
 const rupiah = (value: number) => `Rp ${Math.round(Number(value || 0)).toLocaleString("id-ID")}`;
+const discountLabel = (sale: Sale) =>
+  sale.discountType === "percentage" && Number(sale.discountValue) > 0
+    ? `DISKON (${Number(sale.discountValue).toLocaleString("id-ID", { maximumFractionDigits: 2 })}%)`
+    : "DISKON";
 const safe = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[character] || character));
 const saleCode = (sale: Sale) => `TRX-${sale.id.slice(-8).toUpperCase()}`;
 
@@ -202,7 +206,10 @@ function receiptLines(sale: Sale, data: AppData) {
   const variants = Object.fromEntries(data.products.flatMap((product) => product.variants.map((variant) => [variant.id, { ...variant, productName: product.name }] as const)));
   return sale.items.map((item) => {
     const variant = variants[item.variantId];
-    const unitPrice = item.quantity ? Number(item.subtotal || 0) / item.quantity : 0;
+    const unitPrice = Number(
+      item.price ??
+        (item.quantity ? Number(item.subtotal || 0) / item.quantity : 0),
+    );
     return { name: `${variant?.productName || "Produk"} - ${variant?.name || item.variantId}`, quantity: item.quantity, unitPrice, subtotal: Number(item.subtotal || 0) };
   });
 }
@@ -213,9 +220,15 @@ export function receiptHtml(sale: Sale, data: AppData, settings: PrinterSettings
   const cashier = data.users.find((item) => item.id === sale.cashierId)?.name || "Staf Menengs";
   const width = settings.paperWidth === "80" ? "80mm" : "58mm";
   const lines = receiptLines(sale, data);
+  const discountAmount = Number(sale.discountAmount || 0);
+  const grossTotal = Number(
+    sale.grossTotal ??
+      (lines.reduce((sum, line) => sum + Number(line.subtotal || 0), 0) ||
+        sale.total + discountAmount),
+  );
   return `<!doctype html><html><head><meta charset="utf-8"><title>Struk ${safe(saleCode(sale))}</title><style>
     @page{size:${width} auto;margin:3mm}*{box-sizing:border-box}body{width:${width};margin:0 auto;padding:2mm;font:11px/1.35 ui-monospace,SFMono-Regular,Consolas,monospace;color:#000}h1{font-size:16px;margin:0 0 3px;text-align:center}header{text-align:center}.logo{max-width:28mm;max-height:18mm;object-fit:contain}.muted{font-size:10px}.rule{border-top:1px dashed #000;margin:7px 0}.meta,.total-row,.line-head{display:flex;justify-content:space-between;gap:8px}.items{width:100%;border-collapse:collapse}.items td{padding:2px 0;vertical-align:top}.items td:last-child{text-align:right;white-space:nowrap}.item-name{max-width:${settings.paperWidth === "80" ? "53mm" : "34mm"}}.grand{font-size:13px;font-weight:700}.footer{text-align:center;margin-top:9px}.no-print{margin:12px auto;display:block}@media print{.no-print{display:none}body{padding:0}}
-  </style></head><body><header>${business?.logoUrl ? `<img class="logo" src="${safe(business.logoUrl)}" alt="">` : ""}<h1>${safe(business?.name || "Menengs")}</h1><div class="muted">${safe(location?.name || "Lokasi usaha")}</div>${business?.address || location?.address ? `<div class="muted">${safe(business?.address || location?.address)}</div>` : ""}${business?.phone ? `<div class="muted">${safe(business.phone)}</div>` : ""}</header><div class="rule"></div><div class="meta"><span>No. Struk</span><b>${safe(saleCode(sale))}</b></div><div class="meta"><span>Tanggal</span><span>${safe(new Date(sale.createdAt).toLocaleString("id-ID"))}</span></div><div class="meta"><span>Kasir</span><span>${safe(cashier)}</span></div><div class="meta"><span>Pembayaran</span><span>${safe(sale.payment)}</span></div><div class="rule"></div><table class="items">${lines.map((line) => `<tr><td class="item-name">${safe(line.name)}<br><span class="muted">${line.quantity} × ${rupiah(line.unitPrice)}</span></td><td>${rupiah(line.subtotal)}</td></tr>`).join("")}</table><div class="rule"></div><div class="total-row grand"><span>TOTAL</span><span>${rupiah(sale.total)}</span></div>${sale.note ? `<div class="rule"></div><b>CATATAN PESANAN</b><div>${safe(sale.note)}</div>` : ""}<div class="rule"></div><div class="footer">Terima kasih<br><span class="muted">Barang yang sudah dibeli mengikuti kebijakan retur toko.</span></div></body></html>`;
+  </style></head><body><header>${business?.logoUrl ? `<img class="logo" src="${safe(business.logoUrl)}" alt="">` : ""}<h1>${safe(business?.name || "Menengs")}</h1><div class="muted">${safe(location?.name || "Lokasi usaha")}</div>${business?.address || location?.address ? `<div class="muted">${safe(business?.address || location?.address)}</div>` : ""}${business?.phone ? `<div class="muted">${safe(business.phone)}</div>` : ""}</header><div class="rule"></div><div class="meta"><span>No. Struk</span><b>${safe(saleCode(sale))}</b></div><div class="meta"><span>Tanggal</span><span>${safe(new Date(sale.createdAt).toLocaleString("id-ID"))}</span></div><div class="meta"><span>Kasir</span><span>${safe(cashier)}</span></div><div class="meta"><span>Pembayaran</span><span>${safe(sale.payment)}</span></div><div class="rule"></div><table class="items">${lines.map((line) => `<tr><td class="item-name">${safe(line.name)}<br><span class="muted">${line.quantity} × ${rupiah(line.unitPrice)}</span></td><td>${rupiah(line.subtotal)}</td></tr>`).join("")}</table><div class="rule"></div>${discountAmount > 0 ? `<div class="total-row"><span>SUBTOTAL</span><span>${rupiah(grossTotal)}</span></div><div class="total-row"><span>${safe(discountLabel(sale))}</span><span>−${rupiah(discountAmount)}</span></div>` : ""}<div class="total-row grand"><span>TOTAL</span><span>${rupiah(sale.total)}</span></div>${sale.note ? `<div class="rule"></div><b>CATATAN PESANAN</b><div>${safe(sale.note)}</div>` : ""}<div class="rule"></div><div class="footer">Terima kasih<br><span class="muted">Barang yang sudah dibeli mengikuti kebijakan retur toko.</span></div></body></html>`;
 }
 
 function escposReceipt(sale: Sale, data: AppData, settings: PrinterSettings) {
@@ -225,10 +238,21 @@ function escposReceipt(sale: Sale, data: AppData, settings: PrinterSettings) {
   const location = data.locations.find((item) => item.id === sale.locationId);
   const cashier = data.users.find((item) => item.id === sale.cashierId)?.name || "Staf Menengs";
   const lines = receiptLines(sale, data);
+  const discountAmount = Number(sale.discountAmount || 0);
+  const grossTotal = Number(
+    sale.grossTotal ??
+      (lines.reduce((sum, line) => sum + Number(line.subtotal || 0), 0) ||
+        sale.total + discountAmount),
+  );
   let text = `${business?.name || "MENENGS"}\n${location?.name || "Lokasi usaha"}\n${business?.address || location?.address || ""}\n${business?.phone || ""}\n${"-".repeat(columns)}\n`;
   text += `No: ${saleCode(sale)}\n${new Date(sale.createdAt).toLocaleString("id-ID")}\nKasir: ${cashier}\nBayar: ${sale.payment}\n${"-".repeat(columns)}\n`;
   for (const line of lines) text += `${line.name}\n${leftRight(`${line.quantity} x ${rupiah(line.unitPrice)}`, rupiah(line.subtotal))}`;
-  text += `${"-".repeat(columns)}\n${leftRight("TOTAL", rupiah(sale.total))}`;
+  text += `${"-".repeat(columns)}\n`;
+  if (discountAmount > 0) {
+    text += leftRight("SUBTOTAL", rupiah(grossTotal));
+    text += leftRight(discountLabel(sale), `-${rupiah(discountAmount)}`);
+  }
+  text += leftRight("TOTAL", rupiah(sale.total));
   if (sale.note) text += `${"-".repeat(columns)}\nCATATAN PESANAN\n${sale.note}\n`;
   text += `${"-".repeat(columns)}\nTerima kasih\n\n\n`;
   return new Uint8Array([0x1b, 0x40, 0x1b, 0x61, 0x01, ...encoder.encode(text), 0x1d, 0x56, 0x00]);

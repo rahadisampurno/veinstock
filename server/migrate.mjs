@@ -51,8 +51,8 @@ async function run() {
         );
         for (const v of prod.variants || []) {
           await conn.execute(
-            `INSERT IGNORE INTO variants (id, product_id, organization_id, name, sku, cost, price, reseller_price, min_stock, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE name=VALUES(name), sku=VALUES(sku), cost=VALUES(cost), price=VALUES(price), reseller_price=VALUES(reseller_price), min_stock=VALUES(min_stock), active=VALUES(active)`,
-            [v.id ?? 'unknown', prod.id ?? 'unknown', orgId, v.name ?? 'Unknown', v.sku ?? '', v.cost ?? 0, v.price ?? 0, v.resellerPrice ?? 0, v.minStock ?? 0, v.active !== false]
+            `INSERT IGNORE INTO variants (id, product_id, organization_id, name, sku, cost, online_cost, price, online_price, reseller_price, min_stock, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE name=VALUES(name), sku=VALUES(sku), cost=VALUES(cost), online_cost=VALUES(online_cost), price=VALUES(price), online_price=VALUES(online_price), reseller_price=VALUES(reseller_price), min_stock=VALUES(min_stock), active=VALUES(active)`,
+            [v.id ?? 'unknown', prod.id ?? 'unknown', orgId, v.name ?? 'Unknown', v.sku ?? '', v.cost ?? 0, v.onlineCost ?? v.cost ?? 0, v.price ?? 0, v.onlinePrice ?? v.price ?? 0, v.resellerPrice ?? 0, v.minStock ?? 0, v.active !== false]
           );
         }
       }
@@ -67,14 +67,18 @@ async function run() {
 
       // 4. Sales
       for (const sale of data.sales || []) {
+         const lineGrossTotal = (sale.items || []).reduce((sum, item) => sum + Number(item.subtotal || 0), 0);
          await conn.execute(
-           `INSERT IGNORE INTO sales (id, organization_id, location_id, total, method, status, note, cashier_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-           [sale.id ?? 'unknown', orgId, sale.locationId ?? 'unknown', sale.total ?? 0, sale.method ?? 'Tunai', sale.status ?? 'completed', sale.note ?? null, sale.cashierId || 'system-migration', sale.createdAt ?? new Date().toISOString()]
+           `INSERT IGNORE INTO sales (id, organization_id, location_id, gross_total, discount_amount, discount_type, discount_value, total, channel, method, status, note, cashier_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           [sale.id ?? 'unknown', orgId, sale.locationId ?? 'unknown', sale.grossTotal ?? (lineGrossTotal || Number(sale.total || 0) + Number(sale.discountAmount || 0)), sale.discountAmount ?? 0, sale.discountType === 'percentage' ? 'percentage' : 'nominal', sale.discountValue ?? sale.discountAmount ?? 0, sale.total ?? 0, sale.channel ?? 'offline', sale.payment ?? sale.method ?? 'Tunai', sale.status ?? 'completed', sale.note ?? null, sale.cashierId || 'system-migration', sale.createdAt ?? new Date().toISOString()]
          );
          for (const item of sale.items || []) {
+           const quantity = Number(item.quantity || 0);
+           const subtotal = Number(item.subtotal || 0);
+           const price = item.price != null && Number.isFinite(Number(item.price)) && !(Number(item.price) <= 0 && quantity > 0 && subtotal > 0) ? Number(item.price) : quantity > 0 ? Math.round(subtotal / quantity) : 0;
            await conn.execute(
-             `INSERT IGNORE INTO sale_items (sale_id, variant_id, quantity, price, discount, subtotal) VALUES (?, ?, ?, ?, ?, ?)`,
-             [sale.id ?? 'unknown', item.variantId ?? 'unknown', item.quantity ?? 0, item.price ?? 0, item.discount ?? 0, item.subtotal ?? 0]
+             `INSERT IGNORE INTO sale_items (sale_id, variant_id, quantity, unit_cost, price, discount, subtotal) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+             [sale.id ?? 'unknown', item.variantId ?? 'unknown', quantity, item.unitCost ?? null, price, item.discount ?? 0, subtotal]
            );
          }
       }

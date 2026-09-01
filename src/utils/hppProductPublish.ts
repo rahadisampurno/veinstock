@@ -16,6 +16,8 @@ export interface HppPublishCandidate {
   variantName: string;
   cost: number;
   price: number;
+  onlineCost: number;
+  onlinePrice: number;
 }
 
 export interface HppPublishSummary {
@@ -50,6 +52,8 @@ export const buildHppPublishCandidates = (
         variantName: `${batch.flavor} · ${batch.spiceLevel} · ${packageOption.name}`,
         cost: result.offlineHpp,
         price: result.offlineSellingPrice,
+        onlineCost: result.onlineHpp,
+        onlinePrice: result.onlineSellingPrice,
       };
     });
   });
@@ -164,6 +168,8 @@ export function buildProductFromHpp({
         spiceLevel: candidate.spiceLevel,
         cost: candidate.cost,
         price: candidate.price,
+        onlineCost: candidate.onlineCost,
+        onlinePrice: candidate.onlinePrice,
         resellerPrice: candidate.price,
         minStock: 0,
         active: true,
@@ -174,10 +180,16 @@ export function buildProductFromHpp({
       return;
     }
 
-    const costChanged = Math.abs(Number(existing.cost) - candidate.cost) > 0.005;
+    const costChanged =
+      Math.abs(Number(existing.cost) - candidate.cost) > 0.005 ||
+      Math.abs(Number(existing.onlineCost ?? existing.cost) - candidate.onlineCost) >
+        0.005;
     const priceChanged =
       updateSellingPrices &&
-      Math.abs(Number(existing.price) - candidate.price) > 0.005;
+      (Math.abs(Number(existing.price) - candidate.price) > 0.005 ||
+        Math.abs(
+          Number(existing.onlinePrice ?? existing.price) - candidate.onlinePrice,
+        ) > 0.005);
     if (costChanged) summary.costChanged += 1;
     if (priceChanged) summary.priceChanged += 1;
     if (!costChanged && !priceChanged && existing.active !== false)
@@ -190,6 +202,10 @@ export function buildProductFromHpp({
       spiceLevel: candidate.spiceLevel,
       cost: candidate.cost,
       price: updateSellingPrices ? candidate.price : existing.price,
+      onlineCost: candidate.onlineCost,
+      onlinePrice: updateSellingPrices
+        ? candidate.onlinePrice
+        : Number(existing.onlinePrice ?? existing.price),
       active: true,
       hppProfileId: profile.id,
       hppBatchId: candidate.batchId,

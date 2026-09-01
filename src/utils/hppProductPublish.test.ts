@@ -65,6 +65,8 @@ describe("HPP Product & Variant publisher", () => {
     });
     expect(candidates[0].cost).toBeGreaterThan(0);
     expect(candidates[0].price).toBeGreaterThan(candidates[0].cost);
+    expect(candidates[0].onlineCost).toBeGreaterThan(candidates[0].cost);
+    expect(candidates[0].onlinePrice).toBeGreaterThan(candidates[0].price);
   });
 
   it("creates only selected variants with explicit HPP links", () => {
@@ -112,6 +114,8 @@ describe("HPP Product & Variant publisher", () => {
         sku: `SKU-${index + 1}`,
         cost: 1,
         price: 99_000 + index,
+        onlineCost: 2,
+        onlinePrice: 109_000 + index,
         resellerPrice: 88_000,
         minStock: 5,
         active: true,
@@ -146,10 +150,12 @@ describe("HPP Product & Variant publisher", () => {
     expect(active).toMatchObject({
       sku: "SKU-1",
       price: 99_000,
+      onlinePrice: 109_000,
       minStock: 5,
       active: true,
     });
     expect(active?.cost).toBeCloseTo(candidates[0].cost);
+    expect(active?.onlineCost).toBeCloseTo(candidates[0].onlineCost);
     expect(archived?.active).toBe(false);
     expect(result.summary.costChanged).toBe(1);
     expect(result.summary.priceChanged).toBe(0);

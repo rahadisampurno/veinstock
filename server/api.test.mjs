@@ -24,6 +24,32 @@ beforeAll(async () => {
 afterAll(() => server?.kill('SIGTERM'));
 
 describe('multi-tenant API', () => {
+  it('initializes the built-in demo organization before operational commands', async () => {
+    const owner = await post('/api/login', {
+      email: 'owner@meneng.id',
+      password: 'VeinStock123!',
+    });
+    expect(owner.status).toBe(200);
+
+    const initial = await request('/api/state', {
+      headers: { authorization: `Bearer ${owner.body.token}` },
+    });
+    expect(initial.status).toBe(200);
+    expect(initial.body.data).toBeTruthy();
+    expect(initial.body.data.locations.map(item => item.id)).toEqual(
+      expect.arrayContaining(['loc-owner', 'loc-outlet-1']),
+    );
+
+    const pricing = await post('/api/commands/pricing', {
+      pricing: {
+        hppProductProfiles: [],
+        hppRecipes: [],
+        marketplaceConfigs: [],
+      },
+    }, owner.body.token);
+    expect(pricing.status).toBe(201);
+  });
+
   it('keeps remembered devices signed in substantially longer than a normal session', async () => {
     const suffix = `${Date.now()}-remember-session`;
     const email = `owner-${suffix}@test.local`;
@@ -481,6 +507,121 @@ describe('multi-tenant API', () => {
     expect(refreshed.body.data.balances.find(item => item.locationId === 'loc-owner' && item.variantId === `variant-${suffix}`).quantity).toBe(8);
   });
 
+  it('uses channel-specific price and HPP snapshots, allocates buyer discounts, and preserves history', async () => {
+    const suffix = `${Date.now()}-channel-pricing`;
+    const owner = await post('/api/register', {
+      organizationName: 'Channel Pricing', name: 'Owner',
+      email: `owner-${suffix}@test.local`, password: 'Password123!',
+    });
+    const variantId = `variant-${suffix}`;
+    const product = {
+      id: `product-${suffix}`, name: 'Keripik Kanal', category: 'Snack', unit: 'Pcs', active: true,
+      variants: [{
+        id: variantId, name: 'Balado', sku: `CHANNEL-${suffix}`,
+        cost: 6000, price: 10000, onlineCost: 8000, onlinePrice: 13000,
+        resellerPrice: 9000, minStock: 0, active: true,
+      }],
+    };
+    expect((await post('/api/commands/products', {
+      product,
+      initialStocks: [{ locationId: 'loc-owner', variantId, quantity: 6 }],
+    }, owner.body.token)).status).toBe(201);
+
+    expect((await post('/api/commands/sales', {
+      locationId: 'loc-owner', channel: 'online', payment: 'Transfer',
+      discountAmount: 2000, items: [{ variantId, quantity: 2 }],
+    }, owner.body.token)).status).toBe(201);
+
+    let state = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    const onlineSale = state.body.data.sales[0];
+    expect(onlineSale).toEqual(expect.objectContaining({
+      channel: 'online', grossTotal: 26000, discountAmount: 2000, total: 24000,
+    }));
+    expect(onlineSale.items).toEqual([expect.objectContaining({
+      variantId, quantity: 2, price: 13000, unitCost: 8000,
+      subtotal: 26000, discount: 2000,
+    })]);
+
+    const changedProduct = {
+      ...product,
+      variants: [{ ...product.variants[0], onlineCost: 9000, onlinePrice: 15000 }],
+    };
+    expect((await patch(`/api/commands/products/${product.id}`, { product: changedProduct }, owner.body.token)).status).toBe(201);
+    expect((await post('/api/commands/sales', {
+      locationId: 'loc-owner', channel: 'offline', payment: 'Tunai',
+      discountAmount: 0, items: [{ variantId, quantity: 1 }],
+    }, owner.body.token)).status).toBe(201);
+
+    state = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    const preservedOnlineSale = state.body.data.sales.find(item => item.id === onlineSale.id);
+    const offlineSale = state.body.data.sales.find(item => item.channel === 'offline');
+    expect(preservedOnlineSale.items[0]).toEqual(expect.objectContaining({ price: 13000, unitCost: 8000 }));
+    expect(offlineSale).toEqual(expect.objectContaining({ grossTotal: 10000, discountAmount: 0, total: 10000 }));
+    expect(offlineSale.items[0]).toEqual(expect.objectContaining({ price: 10000, unitCost: 6000 }));
+
+    const zeroOnlineCostProduct = {
+      ...changedProduct,
+      variants: [{ ...changedProduct.variants[0], onlineCost: 0 }],
+    };
+    expect((await patch(`/api/commands/products/${product.id}`, { product: zeroOnlineCostProduct }, owner.body.token)).status).toBe(201);
+    expect((await post('/api/commands/sales', {
+      locationId: 'loc-owner', channel: 'online', payment: 'Transfer',
+      items: [{ variantId, quantity: 1 }],
+    }, owner.body.token)).status).toBe(201);
+    state = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    expect(state.body.data.sales[0].items[0]).toEqual(expect.objectContaining({
+      price: 15000, unitCost: 0, subtotal: 15000,
+    }));
+
+    const percentageSaleResponse = await post('/api/commands/sales', {
+      locationId: 'loc-owner', channel: 'online', payment: 'Transfer',
+      discountType: 'percentage', discountValue: 12.5,
+      // Nilai ini sengaja berbeda: server harus menghitung ulang dari persentase.
+      discountAmount: 14000,
+      items: [{ variantId, quantity: 1 }],
+    }, owner.body.token);
+    expect(percentageSaleResponse.status).toBe(201);
+    state = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    const percentageSale = state.body.data.sales[0];
+    expect(percentageSale).toEqual(expect.objectContaining({
+      grossTotal: 15000, discountType: 'percentage', discountValue: 12.5,
+      discountAmount: 1875, total: 13125,
+    }));
+    expect(percentageSale.items[0]).toEqual(expect.objectContaining({
+      subtotal: 15000, discount: 1875,
+    }));
+
+    const invalidPercentage = await post('/api/commands/sales', {
+      locationId: 'loc-owner', channel: 'online', payment: 'Transfer',
+      discountType: 'percentage', discountValue: 101,
+      items: [{ variantId, quantity: 1 }],
+    }, owner.body.token);
+    expect(invalidPercentage.status).toBe(400);
+    expect(invalidPercentage.body.message).toMatch(/0 sampai 100%/i);
+
+    const invalidDiscount = await post('/api/commands/sales', {
+      locationId: 'loc-owner', channel: 'online', payment: 'Transfer',
+      discountAmount: 16000, items: [{ variantId, quantity: 1 }],
+    }, owner.body.token);
+    expect(invalidDiscount.status).toBe(400);
+    expect(invalidDiscount.body.message).toMatch(/diskon.*tidak melebihi/i);
+    const unchanged = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    expect(unchanged.body.data.sales).toHaveLength(4);
+    expect(unchanged.body.data.balances.find(item => item.variantId === variantId).quantity).toBe(1);
+
+    const archivedProduct = { ...zeroOnlineCostProduct, active: false };
+    expect((await patch(`/api/commands/products/${product.id}`, { product: archivedProduct }, owner.body.token)).status).toBe(201);
+    const archivedSale = await post('/api/commands/sales', {
+      locationId: 'loc-owner', channel: 'offline', payment: 'Tunai',
+      items: [{ variantId, quantity: 1 }],
+    }, owner.body.token);
+    expect(archivedSale.status).toBe(400);
+    expect(archivedSale.body.message).toMatch(/tidak aktif|tidak ditemukan/i);
+    const afterArchivedAttempt = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    expect(afterArchivedAttempt.body.data.sales).toHaveLength(4);
+    expect(afterArchivedAttempt.body.data.balances.find(item => item.variantId === variantId).quantity).toBe(1);
+  });
+
   it('commits employee, attendance, loan, and payroll commands without a browser snapshot', async () => {
     const suffix = `${Date.now()}-people`;
     const owner = await post('/api/register', { organizationName: 'SDM Command', name: 'Owner', email: `owner-${suffix}@test.local`, password: 'Password123!' });
@@ -551,6 +692,37 @@ describe('multi-tenant API', () => {
     const refreshed = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
     expect(refreshed.body.data.suppliers).toContainEqual(expect.objectContaining({ id: supplier.id, name: updatedSupplier.name, address: 'Bandung' }));
     expect(refreshed.body.data.receipts).toContainEqual(expect.objectContaining({ supplierId: supplier.id, variantId: `var-${suffix}`, proofUrl }));
+  });
+
+  it('records a bulk receipt when legacy numeric variant IDs arrive as browser string keys', async () => {
+    const suffix = `${Date.now()}-bulk-receipt`;
+    const owner = await post('/api/register', { organizationName: 'Bulk Stok Masuk', name: 'Owner', email: `owner-${suffix}@test.local`, password: 'Password123!' });
+    const numericVariantIds = Array.from({ length: 20 }, (_, index) => Date.now() + index + 1000);
+    const product = {
+      id: `product-${suffix}`, name: 'Kerupuk Bulk', category: 'Snack', unit: 'Pcs', active: true,
+      variants: numericVariantIds.map((id, index) => ({ id, name: `Varian ${index + 1}`, sku: `BULK-${index}-${suffix}`, cost: 1000 + index, price: 3000 + index, resellerPrice: 2500 + index, minStock: 0, active: true })),
+    };
+    expect((await post('/api/commands/products', { product }, owner.body.token)).status).toBe(201);
+
+    const receipt = await post('/api/commands/receipts', {
+      locationId: 'loc-owner', sourceType: 'production', note: 'Uji bulk 20 varian',
+      items: numericVariantIds.map(id => ({ variantId: String(id), quantity: 20, unitCost: 38182 })),
+    }, owner.body.token);
+    expect(receipt.status).toBe(201);
+
+    let refreshed = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    expect(refreshed.body.data.receipts).toHaveLength(20);
+    expect(refreshed.body.data.receipts.every(item => item.quantity === 20 && item.unitCost === 38182)).toBe(true);
+    expect(refreshed.body.data.balances.filter(item => numericVariantIds.includes(item.variantId)).map(item => item.quantity)).toEqual(Array(20).fill(20));
+
+    const invalid = await post('/api/commands/receipts', {
+      locationId: 'loc-owner', sourceType: 'production',
+      items: [{ variantId: String(numericVariantIds[0]), quantity: 1, unitCost: 1000 }, { variantId: 'variant-sudah-dihapus', quantity: 1, unitCost: 1000 }],
+    }, owner.body.token);
+    expect(invalid.status).toBe(400);
+    expect(invalid.body.message).toMatch(/baris 2.*tidak ditemukan atau sudah tidak aktif/i);
+    refreshed = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    expect(refreshed.body.data.receipts).toHaveLength(20);
   });
 
   it('records packing scans and finalizes an expedition handover batch without duplicates', async () => {

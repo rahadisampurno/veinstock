@@ -3,6 +3,14 @@ import fs from 'fs';
 import dotenv from 'dotenv';
 dotenv.config();
 
+async function getColumn(pool, table, column) {
+  const [rows] = await pool.query(
+    `SHOW COLUMNS FROM \`${table}\` LIKE ?`,
+    [column],
+  );
+  return rows[0] || null;
+}
+
 async function init() {
   const pool = mysql.createPool({
     host: '127.0.0.1',
@@ -70,7 +78,9 @@ async function init() {
       flavor VARCHAR(100) NULL,
       spice_level VARCHAR(50) NULL,
       cost INT NOT NULL DEFAULT 0,
+      online_cost INT NOT NULL DEFAULT 0,
       price INT NOT NULL DEFAULT 0,
+      online_price INT NOT NULL DEFAULT 0,
       reseller_price INT NOT NULL DEFAULT 0,
       min_stock INT NOT NULL DEFAULT 0,
       grams_per_cup INT,
@@ -110,6 +120,10 @@ async function init() {
       id VARCHAR(40) PRIMARY KEY,
       organization_id VARCHAR(40) NOT NULL,
       location_id VARCHAR(40) NOT NULL,
+      gross_total INT NOT NULL DEFAULT 0,
+      discount_amount INT NOT NULL DEFAULT 0,
+      discount_type VARCHAR(20) NOT NULL DEFAULT 'nominal',
+      discount_value DECIMAL(12,2) NOT NULL DEFAULT 0,
       total INT NOT NULL,
       channel VARCHAR(20) NOT NULL DEFAULT 'offline',
       method VARCHAR(50) NOT NULL,
@@ -169,6 +183,36 @@ async function init() {
     await pool.execute(q);
   }
   try { await pool.execute("ALTER TABLE sales ADD COLUMN channel VARCHAR(20) NOT NULL DEFAULT 'offline' AFTER total"); } catch (error) { if (error?.code !== 'ER_DUP_FIELDNAME') throw error; }
+  const onlineCostColumn = await getColumn(pool, 'variants', 'online_cost');
+  if (!onlineCostColumn) {
+    await pool.execute("ALTER TABLE variants ADD COLUMN online_cost INT NULL AFTER cost");
+  }
+  if (!onlineCostColumn || onlineCostColumn.Null === 'YES') {
+    await pool.execute("UPDATE variants SET online_cost = cost WHERE online_cost IS NULL");
+    await pool.execute("ALTER TABLE variants MODIFY online_cost INT NOT NULL DEFAULT 0");
+  }
+  const onlinePriceColumn = await getColumn(pool, 'variants', 'online_price');
+  if (!onlinePriceColumn) {
+    await pool.execute("ALTER TABLE variants ADD COLUMN online_price INT NULL AFTER price");
+  }
+  if (!onlinePriceColumn || onlinePriceColumn.Null === 'YES') {
+    await pool.execute("UPDATE variants SET online_price = price WHERE online_price IS NULL");
+    await pool.execute("ALTER TABLE variants MODIFY online_price INT NOT NULL DEFAULT 0");
+  }
+  const grossTotalColumn = await getColumn(pool, 'sales', 'gross_total');
+  if (!grossTotalColumn) {
+    await pool.execute("ALTER TABLE sales ADD COLUMN gross_total INT NULL AFTER location_id");
+  }
+  if (!grossTotalColumn || grossTotalColumn.Null === 'YES') {
+    await pool.execute("UPDATE sales SET gross_total = total WHERE gross_total IS NULL");
+    await pool.execute("ALTER TABLE sales MODIFY gross_total INT NOT NULL DEFAULT 0");
+  }
+  try { await pool.execute("ALTER TABLE sales ADD COLUMN discount_amount INT NOT NULL DEFAULT 0 AFTER gross_total"); } catch (error) { if (error?.code !== 'ER_DUP_FIELDNAME') throw error; }
+  try { await pool.execute("ALTER TABLE sales ADD COLUMN discount_type VARCHAR(20) NOT NULL DEFAULT 'nominal' AFTER discount_amount"); } catch (error) { if (error?.code !== 'ER_DUP_FIELDNAME') throw error; }
+  try {
+    await pool.execute("ALTER TABLE sales ADD COLUMN discount_value DECIMAL(12,2) NOT NULL DEFAULT 0 AFTER discount_type");
+    await pool.execute("UPDATE sales SET discount_value = discount_amount");
+  } catch (error) { if (error?.code !== 'ER_DUP_FIELDNAME') throw error; }
   console.log("All tables created successfully");
   await pool.end();
 }

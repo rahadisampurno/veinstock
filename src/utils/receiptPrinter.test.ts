@@ -6,12 +6,16 @@ const sale: Sale = {
   id: "sale-12345678",
   locationId: "outlet-1",
   channel: "offline",
+  grossTotal: 32_000,
+  discountAmount: 2_000,
+  discountType: "percentage",
+  discountValue: 6.25,
   total: 30_000,
   payment: "Tunai",
   cashierId: "cashier-1",
   createdAt: "2026-08-07T03:00:00.000Z",
   status: "completed",
-  items: [{ variantId: "variant-1", quantity: 2, unit: "Pcs", unitCost: 8_000, subtotal: 30_000 }],
+  items: [{ variantId: "variant-1", quantity: 2, unit: "Pcs", unitCost: 8_000, price: 16_000, discount: 2_000, subtotal: 32_000 }],
 };
 
 const data = {
@@ -31,6 +35,10 @@ describe("receipt printer", () => {
     expect(html).toContain("Rina Kasir");
     expect(html).toContain("Keripik - Balado");
     expect(html).toContain("Rp 30.000");
+    expect(html).toContain("Rp 32.000");
+    expect(html).toContain("DISKON");
+    expect(html).toContain("DISKON (6,25%)");
+    expect(html).toContain("Rp 2.000");
     expect(html).toContain("Menengs &lt;Outlet&gt;");
     expect(html).not.toContain("Menengs <Outlet>");
   });

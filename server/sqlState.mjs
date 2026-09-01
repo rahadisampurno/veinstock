@@ -38,7 +38,7 @@ export async function syncStateToSQL(conn, orgId, data) {
     );
     for (const v of prod.variants || []) {
       await conn.execute(
-        `INSERT INTO variants (id, product_id, organization_id, name, sku, barcode, package_weight, flavor, spice_level, cost, price, reseller_price, min_stock, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE name=VALUES(name), sku=VALUES(sku), barcode=VALUES(barcode), package_weight=VALUES(package_weight), flavor=VALUES(flavor), spice_level=VALUES(spice_level), cost=VALUES(cost), price=VALUES(price), reseller_price=VALUES(reseller_price), min_stock=VALUES(min_stock), active=VALUES(active)`,
+        `INSERT INTO variants (id, product_id, organization_id, name, sku, barcode, package_weight, flavor, spice_level, cost, online_cost, price, online_price, reseller_price, min_stock, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE name=VALUES(name), sku=VALUES(sku), barcode=VALUES(barcode), package_weight=VALUES(package_weight), flavor=VALUES(flavor), spice_level=VALUES(spice_level), cost=VALUES(cost), online_cost=VALUES(online_cost), price=VALUES(price), online_price=VALUES(online_price), reseller_price=VALUES(reseller_price), min_stock=VALUES(min_stock), active=VALUES(active)`,
         [
           v.id ?? "unknown",
           prod.id ?? "unknown",
@@ -50,7 +50,9 @@ export async function syncStateToSQL(conn, orgId, data) {
           v.flavor ?? null,
           v.spiceLevel ?? null,
           v.cost ?? 0,
+          v.onlineCost ?? v.cost ?? 0,
           v.price ?? 0,
+          v.onlinePrice ?? v.price ?? 0,
           v.resellerPrice ?? 0,
           v.minStock ?? 0,
           v.active !== false,
@@ -74,12 +76,22 @@ export async function syncStateToSQL(conn, orgId, data) {
 
   // 4. Sales
   for (const sale of data.sales || []) {
+    const lineGrossTotal = (sale.items || []).reduce(
+      (sum, item) => sum + Number(item.subtotal || 0),
+      0,
+    );
     await conn.execute(
-      `INSERT INTO sales (id, organization_id, location_id, total, channel, method, status, note, cashier_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE total=VALUES(total), channel=VALUES(channel), method=VALUES(method), status=VALUES(status), note=VALUES(note), cashier_id=VALUES(cashier_id)`,
+      `INSERT INTO sales (id, organization_id, location_id, gross_total, discount_amount, discount_type, discount_value, total, channel, method, status, note, cashier_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE gross_total=VALUES(gross_total), discount_amount=VALUES(discount_amount), discount_type=VALUES(discount_type), discount_value=VALUES(discount_value), total=VALUES(total), channel=VALUES(channel), method=VALUES(method), status=VALUES(status), note=VALUES(note), cashier_id=VALUES(cashier_id)`,
       [
         sale.id ?? "unknown",
         orgId,
         sale.locationId ?? "unknown",
+        sale.grossTotal ??
+          (lineGrossTotal ||
+            Number(sale.total || 0) + Number(sale.discountAmount || 0)),
+        sale.discountAmount ?? 0,
+        sale.discountType === "percentage" ? "percentage" : "nominal",
+        sale.discountValue ?? sale.discountAmount ?? 0,
         sale.total ?? 0,
         sale.channel ?? "offline",
         sale.payment ?? sale.method ?? "Tunai",
@@ -112,16 +124,26 @@ export async function syncStateToSQL(conn, orgId, data) {
       ).values(),
     );
     for (const item of uniqueItems) {
+      const quantity = Number(item.quantity || 0);
+      const subtotal = Number(item.subtotal || 0);
+      const price =
+        item.price != null &&
+        Number.isFinite(Number(item.price)) &&
+        !(Number(item.price) <= 0 && quantity > 0 && subtotal > 0)
+          ? Number(item.price)
+          : quantity > 0
+            ? Math.round(subtotal / quantity)
+            : 0;
       await conn.execute(
         `INSERT INTO sale_items (sale_id, variant_id, quantity, unit_cost, price, discount, subtotal) VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [
           sale.id ?? "unknown",
           item.variantId ?? "unknown",
-          item.quantity ?? 0,
+          quantity,
           Number.isFinite(Number(item.unitCost)) ? Number(item.unitCost) : null,
-          item.price ?? 0,
+          price,
           item.discount ?? 0,
-          item.subtotal ?? 0,
+          subtotal,
         ],
       );
     }
@@ -197,7 +219,7 @@ export async function getStateFromSQL(conn, orgId) {
     [orgId],
   );
   const [variants] = await conn.execute(
-    "SELECT id, product_id, name, sku, barcode, package_weight as packageWeight, flavor, spice_level as spiceLevel, cost, price, reseller_price as resellerPrice, min_stock as minStock, active FROM variants WHERE organization_id = ?",
+    "SELECT id, product_id, name, sku, barcode, package_weight as packageWeight, flavor, spice_level as spiceLevel, cost, online_cost as onlineCost, price, online_price as onlinePrice, reseller_price as resellerPrice, min_stock as minStock, active FROM variants WHERE organization_id = ?",
     [orgId],
   );
 
@@ -218,7 +240,7 @@ export async function getStateFromSQL(conn, orgId) {
   );
 
   const [sales] = await conn.execute(
-    "SELECT id, location_id as locationId, total, channel, method, status, note, cashier_id as cashierId, created_at as createdAt FROM sales WHERE organization_id = ?",
+    "SELECT id, location_id as locationId, gross_total as grossTotal, discount_amount as discountAmount, discount_type as discountType, discount_value as discountValue, total, channel, method, status, note, cashier_id as cashierId, created_at as createdAt FROM sales WHERE organization_id = ?",
     [orgId],
   );
   const saleIds = sales.map((s) => s.id);
@@ -231,6 +253,8 @@ export async function getStateFromSQL(conn, orgId) {
     saleItems = items;
   }
   for (const s of sales) {
+    s.discountAmount = Number(s.discountAmount || 0);
+    s.discountValue = Number(s.discountValue ?? s.discountAmount);
     const seenItems = new Set();
     s.items = saleItems
       .filter((i) => i.sale_id === s.id)

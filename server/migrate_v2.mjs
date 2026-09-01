@@ -58,8 +58,8 @@ async function migrate() {
           if (Array.isArray(prod.variants)) {
             for (const varnt of prod.variants) {
               await pool.execute(
-                'INSERT IGNORE INTO variants (id, product_id, organization_id, name, sku, cost, price, reseller_price, min_stock, grams_per_cup, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                [varnt.id, prod.id, orgId, varnt.name, varnt.sku || '', Number(varnt.cost)||0, Number(varnt.price)||0, Number(varnt.resellerPrice)||0, Number(varnt.minStock)||0, varnt.gramsPerCup?Number(varnt.gramsPerCup):null, varnt.active !== false]
+                'INSERT IGNORE INTO variants (id, product_id, organization_id, name, sku, cost, online_cost, price, online_price, reseller_price, min_stock, grams_per_cup, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                [varnt.id, prod.id, orgId, varnt.name, varnt.sku || '', Number(varnt.cost)||0, Number(varnt.onlineCost ?? varnt.cost)||0, Number(varnt.price)||0, Number(varnt.onlinePrice ?? varnt.price)||0, Number(varnt.resellerPrice)||0, Number(varnt.minStock)||0, varnt.gramsPerCup?Number(varnt.gramsPerCup):null, varnt.active !== false]
               );
               
               if (varnt.minStockByLocation) {
@@ -88,16 +88,20 @@ async function migrate() {
       // 4. Sales
       if (Array.isArray(data.sales)) {
         for (const sale of data.sales) {
+          const lineGrossTotal = (sale.items || []).reduce((sum, item) => sum + Number(item.subtotal || 0), 0);
           await pool.execute(
-            'INSERT IGNORE INTO sales (id, organization_id, location_id, total, method, status, note, cashier_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            [sale.id, orgId, sale.locationId, Number(sale.total)||0, sale.method || 'cash', sale.status || 'completed', sale.note || '', sale.cashierId || 'unknown', sale.createdAt || new Date().toISOString()]
+            'INSERT IGNORE INTO sales (id, organization_id, location_id, gross_total, discount_amount, discount_type, discount_value, total, channel, method, status, note, cashier_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [sale.id, orgId, sale.locationId, Number(sale.grossTotal ?? (lineGrossTotal || Number(sale.total || 0) + Number(sale.discountAmount || 0)))||0, Number(sale.discountAmount)||0, sale.discountType === 'percentage' ? 'percentage' : 'nominal', Number(sale.discountValue ?? sale.discountAmount)||0, Number(sale.total)||0, sale.channel || 'offline', sale.payment || sale.method || 'cash', sale.status || 'completed', sale.note || '', sale.cashierId || 'unknown', sale.createdAt || new Date().toISOString()]
           );
           
           if (Array.isArray(sale.items)) {
             for (const item of sale.items) {
+              const quantity = Number(item.quantity)||0;
+              const subtotal = Number(item.subtotal)||0;
+              const price = item.price != null && Number.isFinite(Number(item.price)) && !(Number(item.price) <= 0 && quantity > 0 && subtotal > 0) ? Number(item.price) : quantity > 0 ? Math.round(subtotal / quantity) : 0;
               await pool.execute(
-                'INSERT IGNORE INTO sale_items (sale_id, variant_id, quantity, price, discount, subtotal) VALUES (?, ?, ?, ?, ?, ?)',
-                [sale.id, item.variantId, Number(item.quantity)||0, Number(item.price)||0, Number(item.discount)||0, Number(item.subtotal)||0]
+                'INSERT IGNORE INTO sale_items (sale_id, variant_id, quantity, unit_cost, price, discount, subtotal) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                [sale.id, item.variantId, quantity, Number.isFinite(Number(item.unitCost)) ? Number(item.unitCost) : null, price, Number(item.discount)||0, subtotal]
               );
             }
           }

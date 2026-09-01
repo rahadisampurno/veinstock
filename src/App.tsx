@@ -67,6 +67,7 @@ import {
   Search,
   Settings,
   Store,
+  Globe2,
   Trash2,
   Eye,
   EyeOff,
@@ -110,6 +111,12 @@ import {
 } from "./utils/hppProductPublish";
 import { printPayrollSlip } from "./utils/payrollSlip";
 import {
+  applyReceiptBulkValues,
+  applyTransferBulkQuantity,
+  parseOptionalBulkCost,
+  parseOptionalBulkQuantity,
+} from "./utils/stockBulk";
+import {
   connectBluetoothPrinter,
   connectUsbPrinter,
   directPrintSale,
@@ -141,6 +148,7 @@ import type {
   MarketplaceConfig,
   Product,
   Sale,
+  SaleItem,
   SessionUser,
   StockUnit,
   Variant,
@@ -547,13 +555,16 @@ function OptionalRupiahInput({
   value,
   onValue,
   label,
+  inputRef,
 }: {
   value: string;
   onValue: (value: string) => void;
   label?: string;
+  inputRef?: React.Ref<HTMLInputElement>;
 }) {
   return (
     <input
+      ref={inputRef}
       aria-label={label}
       type="text"
       inputMode="numeric"
@@ -565,7 +576,7 @@ function OptionalRupiahInput({
           if (input.isConnected) input.select();
         });
       }}
-      onChange={(event) =>
+      onInput={(event) =>
         onValue(
           event.currentTarget.value.replace(/\D/g, "").replace(/^0+(?=\d)/, ""),
         )
@@ -797,6 +808,12 @@ const SidebarGlyph = ({
 
 const money = (n?: number | null) =>
   `Rp ${Math.round(n || 0).toLocaleString("id-ID")}`;
+const percentage = (n?: number | null) =>
+  `${Number(n || 0).toLocaleString("id-ID", { maximumFractionDigits: 2 })}%`;
+const saleDiscountDescription = (sale: any) =>
+  sale?.discountType === "percentage"
+    ? `${percentage(sale.discountValue)} (${money(sale.discountAmount)})`
+    : money(sale?.discountAmount);
 const excelMoney = (n?: number | null) =>
   `Rp ${Number(n || 0).toLocaleString("id-ID", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const excelNumber = (n?: number | null) =>
@@ -2954,7 +2971,7 @@ function App() {
                   )
                 )
                   return notify("Tambahkan produk aktif terlebih dahulu");
-                if (checkAuth("sale.create")) setModal("sale");
+                if (checkAuth("sale.create")) setModal("sale-channel");
               }}
               cancel={(id: string) =>
                 checkAuth("sale.void") && setModal(`cancel:sale:${id}`)
@@ -3854,10 +3871,19 @@ function App() {
           }}
         />
       )}
-      {modal === "sale" && (
+      {modal === "sale-channel" && (
+        <SaleChannelModal
+          close={() => setModal(null)}
+          select={(channel: "offline" | "online") =>
+            setModalState(`sale:${channel}`)
+          }
+        />
+      )}
+      {(modal === "sale:offline" || modal === "sale:online") && (
         <SaleModal
           data={data}
           notify={notify}
+          initialChannel={modal.slice("sale:".length) as Channel}
           fixedLocation={
             scope.scopeType === "specific" ? user.outletId : undefined
           }
@@ -3876,6 +3902,9 @@ function App() {
             cart: Array<{ variantId: string; quantity: number }>,
             payment: string,
             requiresPrint: boolean,
+            discountAmount: number,
+            discountType: "nominal" | "percentage",
+            discountValue: number,
             note?: string,
           ) => {
             if (!cart.some((item) => isPositiveNumber(item.quantity)))
@@ -3887,6 +3916,9 @@ function App() {
                 channel,
                 items: cart,
                 payment,
+                discountAmount,
+                discountType,
+                discountValue,
                 requiresPrint,
                 note,
               }),
@@ -5637,7 +5669,10 @@ function Products({
                         gap: "4px",
                       }}
                     >
-                      <strong>{money(v.price)}</strong>
+                      <strong>Offline {money(v.price)}</strong>
+                      <small>
+                        Online {money(v.onlinePrice ?? v.price)}
+                      </small>
                       <span
                         style={{
                           fontSize: "0.75rem",
@@ -10179,6 +10214,9 @@ function Sales({
                     <b>{money(s.total)}</b>
                     <span>
                       {s.payment || "Metode pembayaran tidak tercatat"}
+                      {Number(s.discountAmount || 0) > 0
+                        ? ` · Diskon ${saleDiscountDescription(s)}`
+                        : ""}
                     </span>
                   </div>
                 </div>
@@ -10762,18 +10800,42 @@ function Reports({
     (location === "all" || s.locationId === location) &&
     (channel === "all" || s.channel === channel);
   const scopedSales = data.sales.filter(saleMatchesScope);
+  const saleItemUnitCost = (sale: any, item: any) => {
+    if (
+      item.unitCost !== null &&
+      item.unitCost !== undefined &&
+      Number.isFinite(Number(item.unitCost))
+    )
+      return Number(item.unitCost);
+    const variant = variants[item.variantId];
+    return Number(
+      sale.channel === "online"
+        ? variant?.onlineCost ?? variant?.cost ?? 0
+        : variant?.cost ?? 0,
+    );
+  };
   const normalizeSale = (sale: any) => {
     const items = sale.items.filter(
       (item: any) => product === "all" || item.variantId === product,
     );
     const allItemValue = sale.items.reduce(
       (sum: number, item: any) =>
-        sum + Number(item.subtotal ?? (item.price || 0) * item.quantity),
+        sum +
+        Math.max(
+          0,
+          Number(item.subtotal ?? (item.price || 0) * item.quantity) -
+            Number(item.discount || 0),
+        ),
       0,
     );
     const selectedItemValue = items.reduce(
       (sum: number, item: any) =>
-        sum + Number(item.subtotal ?? (item.price || 0) * item.quantity),
+        sum +
+        Math.max(
+          0,
+          Number(item.subtotal ?? (item.price || 0) * item.quantity) -
+            Number(item.discount || 0),
+        ),
       0,
     );
     const selectedQuantity = items.reduce(
@@ -10792,7 +10854,27 @@ function Reports({
             (selectedItemValue / allItemValue)
           : Number(sale.total || 0) *
             (selectedQuantity / Math.max(1, allQuantity));
-    return { ...sale, items, reportTotal };
+    const allGrossValue = sale.items.reduce(
+      (sum: number, item: any) => sum + Number(item.subtotal || 0),
+      0,
+    );
+    const selectedGrossValue = items.reduce(
+      (sum: number, item: any) => sum + Number(item.subtotal || 0),
+      0,
+    );
+    const reportDiscount =
+      product === "all"
+        ? Number(sale.discountAmount || 0)
+        : items.some((item: any) => Number(item.discount || 0) > 0)
+          ? items.reduce(
+              (sum: number, item: any) => sum + Number(item.discount || 0),
+              0,
+            )
+          : allGrossValue > 0
+            ? Number(sale.discountAmount || 0) *
+              (selectedGrossValue / allGrossValue)
+            : 0;
+    return { ...sale, items, reportTotal, reportDiscount };
   };
   const sales = scopedSales
     .filter((s: any) => inPeriod(s.createdAt))
@@ -10810,6 +10892,10 @@ function Reports({
     (sum: number, sale: any) => sum + sale.reportTotal,
     0,
   );
+  const totalDiscount = sales.reduce(
+    (sum: number, sale: any) => sum + Number(sale.reportDiscount || 0),
+    0,
+  );
   const revenueChange =
     previousTotal > 0 ? ((total - previousTotal) / previousTotal) * 100 : null;
   const cogs = sales.reduce(
@@ -10817,9 +10903,7 @@ function Reports({
       sum +
       sale.items.reduce(
         (lineSum: number, item: any) =>
-          lineSum +
-          item.quantity *
-            Number(item.unitCost || variants[item.variantId]?.cost || 0),
+          lineSum + item.quantity * saleItemUnitCost(sale, item),
         0,
       ),
     0,
@@ -10909,7 +10993,10 @@ function Reports({
     const original =
       data.sales.find((item: any) => item.id === sale.id) || sale;
     const lineSubtotal = original.items.reduce(
-      (sum: number, item: any) => sum + Number(item.subtotal || 0),
+      (sum: number, item: any) =>
+        sum +
+        Number(item.subtotal || 0) -
+        Number(item.discount || 0),
       0,
     );
     const missingCostLines = original.items.filter(
@@ -11090,9 +11177,7 @@ function Reports({
     trend[index].Omzet += sale.reportTotal;
     trend[index].HPP += sale.items.reduce(
       (sum: number, item: any) =>
-        sum +
-        item.quantity *
-          Number(item.unitCost || variants[item.variantId]?.cost || 0),
+        sum + item.quantity * saleItemUnitCost(sale, item),
       0,
     );
     trend[index]["Laba Bersih"] = trend[index].Omzet - trend[index].HPP;
@@ -11133,7 +11218,18 @@ function Reports({
           item.quantity,
           item.price || (item.quantity ? item.subtotal / item.quantity : 0),
           item.subtotal || 0,
+          item.discount || 0,
+          Number(item.subtotal || 0) - Number(item.discount || 0),
+          item.unitCost || 0,
+          Number(item.quantity || 0) * Number(item.unitCost || 0),
+          Number(item.subtotal || 0) -
+            Number(item.discount || 0) -
+            Number(item.quantity || 0) * Number(item.unitCost || 0),
           s.payment || "-",
+          s.discountType === "percentage" ? "Persentase" : "Nominal",
+          s.discountType === "percentage"
+            ? percentage(s.discountValue)
+            : money(s.discountValue ?? s.discountAmount),
           "Selesai",
         ]);
       });
@@ -11172,6 +11268,7 @@ function Reports({
       ],
       ["Kanal penjualan", channel === "all" ? "Semua kanal" : channel],
       ["Omzet", total],
+      ["Diskon pembeli", totalDiscount],
       ["HPP", cogs],
       ["Estimasi laba kotor", grossProfit],
       ["Margin kotor", `${grossMargin.toFixed(1)}%`],
@@ -11369,7 +11466,14 @@ function Reports({
             { header: "Jumlah", key: "jumlah", width: 10 },
             { header: "Harga Satuan", key: "hargasatuan", width: 15 },
             { header: "Subtotal", key: "subtotal", width: 15 },
+            { header: "Diskon", key: "diskon", width: 15 },
+            { header: "Penjualan Bersih", key: "penjualanbersih", width: 18 },
+            { header: "HPP Satuan", key: "hppsatuan", width: 15 },
+            { header: "Total HPP", key: "totalhpp", width: 15 },
+            { header: "Laba Kotor", key: "labakotor", width: 15 },
             { header: "Pembayaran", key: "pembayaran", width: 15 },
+            { header: "Jenis Diskon", key: "jenisdiskon", width: 15 },
+            { header: "Input Diskon", key: "inputdiskon", width: 16 },
             { header: "Status", key: "status", width: 12 },
           ],
           data: salesData,
@@ -11632,7 +11736,8 @@ function Reports({
               </i>
               <b>{money(total)}</b>
               <small>
-                {sales.length} transaksi · rata-rata {money(averageTransaction)}
+                {sales.length} transaksi · diskon {money(totalDiscount)} · rata-rata{" "}
+                {money(averageTransaction)}
               </small>
               {periodDays > 0 && (
                 <em
@@ -11833,8 +11938,8 @@ function Reports({
                   </td>
                   <td>Transaksi penjualan selesai</td>
                   <td>
-                    Total transaksi; filter varian memakai proporsi subtotal
-                    baris
+                    Total setelah diskon; filter varian memakai diskon yang
+                    dialokasikan ke baris
                   </td>
                   <td>
                     <span className={`metric-quality ${revenueQuality}`}>
@@ -12933,7 +13038,14 @@ const Empty = ({
   );
 };
 
-function Modal({ title, desc, close, children, className = "" }: any) {
+function Modal({
+  title,
+  desc,
+  close,
+  children,
+  className = "",
+  wide = false,
+}: any) {
   const titleId = useId();
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
@@ -12950,7 +13062,7 @@ function Modal({ title, desc, close, children, className = "" }: any) {
   return (
     <div className="modal-backdrop">
       <div
-        className={`modal ${className}`}
+        className={`modal${wide ? " large" : ""}${className ? ` ${className}` : ""}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
@@ -13071,8 +13183,10 @@ function ProductExportModal({ data, close, notify }: any) {
     { key: "sku", header: "SKU", width: 20 },
     { key: "barcode", header: "Barcode EAN-13", width: 20 },
     { key: "unit", header: "Satuan", width: 12 },
-    { key: "cost", header: "Harga Modal", width: 16 },
-    { key: "price", header: "Harga Jual", width: 16 },
+    { key: "cost", header: "HPP Offline", width: 16 },
+    { key: "price", header: "Harga Jual Offline", width: 18 },
+    { key: "onlineCost", header: "HPP Online", width: 16 },
+    { key: "onlinePrice", header: "Harga Jual Online", width: 18 },
     { key: "resellerPrice", header: "Harga Reseller", width: 18 },
     { key: "minStock", header: "Minimum Stok", width: 16 },
     { key: "totalStock", header: "Total Stok", width: 14 },
@@ -13103,6 +13217,8 @@ function ProductExportModal({ data, close, notify }: any) {
       unit: product.unit || "Pcs",
       cost: Number(variant.cost || 0),
       price: Number(variant.price || 0),
+      onlineCost: Number(variant.onlineCost ?? variant.cost ?? 0),
+      onlinePrice: Number(variant.onlinePrice ?? variant.price ?? 0),
       resellerPrice: Number(variant.resellerPrice || 0),
       minStock: Number(variant.minStock || 0),
       totalStock: data.balances
@@ -13226,6 +13342,8 @@ function ProductModal({
         spiceLevel: "",
         cost: 0,
         price: 0,
+        onlineCost: 0,
+        onlinePrice: 0,
         resellerPrice: 0,
         minStock: 0,
         active: true,
@@ -13241,6 +13359,8 @@ function ProductModal({
 
   const [bulkCost, setBulkCost] = useState("");
   const [bulkPrice, setBulkPrice] = useState("");
+  const [bulkOnlineCost, setBulkOnlineCost] = useState("");
+  const [bulkOnlinePrice, setBulkOnlinePrice] = useState("");
   const [bulkReseller, setBulkReseller] = useState("");
   const [bulkMinStock, setBulkMinStock] = useState("");
   const [bulkInitialStock, setBulkInitialStock] = useState("");
@@ -13311,6 +13431,14 @@ function ProductModal({
               ...v,
               cost: bulkCost !== "" ? Number(bulkCost) : v.cost,
               price: bulkPrice !== "" ? Number(bulkPrice) : v.price,
+              onlineCost:
+                bulkOnlineCost !== ""
+                  ? Number(bulkOnlineCost)
+                  : Number(v.onlineCost ?? v.cost ?? 0),
+              onlinePrice:
+                bulkOnlinePrice !== ""
+                  ? Number(bulkOnlinePrice)
+                  : Number(v.onlinePrice ?? v.price ?? 0),
               resellerPrice:
                 bulkReseller !== "" ? Number(bulkReseller) : v.resellerPrice,
               minStock:
@@ -13324,6 +13452,8 @@ function ProductModal({
     );
     setBulkCost("");
     setBulkPrice("");
+    setBulkOnlineCost("");
+    setBulkOnlinePrice("");
     setBulkReseller("");
     setBulkMinStock("");
     setBulkInitialStock("");
@@ -13349,6 +13479,8 @@ function ProductModal({
         spiceLevel: "",
         cost: 0,
         price: 0,
+        onlineCost: 0,
+        onlinePrice: 0,
         resellerPrice: 0,
         minStock: 0,
         active: true,
@@ -13362,6 +13494,7 @@ function ProductModal({
       title={editing ? "Edit produk & varian" : "Tambah produk"}
       desc="Kelola informasi produk dan variannya."
       close={close}
+      className="product-editor-modal"
     >
       <form
         onSubmit={async (e) => {
@@ -13381,7 +13514,27 @@ function ProductModal({
               (v) => !Number.isFinite(Number(v.price)) || Number(v.price) <= 0,
             )
           )
-            return setError("Harga jual setiap varian harus lebih dari nol");
+            return setError(
+              "Harga jual offline setiap varian harus lebih dari nol",
+            );
+          if (
+            variants.some(
+              (v) =>
+                !Number.isFinite(Number(v.onlineCost ?? v.cost)) ||
+                Number(v.onlineCost ?? v.cost) < 0,
+            )
+          )
+            return setError("HPP online varian tidak valid");
+          if (
+            variants.some(
+              (v) =>
+                !Number.isFinite(Number(v.onlinePrice ?? v.price)) ||
+                Number(v.onlinePrice ?? v.price) <= 0,
+            )
+          )
+            return setError(
+              "Harga jual online setiap varian harus lebih dari nol",
+            );
           setError("");
           setLoading(true);
           try {
@@ -13404,6 +13557,8 @@ function ProductModal({
                 void initialStock;
                 return {
                   ...rest,
+                  onlineCost: Number(v.onlineCost ?? v.cost ?? 0),
+                  onlinePrice: Number(v.onlinePrice ?? v.price ?? 0),
                   sku:
                     v.sku ||
                     `VST-${v.name.slice(0, 3).toUpperCase()}-${Date.now().toString().slice(-3)}${index}`,
@@ -13657,18 +13812,32 @@ function ProductModal({
             </Field>
           )}
           <div className="form-grid">
-            <Field label="Harga Modal">
+            <Field label="HPP Offline">
               <OptionalRupiahInput
-                label="Harga Modal semua varian"
+                label="HPP Offline semua varian"
                 value={bulkCost}
                 onValue={setBulkCost}
               />
             </Field>
-            <Field label="Harga Jual">
+            <Field label="Harga Jual Offline">
               <OptionalRupiahInput
-                label="Harga Jual semua varian"
+                label="Harga Jual Offline semua varian"
                 value={bulkPrice}
                 onValue={setBulkPrice}
+              />
+            </Field>
+            <Field label="HPP Online">
+              <OptionalRupiahInput
+                label="HPP Online semua varian"
+                value={bulkOnlineCost}
+                onValue={setBulkOnlineCost}
+              />
+            </Field>
+            <Field label="Harga Jual Online">
+              <OptionalRupiahInput
+                label="Harga Jual Online semua varian"
+                value={bulkOnlinePrice}
+                onValue={setBulkOnlinePrice}
               />
             </Field>
             <Field label="Harga Reseller">
@@ -13940,21 +14109,39 @@ function ProductModal({
                 </div>
               </Field>
               <Field
-                label={`Harga Modal${bulkCost !== "" ? " (Dilewati)" : ""}`}
+                label={`HPP Offline${bulkCost !== "" ? " (Dilewati)" : ""}`}
               >
                 <RupiahInput
-                  label={`Harga Modal varian ${v.name || index + 1}`}
+                  label={`HPP Offline varian ${v.name || index + 1}`}
                   value={v.cost}
                   onValue={(value) => updateVariant(index, "cost", value)}
                 />
               </Field>
               <Field
-                label={`Harga Jual${bulkPrice !== "" ? " (Dilewati)" : ""}`}
+                label={`Harga Jual Offline${bulkPrice !== "" ? " (Dilewati)" : ""}`}
               >
                 <RupiahInput
-                  label={`Harga Jual varian ${v.name || index + 1}`}
+                  label={`Harga Jual Offline varian ${v.name || index + 1}`}
                   value={v.price}
                   onValue={(value) => updateVariant(index, "price", value)}
+                />
+              </Field>
+              <Field
+                label={`HPP Online${bulkOnlineCost !== "" ? " (Dilewati)" : ""}`}
+              >
+                <RupiahInput
+                  label={`HPP Online varian ${v.name || index + 1}`}
+                  value={Number(v.onlineCost ?? v.cost ?? 0)}
+                  onValue={(value) => updateVariant(index, "onlineCost", value)}
+                />
+              </Field>
+              <Field
+                label={`Harga Jual Online${bulkOnlinePrice !== "" ? " (Dilewati)" : ""}`}
+              >
+                <RupiahInput
+                  label={`Harga Jual Online varian ${v.name || index + 1}`}
+                  value={Number(v.onlinePrice ?? v.price ?? 0)}
+                  onValue={(value) => updateVariant(index, "onlinePrice", value)}
                 />
               </Field>
               <Field
@@ -14117,7 +14304,7 @@ function ProductModal({
         )}
 
         {error && <div className="login-error">{error}</div>}
-        <footer className="modal-actions">
+        <footer className="modal-actions product-editor-actions">
           <button type="button" className="secondary" onClick={close}>
             Batal
           </button>
@@ -15213,14 +15400,19 @@ function ReceiptModal({
   const products = data.products
     .filter(
       (product: any) =>
-        product.active &&
+        product.active !== false &&
         product.variants.some((variant: any) => variant.active !== false),
     )
     .map((product: any) => ({
       ...product,
-      variants: product.variants.filter(
-        (variant: any) => variant.active !== false,
-      ),
+      variants: product.variants
+        .filter((variant: any) => variant.active !== false)
+        .map((variant: any) => ({
+          ...variant,
+          // Key object pilihan selalu berupa string. Menormalisasi di sini
+          // menjaga data legacy dengan ID angka tetap dapat ditemukan lagi.
+          id: String(variant.id),
+        })),
     }));
   const variants = products.flatMap((product: any) =>
     product.variants.map((variant: any) => ({
@@ -15229,16 +15421,21 @@ function ReceiptModal({
       productName: product.name,
     })),
   );
-  const selectedVariantId = receipt?.variantId || prefillVariantId;
+  const selectedVariantId =
+    receipt?.variantId != null || prefillVariantId != null
+      ? String(receipt?.variantId ?? prefillVariantId)
+      : undefined;
   const initialProductId = selectedVariantId
-    ? data.products.find((product: any) =>
+      ? data.products.find((product: any) =>
         product.variants.some(
-          (variant: any) => variant.id === selectedVariantId,
+          (variant: any) => String(variant.id) === selectedVariantId,
         ),
       )?.id || ""
     : "";
   const prefilledVariant = variants.find(
-    (variant: any) => variant.id === prefillVariantId,
+    (variant: any) =>
+      variant.id ===
+      (prefillVariantId != null ? String(prefillVariantId) : undefined),
   );
   const [sourceType, setSourceType] = useState<"supplier" | "production">(
       receipt?.sourceType || "supplier",
@@ -15283,7 +15480,33 @@ function ReceiptModal({
     [variantFlavorFilter, setVariantFlavorFilter] = useState("all"),
     [variantLevelFilter, setVariantLevelFilter] = useState("all"),
     [bulkReceiptQuantity, setBulkReceiptQuantity] = useState(""),
-    [bulkReceiptCost, setBulkReceiptCost] = useState("");
+    [bulkReceiptCost, setBulkReceiptCost] = useState(""),
+    [bulkReceiptFeedback, setBulkReceiptFeedback] = useState("");
+  const bulkReceiptQuantityRef = useRef<HTMLInputElement>(null);
+  const bulkReceiptCostRef = useRef<HTMLInputElement>(null);
+  const selectableVariantIds = new Set(
+    variants.map((variant: any) => String(variant.id)),
+  );
+  const selectableVariantSignature = [...selectableVariantIds].sort().join("|");
+  useEffect(() => {
+    // Polling data master atau Fast Refresh dapat menghapus/menonaktifkan
+    // varian saat modal masih terbuka. Jangan biarkan pilihan lama yang sudah
+    // tidak terlihat ikut terkirim dan menggagalkan seluruh dokumen.
+    if (receipt) return;
+    setSelectedItems((current) => {
+      const next = { ...current };
+      let changed = false;
+      Object.keys(next).forEach((variantId) => {
+        if (!selectableVariantIds.has(String(variantId))) {
+          delete next[variantId];
+          changed = true;
+        }
+      });
+      return changed ? next : current;
+    });
+    // Set dibentuk ulang setiap render; signature merupakan dependensi stabil.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [receipt?.id, selectableVariantSignature]);
   const productPickerRef = useDismissiblePopover(
     productPickerOpen,
     setProductPickerOpen,
@@ -15347,10 +15570,23 @@ function ReceiptModal({
   const selectedFilteredVariantCount = filteredVisibleVariants.filter(
     (variant: any) => Boolean(selectedItems[variant.id]),
   ).length;
+  const receiptBulkTargetIds = filteredVisibleVariants
+    .filter((variant: any) => Boolean(selectedItems[variant.id]))
+    .map((variant: any) => variant.id);
   const allFilteredVariantsSelected =
     filteredVisibleVariants.length > 0 &&
     selectedFilteredVariantCount === filteredVisibleVariants.length;
   const someFilteredVariantsSelected = selectedFilteredVariantCount > 0;
+  useEffect(() => {
+    setBulkReceiptFeedback("");
+  }, [
+    selectedProductId,
+    variantSearch,
+    variantPackageFilter,
+    variantFlavorFilter,
+    variantLevelFilter,
+    selectedFilteredVariantCount,
+  ]);
   const resetVariantFilters = () => {
     setVariantSearch("");
     setVariantPackageFilter("all");
@@ -15383,24 +15619,46 @@ function ReceiptModal({
     });
   };
   const applyReceiptBulk = () => {
-    if (bulkReceiptQuantity === "" && bulkReceiptCost === "") return;
+    if (!receiptBulkTargetIds.length) {
+      setBulkReceiptFeedback(
+        "Pilih minimal satu varian pada hasil filter yang sedang tampil.",
+      );
+      return;
+    }
+    const quantityDraft = String(
+      bulkReceiptQuantity || bulkReceiptQuantityRef.current?.value || "",
+    ).trim();
+    const costDraft = String(
+      bulkReceiptCost || bulkReceiptCostRef.current?.value || "",
+    ).replace(/\D/g, "");
+    const quantity = parseOptionalBulkQuantity(quantityDraft);
+    const unitCost = parseOptionalBulkCost(costDraft);
+    if (quantity === undefined && unitCost === undefined) {
+      setBulkReceiptFeedback(
+        "Isi jumlah atau harga modal yang ingin diterapkan.",
+      );
+      return;
+    }
+    if (quantity === null) {
+      setBulkReceiptFeedback("Jumlah bulk harus bilangan bulat minimal 1.");
+      return;
+    }
+    if (unitCost === null) {
+      setBulkReceiptFeedback("Harga modal bulk harus berupa nominal valid.");
+      return;
+    }
     setSelectedItems((current) =>
-      Object.fromEntries(
-        Object.entries(current).map(([variantId, item]) => [
-          variantId,
-          {
-            ...item,
-            quantity:
-              bulkReceiptQuantity !== ""
-                ? Number(bulkReceiptQuantity)
-                : item.quantity,
-            unitCost:
-              bulkReceiptCost !== ""
-                ? Number(bulkReceiptCost)
-                : item.unitCost,
-          },
-        ]),
+      applyReceiptBulkValues(
+        current,
+        quantity,
+        unitCost,
+        receiptBulkTargetIds,
       ),
+    );
+    if (quantity !== undefined) setBulkReceiptQuantity(String(quantity));
+    if (unitCost !== undefined) setBulkReceiptCost(String(unitCost));
+    setBulkReceiptFeedback(
+      `Nilai berhasil diterapkan ke ${receiptBulkTargetIds.length} varian hasil filter. Varian terpilih lainnya tetap.`,
     );
   };
   const matchingProducts = products.filter((product: any) =>
@@ -15431,13 +15689,16 @@ function ReceiptModal({
           : "Saldo langsung bertambah dan aktivitas tercatat dalam histori."
       }
       close={close}
+      className="large stock-operation-modal"
     >
       <form
         onSubmit={async (e) => {
           e.preventDefault();
           if (isSaving) return;
           setUploadError("");
-          const items = Object.entries(selectedItems);
+          const items = Object.entries(selectedItems).filter(([variantId]) =>
+            selectableVariantIds.has(String(variantId)),
+          );
           if (!locationId)
             return setUploadError("Pilih lokasi penerima terlebih dahulu.");
           if (
@@ -15846,39 +16107,48 @@ function ReceiptModal({
                   <div>
                     <b>Bulk update varian terpilih</b>
                     <small>
-                      Kosongkan nilai yang tidak ingin diubah.
+                      Hanya mengubah varian terpilih yang tampil pada filter
+                      saat ini. Kosongkan nilai yang tidak ingin diubah.
                     </small>
                   </div>
                   <label>
                     <span>Jumlah</span>
                     <input
+                      ref={bulkReceiptQuantityRef}
                       type="number"
                       min="1"
                       value={bulkReceiptQuantity}
-                      onChange={(event) =>
-                        setBulkReceiptQuantity(event.target.value)
-                      }
+                      onInput={(event) => {
+                        setBulkReceiptQuantity(event.currentTarget.value);
+                        setBulkReceiptFeedback("");
+                      }}
                       placeholder="Contoh: 10"
                     />
                   </label>
                   <label>
                     <span>Harga modal</span>
                     <OptionalRupiahInput
+                      inputRef={bulkReceiptCostRef}
                       label="Harga modal bulk stok masuk"
                       value={bulkReceiptCost}
-                      onValue={setBulkReceiptCost}
+                      onValue={(value) => {
+                        setBulkReceiptCost(value);
+                        setBulkReceiptFeedback("");
+                      }}
                     />
                   </label>
                   <button
                     type="button"
                     className="secondary"
-                    disabled={
-                      bulkReceiptQuantity === "" && bulkReceiptCost === ""
-                    }
                     onClick={applyReceiptBulk}
                   >
-                    Terapkan ke {Object.keys(selectedItems).length} varian
+                    Terapkan ke {receiptBulkTargetIds.length} varian hasil filter
                   </button>
+                  {bulkReceiptFeedback && (
+                    <small className="bulk-update-feedback" role="status">
+                      {bulkReceiptFeedback}
+                    </small>
+                  )}
                 </div>
                 {Object.entries(selectedItems).map(([vid, item]) => {
                   const v = variants.find((x: any) => x.id === vid);
@@ -16665,6 +16935,8 @@ function TransferModal({
       return getBalance(data.balances, from, v.id) > 0 || selectedItems[v.id];
     });
   const [bulkTransferQuantity, setBulkTransferQuantity] = useState("");
+  const [bulkTransferFeedback, setBulkTransferFeedback] = useState("");
+  const bulkTransferQuantityRef = useRef<HTMLInputElement>(null);
   const transferProducts = Object.values(
     variants.reduce((result: Record<string, any>, variant: any) => {
       if (!result[variant.productName])
@@ -16746,6 +17018,9 @@ function TransferModal({
     filteredVisibleTransferVariants.filter((variant: any) =>
       Boolean(selectedItems[variant.id]),
     ).length;
+  const transferBulkTargetIds = filteredVisibleTransferVariants
+    .filter((variant: any) => Boolean(selectedItems[variant.id]))
+    .map((variant: any) => variant.id);
   const allFilteredTransferVariantsSelected =
     selectableFilteredTransferVariants.length > 0 &&
     selectableFilteredTransferVariants.every((variant: any) =>
@@ -16753,6 +17028,17 @@ function TransferModal({
     );
   const someFilteredTransferVariantsSelected =
     selectedFilteredTransferVariantCount > 0;
+  useEffect(() => {
+    setBulkTransferFeedback("");
+  }, [
+    from,
+    selectedTransferProduct,
+    transferVariantSearch,
+    transferPackageFilter,
+    transferFlavorFilter,
+    transferLevelFilter,
+    selectedFilteredTransferVariantCount,
+  ]);
   const resetTransferVariantFilters = () => {
     setTransferVariantSearch("");
     setTransferPackageFilter("all");
@@ -16775,19 +17061,50 @@ function TransferModal({
     });
   };
   const applyTransferBulk = (useMaximum = false) => {
-    if (!useMaximum && bulkTransferQuantity === "") return;
+    if (!transferBulkTargetIds.length) {
+      setBulkTransferFeedback(
+        "Pilih minimal satu varian pada hasil filter yang sedang tampil.",
+      );
+      return;
+    }
+    if (useMaximum) {
+      const targets = new Set(transferBulkTargetIds);
+      setSelectedItems((current) =>
+        Object.fromEntries(
+          Object.entries(current).map(([variantId, item]) => [
+            variantId,
+            targets.has(variantId)
+              ? {
+                  ...item,
+                  quantity: getBalance(data.balances, from, variantId),
+                }
+              : item,
+          ]),
+        ),
+      );
+      setBulkTransferFeedback(
+        `Stok maksimum diterapkan ke ${transferBulkTargetIds.length} varian hasil filter.`,
+      );
+      return;
+    }
+    const quantityDraft = String(
+      bulkTransferQuantity || bulkTransferQuantityRef.current?.value || "",
+    ).trim();
+    const quantity = parseOptionalBulkQuantity(quantityDraft);
+    if (quantity === undefined) {
+      setBulkTransferFeedback("Isi jumlah yang ingin diterapkan.");
+      return;
+    }
+    if (quantity === null) {
+      setBulkTransferFeedback("Jumlah bulk harus bilangan bulat minimal 1.");
+      return;
+    }
     setSelectedItems((current) =>
-      Object.fromEntries(
-        Object.entries(current).map(([variantId, item]) => [
-          variantId,
-          {
-            ...item,
-            quantity: useMaximum
-              ? getBalance(data.balances, from, variantId)
-              : Number(bulkTransferQuantity),
-          },
-        ]),
-      ),
+      applyTransferBulkQuantity(current, quantity, transferBulkTargetIds),
+    );
+    setBulkTransferQuantity(String(quantity));
+    setBulkTransferFeedback(
+      `Jumlah berhasil diterapkan ke ${transferBulkTargetIds.length} varian hasil filter. Varian terpilih lainnya tetap.`,
     );
   };
   const invalidTransferItems = Object.entries(selectedItems).filter(
@@ -16805,6 +17122,7 @@ function TransferModal({
       title="Buat transfer stok"
       desc="Lokasi tujuan harus mengonfirmasi barang yang diterima."
       close={close}
+      className="large stock-operation-modal"
     >
       <form
         onSubmit={async (e) => {
@@ -17061,28 +17379,30 @@ function TransferModal({
               <div>
                 <b>Bulk jumlah transfer</b>
                 <small>
-                  Terapkan jumlah yang sama atau seluruh stok tersedia.
+                  Hanya mengubah varian terpilih yang tampil pada filter saat
+                  ini.
                 </small>
               </div>
               <label>
                 <span>Jumlah per varian</span>
                 <input
+                  ref={bulkTransferQuantityRef}
                   type="number"
                   min="1"
                   value={bulkTransferQuantity}
-                  onChange={(event) =>
-                    setBulkTransferQuantity(event.target.value)
-                  }
+                  onInput={(event) => {
+                    setBulkTransferQuantity(event.currentTarget.value);
+                    setBulkTransferFeedback("");
+                  }}
                   placeholder="Contoh: 5"
                 />
               </label>
               <button
                 type="button"
                 className="secondary"
-                disabled={bulkTransferQuantity === ""}
                 onClick={() => applyTransferBulk(false)}
               >
-                Terapkan ke {Object.keys(selectedItems).length} varian
+                Terapkan ke {transferBulkTargetIds.length} varian hasil filter
               </button>
               <button
                 type="button"
@@ -17091,6 +17411,11 @@ function TransferModal({
               >
                 Gunakan stok maksimum
               </button>
+              {bulkTransferFeedback && (
+                <small className="bulk-update-feedback" role="status">
+                  {bulkTransferFeedback}
+                </small>
+              )}
             </div>
             {Object.entries(selectedItems).map(([vid, item]) => {
               const v = variants.find((x: any) => x.id === vid);
@@ -17440,6 +17765,60 @@ function PrinterConnectionPanel({
   );
 }
 
+function SaleChannelModal({
+  close,
+  select,
+}: {
+  close: () => void;
+  select: (channel: "offline" | "online") => void;
+}) {
+  return (
+    <Modal
+      title="Pilih jenis penjualan"
+      desc="Tentukan kanal terlebih dahulu agar harga jual dan HPP yang digunakan sesuai."
+      close={close}
+      className="sale-channel-modal"
+    >
+      <section className="sale-channel-choice" aria-label="Jenis penjualan">
+        <button
+          type="button"
+          className="sale-channel-card offline"
+          onClick={() => select("offline")}
+        >
+          <span className="sale-channel-icon">
+            <Store size={26} />
+          </span>
+          <span>
+            <b>Penjualan Offline</b>
+            <small>Transaksi langsung di toko atau outlet.</small>
+            <em>Memakai harga jual dan HPP offline</em>
+          </span>
+          <ArrowRight size={20} />
+        </button>
+        <button
+          type="button"
+          className="sale-channel-card online"
+          onClick={() => select("online")}
+        >
+          <span className="sale-channel-icon">
+            <Globe2 size={26} />
+          </span>
+          <span>
+            <b>Penjualan Online</b>
+            <small>Marketplace, chat, atau pesanan untuk dikirim.</small>
+            <em>Memakai harga jual dan HPP online</em>
+          </span>
+          <ArrowRight size={20} />
+        </button>
+      </section>
+      <p className="sale-channel-note">
+        Stok tetap dikurangi dari lokasi yang dipilih. Kanal reseller masih
+        tersedia melalui Pengaturan Transaksi di dalam form.
+      </p>
+    </Modal>
+  );
+}
+
 function SaleModal({
   data,
   close,
@@ -17449,6 +17828,7 @@ function SaleModal({
   fixedLocation,
   defaultLocation,
   notify,
+  initialChannel = "offline",
 }: any) {
   const activeLocations = data.locations.filter((l: any) => l.active),
     variants = data.products
@@ -17471,7 +17851,7 @@ function SaleModal({
         activeLocations[0]?.id ||
         "",
     ),
-    [channel, setChannel] = useState<Channel>("offline"),
+    [channel, setChannel] = useState<Channel>(initialChannel),
     [skuSearch, setSkuSearch] = useState(""),
     [categoryFilter, setCategoryFilter] = useState("all"),
     [selectedPosProduct, setSelectedPosProduct] = useState<string | null>(null),
@@ -17479,6 +17859,10 @@ function SaleModal({
     [posFlavorFilter, setPosFlavorFilter] = useState("all"),
     [posLevelFilter, setPosLevelFilter] = useState("all"),
     [payment, setPayment] = useState("QRIS"),
+    [discountType, setDiscountType] = useState<"nominal" | "percentage">(
+      "nominal",
+    ),
+    [discountValue, setDiscountValue] = useState(0),
     [buyerNote, setBuyerNote] = useState(""),
     [transactionSettingsOpen, setTransactionSettingsOpen] = useState(false),
     [cart, setCart] = useState<Array<{ variantId: string; quantity: number }>>(
@@ -17545,6 +17929,8 @@ function SaleModal({
   };
   const prepareNextSale = () => {
     setCart([]);
+    setDiscountType("nominal");
+    setDiscountValue(0);
     setBuyerNote("");
     setSkuSearch("");
     setSelectedPosProduct(null);
@@ -17825,9 +18211,9 @@ function SaleModal({
     );
   };
   useEffect(() => {
-    if (isOffline && shouldAutoFocusPosSearch)
+    if (shouldAutoFocusPosSearch)
       requestAnimationFrame(() => scannerRef.current?.focus());
-  }, [isOffline, shouldAutoFocusPosSearch]);
+  }, [shouldAutoFocusPosSearch]);
   // Izin kamera diminta dari handler klik; effect ini hanya memasang stream ke
   // video dan menjalankan pembacaan barcode agar Android tidak menolak izin.
   useEffect(() => {
@@ -17906,14 +18292,32 @@ function SaleModal({
   const stockErrors = cart.filter(
     (item) => item.quantity > getBalance(data.balances, loc, item.variantId),
   );
+  const priceForChannel = (variant: any) =>
+    channel === "reseller"
+      ? Number(variant?.resellerPrice || 0)
+      : channel === "online"
+        ? Number(variant?.onlinePrice ?? variant?.price ?? 0)
+        : Number(variant?.price || 0);
   const totalAmount = cart.reduce((acc, c) => {
     const varDetail = variants.find((item: any) => item.id === c.variantId);
-    const price =
-      channel === "reseller"
-        ? varDetail?.resellerPrice || 0
-        : varDetail?.price || 0;
+    const price = priceForChannel(varDetail);
     return acc + c.quantity * price;
   }, 0);
+  const discountAmount =
+    discountType === "percentage"
+      ? Math.min(
+          totalAmount,
+          Math.round((totalAmount * Math.min(100, discountValue)) / 100),
+        )
+      : Math.min(totalAmount, Math.round(discountValue));
+  const payableAmount = Math.max(0, totalAmount - discountAmount);
+  useEffect(() => {
+    setDiscountValue((current) =>
+      discountType === "percentage"
+        ? Math.min(current, 100)
+        : Math.min(current, totalAmount),
+    );
+  }, [discountType, totalAmount]);
 
   return (
     <Modal
@@ -17928,7 +18332,7 @@ function SaleModal({
               )
           : close
       }
-      className={isOffline ? "large pos-modal" : "large"}
+      className="large pos-modal"
     >
       <form
         onSubmit={async (e) => {
@@ -17943,6 +18347,9 @@ function SaleModal({
               cart,
               payment,
               shouldPrint,
+              discountAmount,
+              discountType,
+              discountValue,
               buyerNote.trim() || undefined,
             );
             if (shouldPrint) {
@@ -18054,16 +18461,10 @@ function SaleModal({
             </div>
           </section>
         )}
-        <div
-          className={
-            isOffline
-              ? "pos-counter-workspace"
-              : "pos-counter-workspace standard-sale"
-          }
-        >
+        <div className="pos-counter-workspace">
           <section className="pos-catalog-panel">
             <div
-              className={isOffline ? "pos-product-picker" : ""}
+              className="pos-product-picker"
               style={{
                 background: "var(--bg)",
                 padding: "16px",
@@ -18152,7 +18553,7 @@ function SaleModal({
                     </div>
                   </div>
                 )}
-                {selectedPosProduct && isOffline && (
+                {selectedPosProduct && (
                   <div className="pos-variant-navigation">
                     <button
                       type="button"
@@ -18243,7 +18644,7 @@ function SaleModal({
                   </div>
                 )}
                 <div
-                  className={`${isOffline ? "pos-product-results" : ""} ${selectedPosProduct ? "showing-variants" : "showing-products"}`}
+                  className={`pos-product-results ${selectedPosProduct ? "showing-variants" : "showing-products"}`}
                   style={{
                     maxHeight: 200,
                     overflowY: "auto",
@@ -18271,26 +18672,18 @@ function SaleModal({
                       <section
                         className={`pos-product-group ${selectedPosProduct ? "variant-mode" : "product-mode"}`}
                         key={product.name}
-                        role={
-                          !selectedPosProduct && isOffline
-                            ? "button"
-                            : undefined
-                        }
-                        tabIndex={
-                          !selectedPosProduct && isOffline ? 0 : undefined
-                        }
+                        role={!selectedPosProduct ? "button" : undefined}
+                        tabIndex={!selectedPosProduct ? 0 : undefined}
                         aria-label={
-                          !selectedPosProduct && isOffline
+                          !selectedPosProduct
                             ? `Lihat varian ${product.name}`
                             : undefined
                         }
                         onPointerDown={
-                          !selectedPosProduct && isOffline
-                            ? releasePosSearchFocus
-                            : undefined
+                          !selectedPosProduct ? releasePosSearchFocus : undefined
                         }
                         onClick={
-                          !selectedPosProduct && isOffline
+                          !selectedPosProduct
                             ? () => {
                                 setSelectedPosProduct(product.name);
                                 setSkuSearch("");
@@ -18300,7 +18693,7 @@ function SaleModal({
                             : undefined
                         }
                         onKeyDown={
-                          !selectedPosProduct && isOffline
+                          !selectedPosProduct
                             ? (event) => {
                                 if (event.key !== "Enter" && event.key !== " ")
                                   return;
@@ -18336,7 +18729,7 @@ function SaleModal({
                             </small>
                           </div>
                         </header>
-                        {!selectedPosProduct && isOffline ? null : (
+                        {!selectedPosProduct ? null : (
                           <div className="pos-variant-list">
                             {product.variants.map((v: any) => {
                               const cartItem = cart.find(
@@ -18349,11 +18742,7 @@ function SaleModal({
                               return (
                                 <button
                                   type="button"
-                                  className={
-                                    isOffline
-                                      ? "pos-product-button"
-                                      : "sale-product-button"
-                                  }
+                                  className="pos-product-button"
                                   key={v.id}
                                   onClick={() => addToCart(v.id)}
                                   disabled={stockLimitReached}
@@ -18378,9 +18767,7 @@ function SaleModal({
                                       {getBalance(data.balances, loc, v.id)}{" "}
                                       {v.unit} ·{" "}
                                       {money(
-                                        channel === "reseller"
-                                          ? v.resellerPrice
-                                          : v.price,
+                                        priceForChannel(v),
                                       )}
                                     </small>
                                   </span>
@@ -18403,17 +18790,16 @@ function SaleModal({
             </div>
           </section>
           <aside className="pos-order-panel">
-            {isOffline && (
-              <div className="pos-order-heading">
-                <div>
-                  <small>PESANAN AKTIF</small>
-                  <h3>Detail Pesanan</h3>
-                </div>
-                <span>{totalQty} item</span>
+            <div className="pos-order-heading">
+              <div>
+                <small>PESANAN AKTIF</small>
+                <h3>Detail Pesanan</h3>
               </div>
-            )}
-            {cart.length > 0 && (
-              <>
+              <span>{totalQty} item</span>
+            </div>
+            <div className="pos-order-scroll">
+              {cart.length > 0 && (
+                <>
                 <div className="pos-cart-table" style={{ marginBottom: 16 }}>
                   <table
                     style={{
@@ -18440,10 +18826,7 @@ function SaleModal({
                           (item: any) => item.id === c.variantId,
                         );
                         if (!varDetail) return null;
-                        const price =
-                          channel === "reseller"
-                            ? varDetail.resellerPrice
-                            : varDetail.price;
+                        const price = priceForChannel(varDetail);
                         return (
                           <tr
                             key={idx}
@@ -18504,6 +18887,49 @@ function SaleModal({
                     </tbody>
                   </table>
                 </div>
+                <Field label="Diskon pembeli">
+                  <div className="pos-discount-controls">
+                    <select
+                      aria-label="Jenis diskon pembeli"
+                      value={discountType}
+                      onChange={(event) => {
+                        setDiscountType(
+                          event.target.value as "nominal" | "percentage",
+                        );
+                        setDiscountValue(0);
+                      }}
+                    >
+                      <option value="nominal">Nominal (Rp)</option>
+                      <option value="percentage">Persentase (%)</option>
+                    </select>
+                    {discountType === "percentage" ? (
+                      <div className="pos-discount-percentage-input">
+                        <DecimalInput
+                          label="Persentase diskon dari total belanja"
+                          value={discountValue}
+                          onValue={(value) =>
+                            setDiscountValue(Math.min(value, 100))
+                          }
+                        />
+                        <span>%</span>
+                      </div>
+                    ) : (
+                      <RupiahInput
+                        label="Diskon nominal dari total belanja"
+                        value={discountValue}
+                        onValue={(value) =>
+                          setDiscountValue(Math.min(value, totalAmount))
+                        }
+                      />
+                    )}
+                  </div>
+                  <small className="pos-note-hint">
+                    {discountType === "percentage"
+                      ? `${percentage(discountValue)} = ${money(discountAmount)}. `
+                      : ""}
+                    Diskon dipotong dari total transaksi dan tersimpan di laporan.
+                  </small>
+                </Field>
                 <div
                   className="pos-cart-summary"
                   style={{
@@ -18518,12 +18944,19 @@ function SaleModal({
                   }}
                 >
                   <div>
-                    <div style={{ fontSize: 11, opacity: 0.8 }}>
-                      TOTAL TAGIHAN
-                    </div>
+                    <div style={{ fontSize: 11, opacity: 0.8 }}>TOTAL TAGIHAN</div>
                     <div style={{ fontSize: 16, fontWeight: 700 }}>
-                      {money(totalAmount)}
+                      {money(payableAmount)}
                     </div>
+                    {discountAmount > 0 && (
+                      <small style={{ opacity: 0.8 }}>
+                        Subtotal {money(totalAmount)} · Diskon{" "}
+                        {discountType === "percentage"
+                          ? `${percentage(discountValue)} `
+                          : ""}
+                        −{money(discountAmount)}
+                      </small>
+                    )}
                   </div>
                   <div style={{ textAlign: "right" }}>
                     <div style={{ fontSize: 11, opacity: 0.8 }}>TOTAL QTY</div>
@@ -18532,60 +18965,61 @@ function SaleModal({
                     </div>
                   </div>
                 </div>
-              </>
-            )}
+                </>
+              )}
 
-            <Field label="Catatan pesanan (opsional)">
-              <input
-                className="pos-buyer-note"
-                maxLength={300}
-                value={buyerNote}
-                onChange={(event) => setBuyerNote(event.target.value)}
-                placeholder="Contoh: kurangi asin, bubuk cabai saja tanpa chili oil"
-              />
-              <small className="pos-note-hint">
-                Catatan akan tersimpan pada transaksi dan tercetak di struk.
-              </small>
-            </Field>
-            <div className={isOffline ? "pos-payment" : "form-grid"}>
-              <Field label="Metode Pembayaran">
-                {isOffline ? (
-                  <div className="pos-payment-options">
-                    {["QRIS", "Tunai", "Transfer"].map((method) => (
-                      <button
-                        key={method}
-                        type="button"
-                        className={payment === method ? "active" : ""}
-                        onClick={() => setPayment(method)}
-                      >
-                        {method}
-                      </button>
-                    ))}
-                  </div>
-                ) : (
-                  <select
-                    value={payment}
-                    onChange={(e) => setPayment(e.target.value)}
-                  >
-                    <option>QRIS</option>
-                    <option>Tunai</option>
-                    <option>Transfer</option>
-                  </select>
-                )}
+              <Field label="Catatan pesanan (opsional)">
+                <input
+                  className="pos-buyer-note"
+                  maxLength={300}
+                  value={buyerNote}
+                  onChange={(event) => setBuyerNote(event.target.value)}
+                  placeholder="Contoh: kurangi asin, bubuk cabai saja tanpa chili oil"
+                />
+                <small className="pos-note-hint">
+                  Catatan akan tersimpan pada transaksi dan tercetak di struk.
+                </small>
               </Field>
-              <div></div>
+              <div className={isOffline ? "pos-payment" : "form-grid"}>
+                <Field label="Metode Pembayaran">
+                  {isOffline ? (
+                    <div className="pos-payment-options">
+                      {["QRIS", "Tunai", "Transfer"].map((method) => (
+                        <button
+                          key={method}
+                          type="button"
+                          className={payment === method ? "active" : ""}
+                          onClick={() => setPayment(method)}
+                        >
+                          {method}
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <select
+                      value={payment}
+                      onChange={(e) => setPayment(e.target.value)}
+                    >
+                      <option>QRIS</option>
+                      <option>Tunai</option>
+                      <option>Transfer</option>
+                    </select>
+                  )}
+                </Field>
+                <div></div>
+              </div>
+              {printError && (
+                <p className="form-error" role="alert">
+                  Struk belum tercetak: {printError}
+                </p>
+              )}
+              {stockErrors.length > 0 && (
+                <p className="form-error" role="alert">
+                  Jumlah penjualan melebihi stok tersedia. Kurangi jumlah item
+                  sebelum menyimpan.
+                </p>
+              )}
             </div>
-            {printError && (
-              <p className="form-error" role="alert">
-                Struk belum tercetak: {printError}
-              </p>
-            )}
-            {stockErrors.length > 0 && (
-              <p className="form-error" role="alert">
-                Jumlah penjualan melebihi stok tersedia. Kurangi jumlah item
-                sebelum menyimpan.
-              </p>
-            )}
             <footer className="modal-actions sale-print-actions">
               {pendingSale ? (
                 <>
@@ -18636,6 +19070,8 @@ function SaleModal({
                     disabled={
                       cart.length === 0 ||
                       stockErrors.length > 0 ||
+                      discountAmount > totalAmount ||
+                      (discountType === "percentage" && discountValue > 100) ||
                       saving ||
                       (printReceipt &&
                         printerSettings.mode !== "system" &&
@@ -19060,6 +19496,24 @@ function SaleDetail({
   const [awaitingSystemConfirmation, setAwaitingSystemConfirmation] =
     useState(false);
   if (!item) return null;
+  const grossTotal = Number(
+    item.grossTotal ??
+      (item.items.reduce(
+        (sum: number, line: any) => sum + Number(line.subtotal || 0),
+        0,
+      ) || item.total),
+  );
+  const transactionDiscount = Number(item.discountAmount || 0);
+  const hasCompleteHpp = item.items.every((line: any) =>
+    Number.isFinite(Number(line.unitCost)),
+  );
+  const transactionHpp = hasCompleteHpp
+    ? item.items.reduce(
+        (sum: number, line: any) =>
+          sum + Number(line.quantity || 0) * Number(line.unitCost || 0),
+        0,
+      )
+    : 0;
   const printReceipt = async () => {
     setPrinting(true);
     try {
@@ -19113,14 +19567,53 @@ function SaleDetail({
             <span>
               {variants[line.variantId]?.productName} &middot;{" "}
               {variants[line.variantId]?.name}
+              <small>
+                {qty(line.quantity, variants[line.variantId]?.unit)} ×{" "}
+                {money(
+                  line.price ??
+                    (line.quantity
+                      ? Number(line.subtotal || 0) / line.quantity
+                      : 0),
+                )}
+                {Number(line.discount || 0) > 0
+                  ? ` · Diskon ${money(line.discount)}`
+                  : ""}
+              </small>
             </span>
-            <b>{qty(line.quantity, variants[line.variantId]?.unit)}</b>
+            <b>{money(Number(line.subtotal || 0) - Number(line.discount || 0))}</b>
           </p>
         ))}
         <p>
-          <span>Total</span>
+          <span>Subtotal sebelum diskon</span>
+          <b>{money(grossTotal)}</b>
+        </p>
+        {transactionDiscount > 0 && (
+          <p>
+            <span>
+              Diskon pembeli
+              {item.discountType === "percentage"
+                ? ` (${percentage(item.discountValue)})`
+                : ""}
+            </span>
+            <b>−{money(transactionDiscount)}</b>
+          </p>
+        )}
+        <p>
+          <span>Total dibayar</span>
           <b>{money(item.total)}</b>
         </p>
+        {hasCompleteHpp && (
+          <>
+            <p>
+              <span>HPP snapshot ({item.channel})</span>
+              <b>{money(transactionHpp)}</b>
+            </p>
+            <p>
+              <span>Estimasi laba kotor</span>
+              <b>{money(Number(item.total || 0) - transactionHpp)}</b>
+            </p>
+          </>
+        )}
         <p>
           <span>Status</span>
           <b>
@@ -22030,11 +22523,20 @@ function HppMarketplaceCalculator({
       }
       if (!existing) summary.created += 1;
       else {
-        if (Math.abs(Number(existing.cost) - candidate.cost) > 0.005)
+        if (
+          Math.abs(Number(existing.cost) - candidate.cost) > 0.005 ||
+          Math.abs(
+            Number(existing.onlineCost ?? existing.cost) - candidate.onlineCost,
+          ) > 0.005
+        )
           summary.costChanged += 1;
         if (
           publishUpdatePrices &&
-          Math.abs(Number(existing.price) - candidate.price) > 0.005
+          (Math.abs(Number(existing.price) - candidate.price) > 0.005 ||
+            Math.abs(
+              Number(existing.onlinePrice ?? existing.price) -
+                candidate.onlinePrice,
+            ) > 0.005)
         )
           summary.priceChanged += 1;
       }
@@ -24980,7 +25482,7 @@ function HppMarketplaceCalculator({
                       {linkedPublishProduct
                         ? linkedPublishProduct.active === false
                           ? "Produk sedang diarsipkan dan akan diaktifkan kembali saat disinkronkan."
-                          : "Harga modal mengikuti HPP terbaru. Harga jual hanya berubah jika Anda mengizinkannya."
+                          : "HPP offline dan online mengikuti perhitungan terbaru. Harga jual kedua kanal hanya berubah jika Anda mengizinkannya."
                         : "Belum ada data lama, sehingga halaman ini hanya menampilkan pratinjau produk baru."}
                     </span>
                   </div>
@@ -25193,7 +25695,9 @@ function HppMarketplaceCalculator({
                           <th>Pilih</th>
                           <th>Varian</th>
                           <th>HPP Offline</th>
-                          <th>Harga Jual</th>
+                          <th>Harga Jual Offline</th>
+                          <th>HPP Online</th>
+                          <th>Harga Jual Online</th>
                           <th>Status</th>
                         </tr>
                       </thead>
@@ -25235,6 +25739,8 @@ function HppMarketplaceCalculator({
                               </td>
                               <td>{excelMoney(candidate.cost)}</td>
                               <td>{excelMoney(candidate.price)}</td>
+                              <td>{excelMoney(candidate.onlineCost)}</td>
+                              <td>{excelMoney(candidate.onlinePrice)}</td>
                               <td>
                                 <span
                                   className={`hpp-publish-row-status ${
@@ -25266,9 +25772,13 @@ function HppMarketplaceCalculator({
                       }
                     />
                     <span>
-                      <b>Perbarui harga jual mengikuti rekomendasi HPP</b>
+                      <b>
+                        Perbarui harga jual offline dan online mengikuti
+                        rekomendasi HPP
+                      </b>
                       <small>
-                        Jika tidak dicentang, hanya harga modal yang diperbarui.
+                        Jika tidak dicentang, hanya HPP offline dan online yang
+                        diperbarui.
                       </small>
                     </span>
                   </label>
@@ -25286,11 +25796,11 @@ function HppMarketplaceCalculator({
                   {linkedPublishProduct && (
                     <>
                       <article>
-                        <span>Modal berubah</span>
+                        <span>HPP kanal berubah</span>
                         <b>{publishPreview.costChanged}</b>
                       </article>
                       <article>
-                        <span>Harga jual berubah</span>
+                        <span>Harga jual kanal berubah</span>
                         <b>{publishPreview.priceChanged}</b>
                       </article>
                       <article className={publishPreview.archived ? "warning" : ""}>
@@ -25920,13 +26430,31 @@ function AnalyticsPage({
         variantMap[v.id] = v;
       });
     });
+    const saleItemUnitCost = (sale: Sale, item: SaleItem) => {
+      if (
+        item.unitCost !== null &&
+        item.unitCost !== undefined &&
+        Number.isFinite(Number(item.unitCost))
+      )
+        return Number(item.unitCost);
+      const variant = variantMap[item.variantId];
+      return Number(
+        sale.channel === "online"
+          ? variant?.onlineCost ?? variant?.cost ?? 0
+          : variant?.cost ?? 0,
+      );
+    };
 
     filteredSales.forEach((sale) => {
       revenue += sale.total;
-      sale.items.forEach((item: any) => {
-        cogs += item.quantity * (item.unitCost || costMap[item.variantId] || 0);
+      sale.items.forEach((item) => {
+        cogs += item.quantity * saleItemUnitCost(sale, item);
       });
     });
+    const discounts = filteredSales.reduce(
+      (sum, sale) => sum + Number(sale.discountAmount || 0),
+      0,
+    );
 
     const grossProfit = revenue - cogs;
     const stockOutCost = filteredStockOuts.reduce(
@@ -26040,9 +26568,8 @@ function AnalyticsPage({
       const index = trendByKey[jakartaDateKey(sale.createdAt)];
       if (index === undefined) return;
       salesTrend[index].Omset += sale.total;
-      sale.items.forEach((item: any) => {
-        salesTrend[index].Modal +=
-          item.quantity * (item.unitCost || costMap[item.variantId] || 0);
+      sale.items.forEach((item) => {
+        salesTrend[index].Modal += item.quantity * saleItemUnitCost(sale, item);
       });
     });
     filteredStockOuts.forEach((item) => {
@@ -26097,6 +26624,7 @@ function AnalyticsPage({
 
     return {
       revenue,
+      discounts,
       grossProfit,
       stockValue,
       lowStockAlerts,
@@ -26124,6 +26652,7 @@ function AnalyticsPage({
       onAction={async () => {
         const summaryData = [
           ["Total Omset", stats.revenue],
+          ["Total Diskon Pembeli", stats.discounts],
           ["Estimasi Laba Kotor", stats.grossProfit],
           ["Total Modal (HPP)", stats.cogs],
           ["Biaya Stok Keluar", stats.stockOutCost],
@@ -26616,6 +27145,11 @@ function AnalyticsPage({
                     Omset Total
                   </div>
                   <b>{money(stats.revenue)}</b>
+                  {stats.discounts > 0 && (
+                    <small className="text-muted">
+                      Setelah diskon {money(stats.discounts)}
+                    </small>
+                  )}
                 </div>
                 <div style={{ marginBottom: 12 }}>
                   <div

@@ -52,21 +52,83 @@ export const normalizeStockUnit = (unit?: StockUnit): StockUnit => {
 
 export const normalizeData = (data: AppData): AppData => {
   const locations = data.locations || [];
+  const products = (data.products || []).map((product) => ({
+    ...product,
+    unit: normalizeStockUnit(product.unit),
+    variants: (product.variants || []).map((variant) => ({
+      ...variant,
+      onlineCost: Number(variant.onlineCost ?? variant.cost ?? 0),
+      onlinePrice: Number(variant.onlinePrice ?? variant.price ?? 0),
+    })),
+  }));
+  const normalizedSales = (data.sales || []).map((sale) => {
+    const location = locations.find((item) => item.id === sale.locationId);
+    const channel =
+      sale.channel === 'offline' || sale.channel === 'online' || sale.channel === 'reseller'
+        ? sale.channel
+        : location?.type === 'outlet'
+          ? 'offline'
+          : 'online';
+    const items = (sale.items || []).map((item) => ({
+      ...item,
+      price: Number(
+        item.price != null &&
+          Number.isFinite(Number(item.price)) &&
+          !(
+            Number(item.price) <= 0 &&
+            Number(item.quantity || 0) > 0 &&
+            Number(item.subtotal || 0) > 0
+          )
+          ? item.price
+          : Number(item.quantity || 0) > 0
+            ? Number(item.subtotal || 0) / Number(item.quantity)
+            : 0,
+      ),
+      discount: Number(item.discount || 0),
+      subtotal: Number(item.subtotal || 0),
+    }));
+    const allocatedDiscount = items.reduce(
+      (sum, item) => sum + Number(item.discount || 0),
+      0,
+    );
+    const discountAmount = Number(sale.discountAmount ?? allocatedDiscount);
+    const lineGrossTotal = items.reduce(
+      (sum, item) => sum + Number(item.subtotal || 0),
+      0,
+    );
+    const grossTotal = Number(
+      sale.grossTotal ??
+        (lineGrossTotal || Number(sale.total || 0) + discountAmount),
+    );
+    const discountType: 'nominal' | 'percentage' =
+      sale.discountType === 'percentage' ? 'percentage' : 'nominal';
+    const discountValue = Number(
+      sale.discountValue ??
+        (discountType === 'percentage' && grossTotal > 0
+          ? (discountAmount / grossTotal) * 100
+          : discountAmount),
+    );
+    return {
+      ...sale,
+      channel,
+      items,
+      grossTotal,
+      discountAmount,
+      discountType,
+      discountValue,
+      total: Number(sale.total || 0),
+    };
+  });
   return {
     ...data,
     business: data.business || { name: 'Usaha Saya', ownerName: data.users?.find(item=>item.role==='owner')?.name || 'Owner' },
     users: data.users || [],
     locations,
-    products: (data.products || []).map((product) => ({ ...product, unit: normalizeStockUnit(product.unit) })),
+    products,
     balances: data.balances || [],
     transfers: data.transfers || [],
-    // Data sebelum kanal penjualan tersedia tetap harus muncul di analitik.
-    // Lokasi outlet berarti penjualan langsung; transaksi dari gudang diperlakukan sebagai online.
-    sales: (data.sales || []).map((sale) => {
-      if (sale.channel === 'offline' || sale.channel === 'online' || sale.channel === 'reseller') return sale;
-      const location = locations.find((item) => item.id === sale.locationId);
-      return { ...sale, channel: location?.type === 'outlet' ? 'offline' : 'online' };
-    }),
+    // Data legacy mendapat kanal serta harga online tanpa mengubah hasil historis.
+    sales: normalizedSales,
     movements: data.movements || [],
     stockCounts: data.stockCounts || [],
     suppliers: data.suppliers || [],

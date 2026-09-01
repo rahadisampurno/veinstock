@@ -25,7 +25,13 @@ export default defineConfig({
       maximumFileSizeToCacheInBytes: 5 * 1024 * 1024 
     },
   })],
-  server: { proxy: { '/api': 'http://127.0.0.1:8787' } },
+  server: {
+    port: Number(process.env.VITE_DEV_PORT || 5173),
+    strictPort: Boolean(process.env.VITE_DEV_PORT),
+    proxy: {
+      '/api': process.env.VITE_API_TARGET || 'http://127.0.0.1:8787',
+    },
+  },
   build: {
     rollupOptions: {
       output: {

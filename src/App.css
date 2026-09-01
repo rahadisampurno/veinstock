@@ -3364,9 +3364,33 @@ th {
 .product-variant-editor-empty .secondary {
   margin-top: 4px;
 }
+.product-editor-actions {
+  align-items: stretch;
+}
+.product-editor-actions > button {
+  flex: 0 0 auto;
+  min-height: 48px;
+  white-space: nowrap;
+  overflow-wrap: normal !important;
+  word-break: normal;
+}
+.product-editor-actions > button svg {
+  flex: 0 0 auto;
+}
+.product-editor-actions > .secondary {
+  margin-right: auto;
+  min-width: 84px;
+}
+.product-editor-actions > .danger-button {
+  justify-content: center;
+  min-width: 166px;
+}
+.product-editor-actions > .primary {
+  min-width: 166px;
+}
 .variant-bulk-update {
   display: grid;
-  grid-template-columns: minmax(170px, 1.2fr) repeat(2, minmax(130px, 1fr)) auto;
+  grid-template-columns: minmax(0, 1.2fr) repeat(2, minmax(110px, 1fr));
   gap: 10px;
   align-items: end;
   padding: 14px;
@@ -3379,6 +3403,7 @@ th {
   display: grid;
   gap: 3px;
   align-self: center;
+  min-width: 0;
 }
 .variant-bulk-update > div small {
   color: #64748b;
@@ -3386,6 +3411,7 @@ th {
 .variant-bulk-update label {
   display: grid;
   gap: 5px;
+  min-width: 0;
   color: #475569;
   font-size: 12px;
   font-weight: 700;
@@ -3395,8 +3421,16 @@ th {
   background: #fff;
 }
 .variant-bulk-update button {
+  grid-column: 1 / -1;
+  width: 100%;
   min-height: 42px;
-  white-space: nowrap;
+  white-space: normal;
+}
+.bulk-update-feedback {
+  grid-column: 1 / -1;
+  color: #08734a;
+  font-size: 11px;
+  font-weight: 700;
 }
 .debt-page {
   display: grid;
@@ -3501,7 +3535,14 @@ th {
   background: #ecfdf3;
 }
 .transfer-variant-bulk-update {
-  grid-template-columns: minmax(170px, 1.2fr) minmax(130px, 1fr) auto auto;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.transfer-variant-bulk-update > div,
+.transfer-variant-bulk-update > label {
+  grid-column: 1 / -1;
+}
+.transfer-variant-bulk-update > button {
+  grid-column: auto;
 }
 @media (max-width: 680px) {
   .stock-variant-filters {
@@ -5171,6 +5212,12 @@ th {
   .modal-actions > button {
     width: 100%;
     min-height: 46px;
+  }
+  .product-editor-actions > button {
+    min-width: 0;
+  }
+  .product-editor-actions > .secondary {
+    margin-right: 0;
   }
   .login-panel {
     min-height: 100dvh;
@@ -7757,6 +7804,106 @@ th {
   }
 }
 
+/* Pilihan kanal sebelum masuk ke form penjualan. */
+.modal.sale-channel-modal {
+  width: min(680px, calc(100vw - 28px));
+}
+.sale-channel-choice {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  padding: 22px 22px 12px;
+}
+.sale-channel-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  min-height: 154px;
+  padding: 20px;
+  border: 1px solid #d7e5ea;
+  border-radius: 16px;
+  background: #fff;
+  color: var(--navy);
+  cursor: pointer;
+  text-align: left;
+  transition:
+    border-color 0.16s ease,
+    box-shadow 0.16s ease,
+    transform 0.16s ease;
+}
+.sale-channel-card:hover {
+  border-color: #079bc3;
+  box-shadow: 0 12px 28px #0a78951c;
+  transform: translateY(-2px);
+}
+.sale-channel-card.online {
+  background: linear-gradient(145deg, #fff, #f1fbfd);
+}
+.sale-channel-card.offline {
+  background: linear-gradient(145deg, #fff, #f4fbf7);
+}
+.sale-channel-icon {
+  display: grid;
+  width: 52px;
+  height: 52px;
+  place-items: center;
+  border-radius: 14px;
+  background: #e7f8fc;
+  color: #087fa9;
+}
+.sale-channel-card.offline .sale-channel-icon {
+  background: #e9f8f1;
+  color: #08734a;
+}
+.sale-channel-card > span:nth-child(2) {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+.sale-channel-card b {
+  font: 800 16px Manrope;
+}
+.sale-channel-card small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.sale-channel-card em {
+  color: #087fa9;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+}
+.sale-channel-card.offline em {
+  color: #08734a;
+}
+.sale-channel-card > svg {
+  color: #7aa3af;
+  flex: 0 0 auto;
+}
+.sale-channel-note {
+  margin: 0 !important;
+  padding: 0 22px 22px;
+  color: var(--muted);
+  font-size: 11px !important;
+  line-height: 1.5;
+  text-align: center;
+}
+@media (max-width: 600px) {
+  .sale-channel-choice {
+    grid-template-columns: 1fr;
+    padding: 18px 16px 10px;
+  }
+  .sale-channel-card {
+    min-height: 124px;
+    padding: 16px;
+  }
+  .sale-channel-note {
+    padding: 0 16px 18px;
+  }
+}
+
 /* POS outlet — workspace kasir dua panel untuk layar tablet dan desktop. */
 .modal.pos-modal {
   position: relative;
@@ -7807,9 +7954,6 @@ th {
   gap: 16px;
   align-items: start;
 }
-.pos-counter-workspace.standard-sale {
-  display: block;
-}
 .pos-catalog-panel,
 .pos-order-panel {
   min-width: 0;
@@ -7826,12 +7970,6 @@ th {
   box-shadow: 0 5px 18px #173b4a0a;
   overflow: hidden;
 }
-.standard-sale .pos-catalog-panel {
-  padding: 0;
-  border: 0;
-  background: transparent;
-  box-shadow: none;
-}
 .pos-order-panel {
   position: sticky;
   top: 0;
@@ -7846,13 +7984,6 @@ th {
   background: #fff;
   box-shadow: 0 5px 18px #173b4a0a;
   overflow: hidden;
-}
-.standard-sale .pos-order-panel {
-  position: static;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  box-shadow: none;
 }
 .pos-order-heading {
   display: flex;
@@ -7882,6 +8013,24 @@ th {
   color: #087fa9;
   font-size: 12px;
   font-weight: 800;
+}
+.pos-order-scroll {
+  min-height: 0;
+  flex: 1 1 auto;
+  margin-right: -6px;
+  padding-right: 6px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: #b9d7df transparent;
+  scrollbar-width: thin;
+}
+.pos-order-scroll::-webkit-scrollbar {
+  width: 7px;
+}
+.pos-order-scroll::-webkit-scrollbar-thumb {
+  border-radius: 99px;
+  background: #b9d7df;
 }
 .pos-counter-workspace .pos-product-picker {
   margin: 0 !important;
@@ -8100,14 +8249,13 @@ th {
   font-weight: 750;
 }
 .pos-counter-workspace .pos-cart-table {
-  flex: 1 1 240px;
-  min-height: 180px;
-  max-height: none;
+  min-height: 0;
+  max-height: 240px;
   margin-bottom: 0 !important;
   border: 0;
   border-radius: 0;
   overflow-y: auto;
-  overscroll-behavior: contain;
+  overscroll-behavior: auto;
   scrollbar-width: thin;
   scrollbar-color: #b9d7df transparent;
 }
@@ -8182,10 +8330,31 @@ th {
   color: var(--muted);
   font-size: 10px;
 }
+.pos-discount-controls {
+  display: grid;
+  grid-template-columns: minmax(130px, 0.8fr) minmax(150px, 1.2fr);
+  gap: 8px;
+}
+.pos-discount-percentage-input {
+  position: relative;
+}
+.pos-discount-percentage-input input {
+  padding-right: 34px;
+}
+.pos-discount-percentage-input span {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  color: var(--muted);
+  font-weight: 700;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
 .pos-counter-workspace .pos-payment-options button {
   min-height: 42px;
 }
 .pos-counter-workspace .modal-actions {
+  flex: 0 0 auto;
   margin: 0;
   padding: 14px 0 0;
   border-top: 1px solid #edf1f3;
@@ -8297,6 +8466,11 @@ th {
     height: auto;
     min-height: 0;
     max-height: none;
+  }
+  .pos-order-scroll {
+    margin-right: 0;
+    padding-right: 0;
+    overflow: visible;
   }
   .pos-counter-workspace .pos-cart-table {
     flex: none;
@@ -13631,6 +13805,40 @@ th {
 
 .modal {
   overscroll-behavior: contain;
+  max-width: calc(100vw - 36px);
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+/* Dialog content must never enlarge or horizontally shift its scroll area. */
+.modal > header,
+.modal > form,
+.modal > form > *,
+.modal .field,
+.modal .form-grid,
+.modal .form-grid > *,
+.modal .stock-variant-picker,
+.modal .stock-variant-tools,
+.modal .stock-variant-list,
+.modal .variant-picker-option,
+.modal .variant-picker-option > span {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.modal input:not([type="checkbox"]):not([type="radio"]),
+.modal select,
+.modal textarea,
+.modal .app-select,
+.modal .list-search {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.modal button:not(.icon-btn),
+.modal .variant-picker-option b,
+.modal .variant-picker-option small {
+  overflow-wrap: anywhere;
 }
 
 .modal > header {
@@ -13716,6 +13924,10 @@ button:disabled {
   .modal > header,
   .modal > form {
     padding: 18px 16px;
+  }
+
+  .modal {
+    max-width: calc(100vw - 20px);
   }
 
   .modal:not(.pos-modal) > form > .modal-actions {

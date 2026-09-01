@@ -54,6 +54,10 @@ export interface Variant {
   spiceLevel?: string;
   cost: number;
   price: number;
+  /** HPP yang dipakai ketika kanal transaksi adalah online. */
+  onlineCost?: number;
+  /** Harga jual yang dipakai ketika kanal transaksi adalah online. */
+  onlinePrice?: number;
   resellerPrice: number;
   minStock: number;
   minStockByLocation?: Record<string, number>;
@@ -99,7 +103,13 @@ export interface SaleItem {
   variantId: string;
   quantity: number;
   unit: StockUnit;
-  unitCost: number;
+  /** Snapshot HPP sesuai kanal pada saat transaksi dibuat. */
+  unitCost?: number;
+  /** Snapshot harga satuan sesuai kanal sebelum diskon. */
+  price?: number;
+  /** Bagian diskon transaksi yang dialokasikan ke baris ini. */
+  discount?: number;
+  /** Jumlah × harga satuan sebelum diskon. */
   subtotal: number;
 }
 export interface Sale {
@@ -108,6 +118,15 @@ export interface Sale {
   channel: Channel;
   customer?: string;
   note?: string;
+  /** Total seluruh baris sebelum diskon. Data lama memakai `total`. */
+  grossTotal?: number;
+  /** Diskon nominal pembeli pada tingkat transaksi. */
+  discountAmount?: number;
+  /** Cara diskon dimasukkan saat transaksi dibuat. */
+  discountType?: "nominal" | "percentage";
+  /** Nilai input asli: rupiah untuk nominal atau angka persen. */
+  discountValue?: number;
+  /** Jumlah yang benar-benar dibayar setelah diskon. */
   total: number;
   payment: string;
   createdAt: string;

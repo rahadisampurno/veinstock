@@ -53,7 +53,7 @@ export const buildExcelWorkbook = (sheets: ExcelSheet[]) => `<?xml version="1.0"
      const value = Array.isArray(row) ? row[columnIndex] : row?.[column.key];
      const key = column.key.toLowerCase();
      const isQuantity = ['jumlah', 'qty', 'kuantitas', 'peringkat', 'saldo', 'minimum'].includes(key);
-     const isMoney = ['price', 'total', 'cost', 'value', 'omset', 'modal', 'totalnilai', 'harga', 'hargasatuan', 'subtotal', 'nilai'].includes(key);
+     const isMoney = ['price', 'total', 'cost', 'value', 'omset', 'modal', 'totalnilai', 'harga', 'hargasatuan', 'subtotal', 'nilai', 'diskon', 'penjualanbersih', 'hppsatuan', 'totalhpp', 'labakotor'].includes(key);
      const isPercent = ['persen', 'persentase', 'margin'].includes(key);
      const styleId = typeof value === 'number' ? (isQuantity ? 'number' : isMoney ? 'money' : isPercent ? 'percent' : 'number') : 'text';
      const style = ` ss:StyleID="${styleId}"`;
