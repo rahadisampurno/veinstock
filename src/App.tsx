@@ -26,6 +26,8 @@ import {
   type OperationalNotification,
 } from "./utils/operationalNotifications";
 import {
+  applyTikTokVariationMapping,
+  groupTikTokSkuVariations,
   parseTikTokIncome,
   parseTikTokOrders,
   type ParsedTikTokOrder,
@@ -17955,8 +17957,14 @@ function BulkOnlineProcessor({
     () => new Set(),
   );
   const [duplicateFingerprint, setDuplicateFingerprint] = useState(false);
+  const [mappingView, setMappingView] = useState<"variation" | "sku">(
+    "variation",
+  );
   const [mappingSearch, setMappingSearch] = useState("");
   const [mappingPage, setMappingPage] = useState(0);
+  const [variationSelections, setVariationSelections] = useState<
+    Record<string, string>
+  >({});
 
   const newRows = useMemo(
     () =>
@@ -18038,36 +18046,90 @@ function BulkOnlineProcessor({
       })),
     [externalGroups, exactSkuMappings, manualMappings, persistedMappings],
   );
-  const unmatched = resolvedGroups.filter(
-    (group) =>
-      !group.variantId ||
-      !variants.some((variant: any) => variant.id === group.variantId),
+  const variantById = useMemo(
+    () =>
+      new Map<string, any>(
+        variants.map((variant: any) => [String(variant.id), variant]),
+      ),
+    [variants],
   );
-  const filteredUnmatched = useMemo(() => {
+  const validVariantIds = useMemo(
+    () => new Set<string>(variantById.keys()),
+    [variantById],
+  );
+  const unmatched = resolvedGroups.filter(
+    (group) => !validVariantIds.has(String(group.variantId || "")),
+  );
+  const variationGroups = useMemo(
+    () => groupTikTokSkuVariations(resolvedGroups, validVariantIds),
+    [resolvedGroups, validVariantIds],
+  );
+  const pendingVariationGroups = useMemo(
+    () =>
+      variationGroups.filter((group) => group.unresolvedMembers.length > 0),
+    [variationGroups],
+  );
+  const filteredVariationGroups = useMemo(() => {
     const query = mappingSearch.trim().toLowerCase();
-    if (!query) return unmatched;
-    return unmatched.filter((group) =>
-      `${group.productName} ${group.variation} ${group.externalSku}`
+    if (!query) return pendingVariationGroups;
+    return pendingVariationGroups.filter((group) =>
+      `${group.label} ${group.normalizedVariation} ${group.productNames.join(" ")} ${group.members
+        .map((member) => member.externalSku)
+        .join(" ")}`
         .toLowerCase()
         .includes(query),
     );
-  }, [mappingSearch, unmatched]);
-  const mappingPageSize = 30;
+  }, [mappingSearch, pendingVariationGroups]);
+  const filteredSkuGroups = useMemo(() => {
+    const query = mappingSearch.trim().toLowerCase();
+    if (!query) return resolvedGroups;
+    return resolvedGroups.filter((group) => {
+      const variant = variantById.get(String(group.variantId || ""));
+      return `${group.productName} ${group.variation} ${group.externalSku} ${variant?.productName || ""} ${variant?.name || ""}`
+        .toLowerCase()
+        .includes(query);
+    });
+  }, [mappingSearch, resolvedGroups, variantById]);
+  const mappingPageSize = mappingView === "variation" ? 20 : 30;
+  const mappingResultCount =
+    mappingView === "variation"
+      ? filteredVariationGroups.length
+      : filteredSkuGroups.length;
   const mappingPageCount = Math.max(
     1,
-    Math.ceil(filteredUnmatched.length / mappingPageSize),
+    Math.ceil(mappingResultCount / mappingPageSize),
   );
-  const visibleUnmatched = filteredUnmatched.slice(
+  const visibleVariationGroups = filteredVariationGroups.slice(
+    mappingPage * mappingPageSize,
+    (mappingPage + 1) * mappingPageSize,
+  );
+  const visibleSkuGroups = filteredSkuGroups.slice(
     mappingPage * mappingPageSize,
     (mappingPage + 1) * mappingPageSize,
   );
   useEffect(() => {
     setMappingPage((current) => Math.min(current, mappingPageCount - 1));
   }, [mappingPageCount]);
+  const applyVariationMapping = (
+    group: (typeof variationGroups)[number],
+  ) => {
+    const variantId =
+      variationSelections[group.key] ||
+      (group.mappedVariantIds.length === 1 ? group.mappedVariantIds[0] : "");
+    if (!variantId || !validVariantIds.has(variantId)) return;
+    setManualMappings((current) =>
+      applyTikTokVariationMapping(
+        current,
+        group,
+        variantId,
+        validVariantIds,
+      ),
+    );
+  };
   const mappedLines = useMemo(() => {
     const lines = new Map<string, BulkMappedLine>();
     for (const group of resolvedGroups) {
-      if (!group.variantId) continue;
+      if (!validVariantIds.has(String(group.variantId || ""))) continue;
       const current: BulkMappedLine = lines.get(group.variantId) || {
         variantId: group.variantId,
         quantity: 0,
@@ -18082,7 +18144,7 @@ function BulkOnlineProcessor({
       lines.set(group.variantId, current);
     }
     return Array.from(lines.values());
-  }, [resolvedGroups]);
+  }, [resolvedGroups, validVariantIds]);
   const stockErrors = mappedLines.filter(
     (line) => line.quantity > getBalance(data.balances, loc, line.variantId),
   );
@@ -18145,8 +18207,10 @@ function BulkOnlineProcessor({
       setIncome(null);
       setManualMappings({});
       setManualPlatformFee(0);
+      setMappingView("variation");
       setMappingSearch("");
       setMappingPage(0);
+      setVariationSelections({});
     } catch (error) {
       setOrders(null);
       setDuplicateFingerprint(false);
@@ -18225,8 +18289,10 @@ function BulkOnlineProcessor({
       setManualPlatformFee(0);
       setDuplicateFingerprint(false);
       setDuplicateOrderIds(new Set());
+      setMappingView("variation");
       setMappingSearch("");
       setMappingPage(0);
+      setVariationSelections({});
     } catch (error) {
       notify(
         error instanceof Error ? error.message : "Impor TikTok gagal disimpan.",
@@ -18295,14 +18361,66 @@ function BulkOnlineProcessor({
               <Info size={18} /> Tidak ada pesanan baru yang dapat diimpor dari file ini.
             </div>
           )}
-          {unmatched.length > 0 && (
-            <div className="bulk-mapping-panel">
+          {externalGroups.length > 0 && (
+            <div
+              className={`bulk-mapping-panel ${unmatched.length ? "" : "complete"}`}
+            >
               <div className="bulk-panel-title">
                 <span>
-                  <AlertTriangle size={18} />
-                  <b>{unmatched.length} SKU perlu dipasangkan</b>
+                  {unmatched.length ? (
+                    <AlertTriangle size={18} />
+                  ) : (
+                    <Check size={18} />
+                  )}
+                  <b>
+                    {unmatched.length
+                      ? `${unmatched.length.toLocaleString("id-ID")} dari ${externalGroups.length.toLocaleString("id-ID")} SKU perlu dipasangkan`
+                      : `Semua ${externalGroups.length.toLocaleString("id-ID")} SKU sudah dipasangkan`}
+                  </b>
                 </span>
-                <small>Pilih varian yang tepat. Pilihan akan disimpan untuk impor berikutnya.</small>
+                <small>
+                  Mapping disimpan per SKU. Bulk hanya mengisi SKU yang belum
+                  dipasangkan dan tidak menimpa pengecualian.
+                </small>
+              </div>
+              <div
+                className="bulk-mapping-view-tabs"
+                role="tablist"
+                aria-label="Cara pemetaan SKU TikTok"
+              >
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={mappingView === "variation"}
+                  className={mappingView === "variation" ? "active" : ""}
+                  onClick={() => {
+                    setMappingView("variation");
+                    setMappingSearch("");
+                    setMappingPage(0);
+                  }}
+                >
+                  Kelompok Variation
+                  <small>
+                    {pendingVariationGroups.length.toLocaleString("id-ID")} belum
+                    selesai
+                  </small>
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={mappingView === "sku"}
+                  className={mappingView === "sku" ? "active" : ""}
+                  onClick={() => {
+                    setMappingView("sku");
+                    setMappingSearch("");
+                    setMappingPage(0);
+                  }}
+                >
+                  Per SKU
+                  <small>
+                    {externalGroups.length.toLocaleString("id-ID")} SKU
+                  </small>
+                </button>
               </div>
               <div className="bulk-mapping-tools">
                 <input
@@ -18312,41 +18430,161 @@ function BulkOnlineProcessor({
                     setMappingSearch(event.target.value);
                     setMappingPage(0);
                   }}
-                  placeholder="Cari produk, variasi, atau SKU TikTok"
-                  aria-label="Cari SKU TikTok yang perlu dipasangkan"
+                  placeholder={
+                    mappingView === "variation"
+                      ? "Cari kelompok variation, produk, atau SKU TikTok"
+                      : "Cari produk, variation, SKU TikTok, atau varian Menengs"
+                  }
+                  aria-label={
+                    mappingView === "variation"
+                      ? "Cari kelompok variation TikTok"
+                      : "Cari pemetaan SKU TikTok"
+                  }
                 />
                 <small>
-                  {filteredUnmatched.length.toLocaleString("id-ID")} dari{" "}
-                  {unmatched.length.toLocaleString("id-ID")} SKU
+                  {mappingView === "variation"
+                    ? `${filteredVariationGroups.length.toLocaleString("id-ID")} dari ${pendingVariationGroups.length.toLocaleString("id-ID")} kelompok`
+                    : `${filteredSkuGroups.length.toLocaleString("id-ID")} dari ${externalGroups.length.toLocaleString("id-ID")} SKU`}
                 </small>
               </div>
-              <div className="bulk-mapping-list">
-                {visibleUnmatched.map((group) => (
-                  <label key={group.externalSku} className="bulk-mapping-row">
-                    <span>
-                      <b>{group.productName || "Produk TikTok"}</b>
-                      <small>{group.variation || group.externalSku} · Qty {group.quantity}</small>
-                    </span>
-                    <select
-                      value={manualMappings[group.externalSku] || ""}
-                      onChange={(event) =>
-                        setManualMappings((current) => ({
-                          ...current,
-                          [group.externalSku]: event.target.value,
-                        }))
-                      }
+              {mappingView === "variation" ? (
+                visibleVariationGroups.length ? (
+                  <div className="bulk-variation-list">
+                    {visibleVariationGroups.map((group) => {
+                      const suggestedVariantId =
+                        group.mappedVariantIds.length === 1
+                          ? group.mappedVariantIds[0]
+                          : "";
+                      const selectedVariantId =
+                        variationSelections[group.key] || suggestedVariantId;
+                      return (
+                        <article
+                          key={group.key}
+                          className={`bulk-variation-row ${group.hasConflict ? "conflict" : ""}`}
+                        >
+                          <span className="bulk-variation-info">
+                            <b>{group.label}</b>
+                            <small>
+                              {group.unresolvedMembers.length.toLocaleString(
+                                "id-ID",
+                              )}{" "}
+                              SKU belum dipetakan dari{" "}
+                              {group.members.length.toLocaleString("id-ID")} SKU ·
+                              Qty {group.totalQuantity.toLocaleString("id-ID")} ·{" "}
+                              {group.productNames.length.toLocaleString("id-ID")} produk
+                            </small>
+                            {group.productNames.length > 0 && (
+                              <small className="bulk-variation-products">
+                                {group.productNames.slice(0, 2).join(" · ")}
+                                {group.productNames.length > 2
+                                  ? ` · +${group.productNames.length - 2} lainnya`
+                                  : ""}
+                              </small>
+                            )}
+                            {group.hasConflict && (
+                              <em>
+                                Ada mapping berbeda dalam kelompok ini. Mapping
+                                lama tidak akan ditimpa.
+                              </em>
+                            )}
+                          </span>
+                          <span className="bulk-variation-action">
+                            <select
+                              aria-label={`Varian Menengs untuk kelompok ${group.label}`}
+                              value={selectedVariantId}
+                              onChange={(event) =>
+                                setVariationSelections((current) => ({
+                                  ...current,
+                                  [group.key]: event.target.value,
+                                }))
+                              }
+                            >
+                              <option value="">Pilih varian Menengs</option>
+                              {variants.map((variant: any) => (
+                                <option key={variant.id} value={variant.id}>
+                                  {variant.productName} · {variant.name} · stok{" "}
+                                  {getBalance(data.balances, loc, variant.id)}
+                                </option>
+                              ))}
+                            </select>
+                            <button
+                              type="button"
+                              className="secondary"
+                              disabled={!selectedVariantId}
+                              onClick={() => applyVariationMapping(group)}
+                            >
+                              Terapkan ke{" "}
+                              {group.unresolvedMembers.length.toLocaleString(
+                                "id-ID",
+                              )}{" "}
+                              SKU
+                            </button>
+                          </span>
+                        </article>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="bulk-mapping-empty">
+                    <Check size={18} />
+                    {pendingVariationGroups.length
+                      ? "Tidak ada kelompok yang cocok dengan pencarian."
+                      : "Semua kelompok variation sudah selesai. Gunakan Per SKU untuk meninjau atau membuat pengecualian."}
+                  </div>
+                )
+              ) : (
+                <div className="bulk-mapping-list">
+                  {visibleSkuGroups.map((group) => (
+                    <label
+                      key={group.externalSku}
+                      className={`bulk-mapping-row ${validVariantIds.has(String(group.variantId || "")) ? "mapped" : ""}`}
                     >
-                      <option value="">Pilih varian Menengs</option>
-                      {variants.map((variant: any) => (
-                        <option key={variant.id} value={variant.id}>
-                          {variant.productName} · {variant.name} · stok {getBalance(data.balances, loc, variant.id)}
+                      <span>
+                        <b>{group.productName || "Produk TikTok"}</b>
+                        <small>
+                          {group.variation || "Variation tidak tersedia"} · SKU{" "}
+                          {group.externalSku} · Qty {group.quantity}
+                        </small>
+                      </span>
+                      <select
+                        aria-label={`Varian Menengs untuk SKU ${group.externalSku}`}
+                        value={
+                          validVariantIds.has(String(group.variantId || ""))
+                            ? group.variantId
+                            : ""
+                        }
+                        onChange={(event) =>
+                          setManualMappings((current) => ({
+                            ...current,
+                            [group.externalSku]: event.target.value,
+                          }))
+                        }
+                      >
+                        <option
+                          value=""
+                          disabled={validVariantIds.has(
+                            String(group.variantId || ""),
+                          )}
+                        >
+                          Pilih varian Menengs
                         </option>
-                      ))}
-                    </select>
-                  </label>
-                ))}
-              </div>
-              {filteredUnmatched.length > mappingPageSize && (
+                        {variants.map((variant: any) => (
+                          <option key={variant.id} value={variant.id}>
+                            {variant.productName} · {variant.name} · stok{" "}
+                            {getBalance(data.balances, loc, variant.id)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ))}
+                  {!visibleSkuGroups.length && (
+                    <div className="bulk-mapping-empty">
+                      Tidak ada SKU yang cocok dengan pencarian.
+                    </div>
+                  )}
+                </div>
+              )}
+              {mappingResultCount > mappingPageSize && (
                 <div className="bulk-mapping-pagination">
                   <button
                     type="button"

@@ -22,6 +22,14 @@ const ORDER_HEADERS = {
   paidAt: "paid time",
 } as const;
 
+const ORDER_HEADER_ALIASES: Partial<
+  Record<keyof typeof ORDER_HEADERS, readonly string[]>
+> = {
+  skuId: ["platform sku id"],
+  sellerSku: ["seller sku id", "merchant sku"],
+  variation: ["platform sku variation", "sku variation"],
+};
+
 const INCOME_HEADERS = {
   orderId: "id pesanan/penyesuaian",
   relatedOrderId: "id pesanan terkait",
@@ -98,6 +106,157 @@ const normalizeHeader = (value: unknown) =>
     .trim()
     .toLowerCase()
     .replace(/\s+/g, " ");
+
+const normalizeVariationSegment = (value: string) =>
+  value
+    .normalize("NFKD")
+    .toLowerCase()
+    .replace(/\b(d\.?\s*jeruk|djeruk)\b/g, "daun jeruk")
+    .replace(/\b(\d+(?:[.,]\d+)?)\s*(kilogram|kg)\b/g, "$1 kg")
+    .replace(/\b(\d+(?:[.,]\d+)?)\s*(gram|gr|g)\b/g, "$1 gram")
+    .replace(/\b(\d+(?:[.,]\d+)?)\s*(mililiter|ml)\b/g, "$1 ml")
+    .replace(/\blevel\s+(extra\s+pedas|pedas|sedang)\b/g, "$1")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+/**
+ * Menyamakan penulisan atribut variation tanpa menebak arti produknya.
+ * Urutan atribut tidak berpengaruh, tetapi atribut yang berbeda tetap terpisah.
+ */
+export const normalizeTikTokVariation = (value: unknown) => {
+  const segments = String(value ?? "")
+    .replace(/(\d),(\d)/g, "$1.$2")
+    .split(/[,;|/]+/)
+    .map(normalizeVariationSegment)
+    .filter(Boolean);
+  return Array.from(new Set(segments))
+    .sort((left, right) =>
+      left.localeCompare(right, "id", { numeric: true, sensitivity: "base" }),
+    )
+    .join(" | ");
+};
+
+export const tikTokVariationGroupKey = (
+  variation: unknown,
+  externalSku: unknown,
+) => {
+  const normalizedVariation = normalizeTikTokVariation(variation);
+  return normalizedVariation
+    ? `variation:${normalizedVariation}`
+    : `sku:${normalizeHeader(externalSku)}`;
+};
+
+export interface TikTokSkuVariationMappingItem {
+  externalSku: string;
+  productName: string;
+  variation: string;
+  quantity: number;
+  variantId?: string;
+}
+
+export interface TikTokSkuVariationMappingGroup<
+  T extends TikTokSkuVariationMappingItem = TikTokSkuVariationMappingItem,
+> {
+  key: string;
+  label: string;
+  normalizedVariation: string;
+  members: T[];
+  unresolvedMembers: T[];
+  mappedVariantIds: string[];
+  hasConflict: boolean;
+  productNames: string[];
+  totalQuantity: number;
+}
+
+export const groupTikTokSkuVariations = <
+  T extends TikTokSkuVariationMappingItem,
+>(
+  items: T[],
+  validVariantIds: ReadonlySet<string>,
+): TikTokSkuVariationMappingGroup<T>[] => {
+  const grouped = new Map<
+    string,
+    {
+      normalizedVariation: string;
+      members: T[];
+      labels: Map<string, number>;
+      productNames: Set<string>;
+      totalQuantity: number;
+    }
+  >();
+  for (const item of items) {
+    const normalizedVariation = normalizeTikTokVariation(item.variation);
+    const key = tikTokVariationGroupKey(item.variation, item.externalSku);
+    const current = grouped.get(key) || {
+      normalizedVariation,
+      members: [],
+      labels: new Map<string, number>(),
+      productNames: new Set<string>(),
+      totalQuantity: 0,
+    };
+    const label = String(item.variation || item.externalSku).trim();
+    current.members.push(item);
+    current.labels.set(label, (current.labels.get(label) || 0) + 1);
+    if (item.productName) current.productNames.add(item.productName);
+    current.totalQuantity += Math.max(0, Number(item.quantity) || 0);
+    grouped.set(key, current);
+  }
+
+  return Array.from(grouped, ([key, group]) => {
+    const mappedVariantIds = Array.from(
+      new Set(
+        group.members
+          .map((member) => String(member.variantId || ""))
+          .filter((variantId) => validVariantIds.has(variantId)),
+      ),
+    );
+    const unresolvedMembers = group.members.filter(
+      (member) => !validVariantIds.has(String(member.variantId || "")),
+    );
+    const label = Array.from(group.labels.entries()).sort(
+      ([leftLabel, leftCount], [rightLabel, rightCount]) =>
+        rightCount - leftCount ||
+        leftLabel.localeCompare(rightLabel, "id", {
+          numeric: true,
+          sensitivity: "base",
+        }),
+    )[0]?.[0] || "Variation tidak tersedia";
+    return {
+      key,
+      label,
+      normalizedVariation: group.normalizedVariation,
+      members: group.members,
+      unresolvedMembers,
+      mappedVariantIds,
+      hasConflict: mappedVariantIds.length > 1,
+      productNames: Array.from(group.productNames).sort((left, right) =>
+        left.localeCompare(right, "id", { sensitivity: "base" }),
+      ),
+      totalQuantity: group.totalQuantity,
+    };
+  }).sort((left, right) =>
+    left.label.localeCompare(right.label, "id", {
+      numeric: true,
+      sensitivity: "base",
+    }),
+  );
+};
+
+export const applyTikTokVariationMapping = <
+  T extends TikTokSkuVariationMappingItem,
+>(
+  currentMappings: Record<string, string>,
+  group: TikTokSkuVariationMappingGroup<T>,
+  variantId: string,
+  validVariantIds: ReadonlySet<string>,
+) => {
+  if (!validVariantIds.has(variantId)) return currentMappings;
+  const next = { ...currentMappings };
+  for (const member of group.unresolvedMembers)
+    next[member.externalSku] = variantId;
+  return next;
+};
 
 const textValue = (value: unknown) => {
   if (value instanceof Date) return value.toISOString();
@@ -178,6 +337,25 @@ const buildHeaderColumns = <T extends Record<string, string>>(
   for (const [key, label] of Object.entries(expected) as Array<[keyof T, string]>)
     result[key] = headers.get(label) || 0;
   return result;
+};
+
+const orderHeaderKeyForLabel = (label: string) =>
+  (Object.keys(ORDER_HEADERS) as Array<keyof typeof ORDER_HEADERS>).find(
+    (key) =>
+      ORDER_HEADERS[key] === label ||
+      ORDER_HEADER_ALIASES[key]?.includes(label),
+  );
+
+const buildOrderHeaderColumns = (headers: Map<string, number>) => {
+  const columns = buildHeaderColumns(headers, ORDER_HEADERS);
+  for (const [key, aliases] of Object.entries(ORDER_HEADER_ALIASES) as Array<
+    [keyof typeof ORDER_HEADERS, readonly string[]]
+  >) {
+    if (columns[key]) continue;
+    columns[key] =
+      aliases.map((alias) => headers.get(alias) || 0).find(Boolean) || 0;
+  }
+  return columns;
 };
 
 const requiredOrderHeaders = ["orderId", "status", "skuId", "productName", "variation", "quantity"] as const;
@@ -296,22 +474,21 @@ const finalizeOrders = (
   };
 };
 
-const rowsFromExcelWorksheet = (
-  worksheet: ExcelJS.Worksheet,
-  expected: typeof ORDER_HEADERS,
-) => {
+const rowsFromExcelWorksheet = (worksheet: ExcelJS.Worksheet) => {
   const headers = new Map<string, number>();
   worksheet.getRow(1).eachCell({ includeEmpty: true }, (cell, column) => {
     const label = normalizeHeader(textValue(cell.value));
     if (label) headers.set(label, column);
   });
-  const columns = buildHeaderColumns(headers, expected);
+  const columns = buildOrderHeaderColumns(headers);
   validateOrderColumns(columns);
   const rows: ParsedTikTokOrder[] = [];
   for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber += 1) {
     const row = worksheet.getRow(rowNumber);
     const record: RowRecord = {};
-    for (const key of Object.keys(expected) as Array<keyof typeof expected>)
+    for (const key of Object.keys(ORDER_HEADERS) as Array<
+      keyof typeof ORDER_HEADERS
+    >)
       record[key] = columns[key] ? row.getCell(columns[key]).value : "";
     if (Object.values(record).some((value) => textValue(value)))
       rows.push(orderFromRecord(record, rowNumber));
@@ -364,9 +541,7 @@ const rowsFromMalformedTikTokXml = async (
       if (rowNumber === 1) {
         const label = normalizeHeader(value);
         headersByColumn.set(column, label);
-        const key = (Object.keys(ORDER_HEADERS) as Array<keyof typeof ORDER_HEADERS>).find(
-          (candidate) => ORDER_HEADERS[candidate] === label,
-        );
+        const key = orderHeaderKeyForLabel(label);
         if (key) desiredColumns.set(column, key);
         continue;
       }
@@ -381,7 +556,7 @@ const rowsFromMalformedTikTokXml = async (
     const numericHeaders = new Map<string, number>();
     let index = 1;
     for (const label of headersByColumn.values()) numericHeaders.set(label, index++);
-    const columns = buildHeaderColumns(numericHeaders, ORDER_HEADERS);
+    const columns = buildOrderHeaderColumns(numericHeaders);
     try {
       validateOrderColumns(columns);
     } catch {
@@ -404,7 +579,7 @@ export async function parseTikTokOrders(file: File): Promise<TikTokOrderParseRes
     await workbook.xlsx.load(buffer.slice(0));
     for (const worksheet of workbook.worksheets) {
       try {
-        rows = rowsFromExcelWorksheet(worksheet, ORDER_HEADERS);
+        rows = rowsFromExcelWorksheet(worksheet);
         if (rows.length) break;
       } catch {
         // Ekspor TikTok tertentu menulis satu tag <row> per sel. ExcelJS tidak

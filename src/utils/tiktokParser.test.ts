@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 import ExcelJS from "exceljs";
 import JSZip from "jszip";
-import { parseTikTokIncome, parseTikTokOrders } from "./tiktokParser";
+import {
+  applyTikTokVariationMapping,
+  groupTikTokSkuVariations,
+  normalizeTikTokVariation,
+  parseTikTokIncome,
+  parseTikTokOrders,
+  tikTokVariationGroupKey,
+} from "./tiktokParser";
 
 const fileFromWorkbook = async (workbook: ExcelJS.Workbook, name: string) => {
   const bytes = await workbook.xlsx.writeBuffer();
@@ -9,6 +16,142 @@ const fileFromWorkbook = async (workbook: ExcelJS.Workbook, name: string) => {
 };
 
 describe("TikTok marketplace import", () => {
+  it("menormalisasi dan mengelompokkan variation tanpa menggabungkan SKU kosong", () => {
+    expect(normalizeTikTokVariation("500Gr, Keju, Level Sedang")).toBe(
+      normalizeTikTokVariation("Sedang; 500 gram; Keju"),
+    );
+    expect(normalizeTikTokVariation("Asin D.Jeruk, 250 gr")).toBe(
+      normalizeTikTokVariation("250gram, Asin Daun Jeruk"),
+    );
+    expect(normalizeTikTokVariation("Keju, 0,5 kg")).toBe(
+      normalizeTikTokVariation("0.5kg; Keju"),
+    );
+    expect(tikTokVariationGroupKey("", "platform-1")).not.toBe(
+      tikTokVariationGroupKey("", "platform-2"),
+    );
+
+    const groups = groupTikTokSkuVariations(
+      [
+        {
+          externalSku: "platform-1",
+          productName: "Listing A",
+          variation: "500Gr, Keju, Level Sedang",
+          quantity: 4,
+          variantId: "variant-keju",
+        },
+        {
+          externalSku: "platform-2",
+          productName: "Listing B",
+          variation: "Sedang, 500 gram, Keju",
+          quantity: 7,
+        },
+        {
+          externalSku: "platform-3",
+          productName: "Listing C",
+          variation: "Sedang, 500 gram, Keju",
+          quantity: 2,
+          variantId: "variant-lain",
+        },
+      ],
+      new Set(["variant-keju", "variant-lain"]),
+    );
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({
+      totalQuantity: 13,
+      hasConflict: true,
+      mappedVariantIds: ["variant-keju", "variant-lain"],
+    });
+    expect(groups[0].members).toHaveLength(3);
+    expect(groups[0].unresolvedMembers).toEqual([
+      expect.objectContaining({ externalSku: "platform-2" }),
+    ]);
+    expect(
+      applyTikTokVariationMapping(
+        {
+          "mapping-lain": "variant-lain",
+          "platform-1": "variant-keju",
+          "platform-3": "variant-lain",
+        },
+        groups[0],
+        "variant-keju",
+        new Set(["variant-keju", "variant-lain"]),
+      ),
+    ).toEqual({
+      "mapping-lain": "variant-lain",
+      "platform-1": "variant-keju",
+      "platform-2": "variant-keju",
+      "platform-3": "variant-lain",
+    });
+  });
+
+  it("mengenali alias Platform SKU ID dan Platform SKU variation", async () => {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet("OrderSKUList");
+    sheet.addRow([
+      "Order ID",
+      "Order Status",
+      "Platform SKU ID",
+      "Product Name",
+      "Platform SKU variation",
+      "Quantity",
+      "Paid Time",
+    ]);
+    sheet.addRow([
+      "order-platform-alias",
+      "Selesai",
+      "platform-alias-1",
+      "Keripik",
+      "500gr, Keju, Level Sedang",
+      2,
+      "02/09/2026 10:00:00",
+    ]);
+
+    const result = await parseTikTokOrders(
+      await fileFromWorkbook(workbook, "Semua pesanan-alias.xlsx"),
+    );
+
+    expect(result.eligibleRows).toEqual([
+      expect.objectContaining({
+        externalSku: "platform-alias-1",
+        variation: "500gr, Keju, Level Sedang",
+        netQuantity: 2,
+      }),
+    ]);
+  });
+
+  it("meringkas ratusan Platform SKU menjadi kelompok variation", () => {
+    const variations = [
+      ["500Gr, Keju, Level Sedang", "Sedang; Keju; 500 gram"],
+      ["250 gr, Asin D.Jeruk, Level 0", "Level 0; 250gram; Asin Daun Jeruk"],
+      ["Toples 390 gram, Balado, Pedas", "Pedas; Balado; Toples 390gr"],
+      ["1kg, Original, Extra Pedas", "Extra Pedas; Original; 1 kilogram"],
+      ["150gr, Jagung, Level Sedang", "Sedang; 150 gram; Jagung"],
+      ["500 gram, Daun Jeruk, Pedas", "Pedas; D.Jeruk; 500gr"],
+    ];
+    const items = Array.from({ length: 720 }, (_, index) => ({
+      externalSku: `platform-${index}`,
+      productName: `Listing ${(index % 12) + 1}`,
+      variation:
+        variations[index % variations.length][
+          Math.floor(index / variations.length) % 2
+        ],
+      quantity: 1,
+      variantId: "",
+    }));
+
+    const groups = groupTikTokSkuVariations(items, new Set());
+
+    expect(groups).toHaveLength(6);
+    expect(groups.every((group) => group.members.length === 120)).toBe(true);
+    expect(
+      groups.reduce(
+        (sum, group) => sum + group.unresolvedMembers.length,
+        0,
+      ),
+    ).toBe(720);
+  });
+
   it("membaca pesanan berdasarkan header dan hanya memilih status layak", async () => {
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet("OrderSKUList");

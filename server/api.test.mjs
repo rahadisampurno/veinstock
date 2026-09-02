@@ -645,7 +645,10 @@ describe('multi-tenant API', () => {
         platform: 'tiktok', fingerprint: 'a'.repeat(64), sourceFileName: 'Semua pesanan-test.xlsx',
         externalOrderIds: ['order-1'], rowCount: 1, ignoredRowCount: 2, duplicateOrderCount: 0,
       },
-      skuMappings: [{ externalSku: `TIK-${suffix}`, variantId }],
+      skuMappings: Array.from({ length: 720 }, (_, index) => ({
+        externalSku: index === 0 ? `TIK-${suffix}` : `TIK-${suffix}-${index}`,
+        variantId,
+      })),
     };
     const previewBefore = await post('/api/marketplace/imports/check', {
       locationId: 'loc-owner', platform: 'tiktok', fingerprint: 'a'.repeat(64),
@@ -671,6 +674,7 @@ describe('multi-tenant API', () => {
     }));
     expect(state.body.data.marketplaceImports).toHaveLength(1);
     expect(state.body.data.marketplaceImports[0]).not.toHaveProperty('externalOrderIds');
+    expect(state.body.data.marketplaceSkuMappings).toHaveLength(720);
     expect(state.body.data.marketplaceSkuMappings).toContainEqual(expect.objectContaining({
       platform: 'tiktok', externalSku: `TIK-${suffix}`, variantId,
     }));
