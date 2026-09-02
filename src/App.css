@@ -7904,6 +7904,299 @@ th {
   }
 }
 
+.bulk-online-import {
+  display: grid;
+  gap: 16px;
+  margin: 0 24px 22px;
+  padding: 20px;
+  border: 1px solid #dce8ec;
+  border-radius: 16px;
+  background: #fff;
+}
+.bulk-online-heading small {
+  color: #078bb1;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.8px;
+}
+.bulk-online-heading h3 {
+  margin: 3px 0 5px;
+  color: var(--navy);
+  font: 800 19px Manrope;
+}
+.bulk-online-heading p,
+.bulk-panel-title small,
+.bulk-reconcile-note,
+.bulk-manual-fee > small {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.bulk-online-upload-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.bulk-file-card {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 11px;
+  padding: 14px;
+  border: 1px dashed #8ccddd;
+  border-radius: 12px;
+  background: #f5fcfd;
+  color: #087fa9;
+  cursor: pointer;
+}
+.bulk-file-card.disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.bulk-file-card > span {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+.bulk-file-card b {
+  color: var(--navy);
+  font-size: 13px;
+}
+.bulk-file-card small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bulk-file-card input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+.bulk-progress {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 9px;
+  background: #eaf8fb;
+  color: #087fa9;
+  font-size: 12px;
+  font-weight: 750;
+}
+.bulk-preview-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+.bulk-preview-metrics span {
+  display: grid;
+  gap: 2px;
+  padding: 10px;
+  border: 1px solid #e4ecef;
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.bulk-preview-metrics b {
+  color: var(--navy);
+  font-size: 17px;
+}
+.bulk-alert {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 11px 12px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 750;
+}
+.bulk-alert.danger {
+  background: #fff0ef;
+  color: #b42318;
+}
+.bulk-alert.warning {
+  background: #fff8e8;
+  color: #9a6700;
+}
+.bulk-mapping-panel,
+.bulk-matched-panel,
+.bulk-finance-panel {
+  display: grid;
+  gap: 11px;
+  padding: 14px;
+  border: 1px solid #dfe9ed;
+  border-radius: 12px;
+  background: #f9fbfc;
+}
+.bulk-mapping-panel {
+  border-color: #f1c6c1;
+  background: #fff8f7;
+}
+.bulk-panel-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.bulk-panel-title > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #b42318;
+}
+.bulk-panel-title b {
+  color: var(--navy);
+  font-size: 13px;
+}
+.bulk-mapping-tools {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+.bulk-mapping-tools input {
+  min-width: 0;
+  flex: 1;
+  min-height: 40px;
+  border: 1px solid #dfaca5;
+  border-radius: 9px;
+  background: #fff;
+}
+.bulk-mapping-tools small,
+.bulk-mapping-pagination span {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.bulk-mapping-list,
+.bulk-matched-list {
+  display: grid;
+  max-height: 300px;
+  overflow: auto;
+  border-top: 1px solid #e6edef;
+}
+.bulk-mapping-row,
+.bulk-matched-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 0.8fr);
+  align-items: center;
+  gap: 12px;
+  padding: 10px 2px;
+  border-bottom: 1px solid #e6edef;
+}
+.bulk-mapping-row > span,
+.bulk-matched-row > span {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+.bulk-mapping-row b,
+.bulk-matched-row b {
+  overflow: hidden;
+  color: var(--navy);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bulk-mapping-row small,
+.bulk-matched-row small {
+  color: var(--muted);
+  font-size: 10px;
+}
+.bulk-mapping-row select {
+  min-width: 0;
+  min-height: 38px;
+  padding: 7px 30px 7px 9px;
+  border: 1px solid #dfaca5;
+  border-radius: 9px;
+  background: #fff;
+  font-size: 11px;
+}
+.bulk-matched-row strong {
+  color: #08734a;
+  font-size: 12px;
+  text-align: right;
+}
+.bulk-mapping-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.bulk-mapping-pagination button {
+  min-height: 36px;
+  padding: 7px 12px;
+}
+.bulk-finance-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+.bulk-finance-summary span {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border-radius: 9px;
+  background: #edf7f9;
+}
+.bulk-finance-summary small {
+  color: var(--muted);
+  font-size: 9px;
+}
+.bulk-finance-summary b {
+  color: var(--navy);
+  font-size: 13px;
+}
+.bulk-manual-fee {
+  display: grid;
+  gap: 4px;
+}
+.bulk-save-button {
+  display: inline-flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+}
+@media (max-width: 780px) {
+  .bulk-online-import {
+    margin-inline: 0;
+    padding: 14px;
+  }
+  .bulk-online-upload-grid,
+  .bulk-finance-summary {
+    grid-template-columns: 1fr 1fr;
+  }
+  .bulk-preview-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .bulk-panel-title,
+  .bulk-mapping-row,
+  .bulk-matched-row {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+  .bulk-panel-title {
+    display: grid;
+  }
+  .bulk-mapping-tools,
+  .bulk-mapping-pagination {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .bulk-mapping-tools small,
+  .bulk-mapping-pagination span {
+    white-space: normal;
+  }
+  .bulk-matched-row strong {
+    text-align: left;
+  }
+}
+
 /* POS outlet — workspace kasir dua panel untuk layar tablet dan desktop. */
 .modal.pos-modal {
   position: relative;

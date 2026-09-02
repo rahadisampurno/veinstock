@@ -17,6 +17,9 @@ QA-Handover/
 QA-Handover.zip
 output/
 tmp/
+# Ekspor marketplace lokal dapat berisi data pesanan dan informasi pelanggan.
+Semua pesanan-*.xlsx
+income_*.xlsx
 .env
 .env.*
 !.env.example

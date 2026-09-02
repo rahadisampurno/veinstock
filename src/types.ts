@@ -126,8 +126,15 @@ export interface Sale {
   discountType?: "nominal" | "percentage";
   /** Nilai input asli: rupiah untuk nominal atau angka persen. */
   discountValue?: number;
-  /** Jumlah yang benar-benar dibayar setelah diskon. */
   total: number;
+  /** Biaya admin/layanan marketplace yang mengurangi laba bersih. */
+  platformFee?: number;
+  /** Dana bersih yang tercatat pada laporan pencairan marketplace. */
+  netPayout?: number;
+  /** Sumber transaksi impor, misalnya TikTok. */
+  sourcePlatform?: string;
+  /** ID batch impor untuk rekonsiliasi dan pencegahan duplikat. */
+  sourceImportId?: string;
   payment: string;
   createdAt: string;
   items: SaleItem[];
@@ -137,6 +144,37 @@ export interface Sale {
   printedBy?: string;
   cancelledAt?: string;
   cancelReason?: string;
+}
+
+export interface MarketplaceSkuMapping {
+  platform: string;
+  externalSku: string;
+  variantId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MarketplaceImportRecord {
+  id: string;
+  platform: string;
+  fingerprint: string;
+  incomeFingerprint?: string;
+  sourceFileName: string;
+  incomeFileName?: string;
+  locationId: string;
+  saleId: string;
+  /** Hanya ada selama transaksi impor; database menyimpannya sebagai hash. */
+  externalOrderIds?: string[];
+  rowCount: number;
+  ignoredRowCount: number;
+  duplicateOrderCount: number;
+  totalQuantity: number;
+  grossTotal: number;
+  discountAmount: number;
+  platformFee: number;
+  netPayout: number;
+  createdAt: string;
+  createdBy?: string;
 }
 export interface Movement {
   id: string;
@@ -506,5 +544,7 @@ export interface AppData {
   shipments?: ShipmentPackage[];
   shipmentHandovers?: ShipmentHandover[];
   pricing?: PricingData;
+  marketplaceSkuMappings?: MarketplaceSkuMapping[];
+  marketplaceImports?: MarketplaceImportRecord[];
   rolePolicies?: RolePolicies;
 }

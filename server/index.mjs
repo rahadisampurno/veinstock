@@ -73,6 +73,14 @@ const assignMissingBarcodes = (state, organizationId) => {
 };
 const normalizeChannelPricingState = (state) => {
   let changed = false;
+  if (!Array.isArray(state?.marketplaceSkuMappings)) {
+    state.marketplaceSkuMappings = [];
+    changed = true;
+  }
+  if (!Array.isArray(state?.marketplaceImports)) {
+    state.marketplaceImports = [];
+    changed = true;
+  }
   for (const product of state?.products || []) {
     for (const variant of product.variants || []) {
       const offlineCost = Number(variant.cost || 0);
@@ -162,8 +170,68 @@ const normalizeChannelPricingState = (state) => {
           : Number(sale.discountAmount || 0);
       changed = true;
     }
+    if (!Number.isFinite(Number(sale.platformFee)) || Number(sale.platformFee) < 0) {
+      sale.platformFee = 0;
+      changed = true;
+    } else sale.platformFee = Math.round(Number(sale.platformFee));
+    if (!Number.isFinite(Number(sale.netPayout)) || Number(sale.netPayout) < 0) {
+      sale.netPayout = Math.max(
+        0,
+        Number(sale.total || 0) - Number(sale.platformFee || 0),
+      );
+      changed = true;
+    } else sale.netPayout = Math.round(Number(sale.netPayout));
   }
   return changed;
+};
+const compactMarketplaceSnapshot = (state) => ({
+  ...state,
+  sales: (state?.sales || []).map(
+    ({ externalOrderIds: _externalOrderIds, ...sale }) => sale,
+  ),
+  marketplaceImports: (state?.marketplaceImports || []).map(
+    ({ externalOrderIds: _externalOrderIds, ...record }) => record,
+  ),
+});
+const marketplaceOrderDigest = (platform, orderId) =>
+  crypto
+    .createHash("sha256")
+    .update(`${String(platform).toLowerCase()}\0${String(orderId)}`)
+    .digest()
+    .subarray(0, 16);
+const marketplaceTenantDigest = (organizationId) =>
+  crypto
+    .createHash("sha256")
+    .update(String(organizationId))
+    .digest()
+    .subarray(0, 16);
+const findExistingMarketplaceOrderIds = async (
+  connection,
+  organizationId,
+  platform,
+  orderIds,
+) => {
+  if (!connection || !orderIds.length) return [];
+  const entries = orderIds.map((orderId) => ({
+    orderId,
+    digest: marketplaceOrderDigest(platform, orderId),
+  }));
+  const duplicateHashes = new Set();
+  for (let offset = 0; offset < entries.length; offset += 750) {
+    const chunk = entries.slice(offset, offset + 750);
+    const placeholders = chunk.map(() => "?").join(",");
+    const [rows] = await connection.execute(
+      `SELECT HEX(order_hash) AS orderHash FROM marketplace_order_hashes WHERE organization_hash = ? AND order_hash IN (${placeholders})`,
+      [
+        marketplaceTenantDigest(organizationId),
+        ...chunk.map((entry) => entry.digest),
+      ],
+    );
+    rows.forEach((row) => duplicateHashes.add(String(row.orderHash).toUpperCase()));
+  }
+  return entries
+    .filter((entry) => duplicateHashes.has(entry.digest.toString("hex").toUpperCase()))
+    .map((entry) => entry.orderId);
 };
 async function backfillBarcodes(pool) {
   const [states] = await pool.execute("SELECT id, payload FROM app_state");
@@ -172,7 +240,7 @@ async function backfillBarcodes(pool) {
       typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload;
     if (!state || !assignMissingBarcodes(state, row.id)) continue;
     await pool.execute("UPDATE app_state SET payload = ? WHERE id = ?", [
-      JSON.stringify(state),
+      JSON.stringify(compactMarketplaceSnapshot(state)),
       row.id,
     ]);
     for (const product of state.products || [])
@@ -191,7 +259,32 @@ async function backfillChannelPricing(pool) {
       typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload;
     if (!state || !normalizeChannelPricingState(state)) continue;
     await pool.execute("UPDATE app_state SET payload = ? WHERE id = ?", [
-      JSON.stringify(state),
+      JSON.stringify(compactMarketplaceSnapshot(state)),
+      row.id,
+    ]);
+  }
+}
+async function backfillMarketplaceLedger(pool) {
+  const [states] = await pool.execute("SELECT id, payload FROM app_state");
+  for (const row of states) {
+    const state =
+      typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload;
+    if (!state || state.securityMigrations?.marketplaceLedgerV1) continue;
+    await syncStateToSQL(pool, row.id, {
+      locations: [],
+      products: [],
+      balances: [],
+      sales: [],
+      transfers: [],
+      movements: [],
+      stockCounts: [],
+      marketplaceSkuMappings: state.marketplaceSkuMappings || [],
+      marketplaceImports: state.marketplaceImports || [],
+    });
+    state.securityMigrations ||= {};
+    state.securityMigrations.marketplaceLedgerV1 = true;
+    await pool.execute("UPDATE app_state SET payload=? WHERE id=?", [
+      JSON.stringify(compactMarketplaceSnapshot(state)),
       row.id,
     ]);
   }
@@ -220,7 +313,7 @@ async function backfillLegacySaleCashiers(pool) {
     if (!changed) continue;
     organizationsUpdated += 1;
     await pool.execute("UPDATE app_state SET payload = ? WHERE id = ?", [
-      JSON.stringify(state),
+      JSON.stringify(compactMarketplaceSnapshot(state)),
       row.id,
     ]);
   }
@@ -349,7 +442,7 @@ async function backfillRolePolicyDependencies(pool) {
     }
     if (changed)
       await pool.execute("UPDATE app_state SET payload=? WHERE id=?", [
-        JSON.stringify(state),
+        JSON.stringify(compactMarketplaceSnapshot(state)),
         row.id,
       ]);
   }
@@ -670,6 +763,27 @@ function rateLimit({ key, windowMs, max }) {
 }
 
 let pool;
+async function ensureColumnDefinition(
+  connection,
+  table,
+  column,
+  expectedType,
+  nullable,
+  alterStatement,
+) {
+  const [rows] = await connection.query(
+    `SHOW COLUMNS FROM \`${table}\` LIKE ?`,
+    [column],
+  );
+  const current = rows[0];
+  if (!current)
+    throw new Error(`Kolom database ${table}.${column} tidak ditemukan`);
+  const typeMatches =
+    String(current.Type || "").toLowerCase() === expectedType.toLowerCase();
+  const nullabilityMatches = current.Null === (nullable ? "YES" : "NO");
+  if (!typeMatches || !nullabilityMatches)
+    await connection.execute(alterStatement);
+}
 async function db() {
   if (!process.env.DB_HOST) {
     if (databaseRequired)
@@ -897,9 +1011,6 @@ async function db() {
         "ALTER TABLE variants MODIFY online_price INT NOT NULL DEFAULT 0",
       );
     }
-    await backfillBarcodes(pool);
-    await backfillChannelPricing(pool);
-    await backfillRolePolicyDependencies(pool);
     await pool.execute(`CREATE TABLE IF NOT EXISTS variant_location_min_stock (
       variant_id VARCHAR(40) NOT NULL,
       location_id VARCHAR(40) NOT NULL,
@@ -932,11 +1043,15 @@ async function db() {
       id VARCHAR(40) PRIMARY KEY,
       organization_id VARCHAR(40) NOT NULL,
       location_id VARCHAR(40) NOT NULL,
-      gross_total INT NOT NULL DEFAULT 0,
-      discount_amount INT NOT NULL DEFAULT 0,
+      gross_total BIGINT NOT NULL DEFAULT 0,
+      discount_amount BIGINT NOT NULL DEFAULT 0,
       discount_type VARCHAR(20) NOT NULL DEFAULT 'nominal',
-      discount_value DECIMAL(12,2) NOT NULL DEFAULT 0,
-      total INT NOT NULL,
+      discount_value DECIMAL(18,2) NOT NULL DEFAULT 0,
+      total BIGINT NOT NULL,
+      platform_fee BIGINT NOT NULL DEFAULT 0,
+      net_payout BIGINT NULL,
+      source_platform VARCHAR(40) NULL,
+      source_import_id VARCHAR(80) NULL,
       channel VARCHAR(20) NOT NULL DEFAULT 'offline',
       method VARCHAR(50) NOT NULL,
       status VARCHAR(50) NOT NULL,
@@ -957,7 +1072,7 @@ async function db() {
     );
     if (!grossTotalColumn.length) {
       await pool.execute(
-        "ALTER TABLE sales ADD COLUMN gross_total INT NULL AFTER location_id",
+        "ALTER TABLE sales ADD COLUMN gross_total BIGINT NULL AFTER location_id",
       );
     }
     if (!grossTotalColumn.length || grossTotalColumn[0].Null === "YES") {
@@ -965,7 +1080,7 @@ async function db() {
         "UPDATE sales SET gross_total = total WHERE gross_total IS NULL",
       );
       await pool.execute(
-        "ALTER TABLE sales MODIFY gross_total INT NOT NULL DEFAULT 0",
+        "ALTER TABLE sales MODIFY gross_total BIGINT NOT NULL DEFAULT 0",
       );
     }
     const [discountAmountColumn] = await pool.query(
@@ -973,7 +1088,7 @@ async function db() {
     );
     if (!discountAmountColumn.length) {
       await pool.execute(
-        "ALTER TABLE sales ADD COLUMN discount_amount INT NOT NULL DEFAULT 0 AFTER gross_total",
+        "ALTER TABLE sales ADD COLUMN discount_amount BIGINT NOT NULL DEFAULT 0 AFTER gross_total",
       );
     }
     const [discountTypeColumn] = await pool.query(
@@ -989,30 +1104,161 @@ async function db() {
     );
     if (!discountValueColumn.length) {
       await pool.execute(
-        "ALTER TABLE sales ADD COLUMN discount_value DECIMAL(12,2) NOT NULL DEFAULT 0 AFTER discount_type",
+        "ALTER TABLE sales ADD COLUMN discount_value DECIMAL(18,2) NOT NULL DEFAULT 0 AFTER discount_type",
       );
       await pool.execute(
         "UPDATE sales SET discount_value = discount_amount",
       );
     }
+    for (const statement of [
+      "ALTER TABLE sales ADD COLUMN platform_fee BIGINT NOT NULL DEFAULT 0 AFTER total",
+      "ALTER TABLE sales ADD COLUMN net_payout BIGINT NULL AFTER platform_fee",
+      "ALTER TABLE sales ADD COLUMN source_platform VARCHAR(40) NULL AFTER net_payout",
+      "ALTER TABLE sales ADD COLUMN source_import_id VARCHAR(80) NULL AFTER source_platform",
+    ]) {
+      try {
+        await pool.execute(statement);
+      } catch (error) {
+        if (error?.code !== "ER_DUP_FIELDNAME") throw error;
+      }
+    }
+    for (const migration of [
+      [
+        "sales",
+        "gross_total",
+        "bigint",
+        false,
+        "ALTER TABLE sales MODIFY gross_total BIGINT NOT NULL DEFAULT 0",
+      ],
+      [
+        "sales",
+        "discount_amount",
+        "bigint",
+        false,
+        "ALTER TABLE sales MODIFY discount_amount BIGINT NOT NULL DEFAULT 0",
+      ],
+      [
+        "sales",
+        "total",
+        "bigint",
+        false,
+        "ALTER TABLE sales MODIFY total BIGINT NOT NULL",
+      ],
+      [
+        "sales",
+        "platform_fee",
+        "bigint",
+        false,
+        "ALTER TABLE sales MODIFY platform_fee BIGINT NOT NULL DEFAULT 0",
+      ],
+      [
+        "sales",
+        "net_payout",
+        "bigint",
+        true,
+        "ALTER TABLE sales MODIFY net_payout BIGINT NULL",
+      ],
+      [
+        "sales",
+        "discount_value",
+        "decimal(18,2)",
+        false,
+        "ALTER TABLE sales MODIFY discount_value DECIMAL(18,2) NOT NULL DEFAULT 0",
+      ],
+    ])
+      await ensureColumnDefinition(pool, ...migration);
+    await pool.execute(`CREATE TABLE IF NOT EXISTS marketplace_sku_mappings (
+      organization_id VARCHAR(40) NOT NULL,
+      platform VARCHAR(40) NOT NULL,
+      external_sku VARCHAR(190) NOT NULL,
+      variant_id VARCHAR(40) NOT NULL,
+      created_at VARCHAR(100) NOT NULL,
+      updated_at VARCHAR(100) NOT NULL,
+      PRIMARY KEY (organization_id, platform, external_sku),
+      INDEX idx_marketplace_mapping_variant (organization_id, variant_id)
+    )`);
+    await pool.execute(`CREATE TABLE IF NOT EXISTS marketplace_imports (
+      id VARCHAR(80) PRIMARY KEY,
+      organization_id VARCHAR(40) NOT NULL,
+      platform VARCHAR(40) NOT NULL,
+      fingerprint VARCHAR(128) NOT NULL,
+      income_fingerprint VARCHAR(128) NULL,
+      source_file_name VARCHAR(180) NOT NULL,
+      income_file_name VARCHAR(180) NULL,
+      location_id VARCHAR(40) NOT NULL,
+      sale_id VARCHAR(40) NOT NULL,
+      row_count INT NOT NULL DEFAULT 0,
+      ignored_row_count INT NOT NULL DEFAULT 0,
+      duplicate_order_count INT NOT NULL DEFAULT 0,
+      total_quantity BIGINT NOT NULL DEFAULT 0,
+      gross_total BIGINT NOT NULL DEFAULT 0,
+      discount_amount BIGINT NOT NULL DEFAULT 0,
+      platform_fee BIGINT NOT NULL DEFAULT 0,
+      net_payout BIGINT NOT NULL DEFAULT 0,
+      created_at VARCHAR(100) NOT NULL,
+      created_by VARCHAR(40) NULL,
+      UNIQUE KEY uq_marketplace_import_file (organization_id, platform, fingerprint),
+      INDEX idx_marketplace_import_org_date (organization_id, created_at),
+      INDEX idx_marketplace_import_sale (sale_id)
+    )`);
+    await pool.execute(`CREATE TABLE IF NOT EXISTS marketplace_order_hashes (
+      organization_hash BINARY(16) NOT NULL,
+      order_hash BINARY(16) NOT NULL,
+      PRIMARY KEY (organization_hash, order_hash)
+    )`);
     await backfillLegacySaleCashiers(pool);
     await pool.execute(`CREATE TABLE IF NOT EXISTS sale_items (
       sale_id VARCHAR(40) NOT NULL,
       variant_id VARCHAR(40) NOT NULL,
       quantity INT NOT NULL,
-      unit_cost INT NULL,
-      price INT NOT NULL,
-      discount INT NOT NULL DEFAULT 0,
-      subtotal INT NOT NULL,
+      unit_cost BIGINT NULL,
+      price BIGINT NOT NULL,
+      discount BIGINT NOT NULL DEFAULT 0,
+      subtotal BIGINT NOT NULL,
       INDEX idx_sale (sale_id)
     )`);
     try {
       await pool.execute(
-        "ALTER TABLE sale_items ADD COLUMN unit_cost INT NULL AFTER quantity",
+        "ALTER TABLE sale_items ADD COLUMN unit_cost BIGINT NULL AFTER quantity",
       );
     } catch (error) {
       if (error?.code !== "ER_DUP_FIELDNAME") throw error;
     }
+    for (const migration of [
+      [
+        "sale_items",
+        "unit_cost",
+        "bigint",
+        true,
+        "ALTER TABLE sale_items MODIFY unit_cost BIGINT NULL",
+      ],
+      [
+        "sale_items",
+        "price",
+        "bigint",
+        false,
+        "ALTER TABLE sale_items MODIFY price BIGINT NOT NULL",
+      ],
+      [
+        "sale_items",
+        "discount",
+        "bigint",
+        false,
+        "ALTER TABLE sale_items MODIFY discount BIGINT NOT NULL DEFAULT 0",
+      ],
+      [
+        "sale_items",
+        "subtotal",
+        "bigint",
+        false,
+        "ALTER TABLE sale_items MODIFY subtotal BIGINT NOT NULL",
+      ],
+    ])
+      await ensureColumnDefinition(pool, ...migration);
+    await backfillMarketplaceLedger(pool);
+    await backfillBarcodes(pool);
+    await backfillChannelPricing(pool);
+    await backfillRolePolicyDependencies(pool);
     await pool.execute(`CREATE TABLE IF NOT EXISTS transfers (
       id VARCHAR(40) PRIMARY KEY,
       transfer_code VARCHAR(64),
@@ -1239,6 +1485,8 @@ const emptyState = (organizationName, owner) => ({
   payrolls: [],
   cashEntries: [],
   debtEntries: [],
+  marketplaceSkuMappings: [],
+  marketplaceImports: [],
   rolePolicies: defaultRolePolicyState(),
 });
 
@@ -1803,6 +2051,8 @@ function validateState(data) {
     "sales",
     "movements",
     "stockCounts",
+    "marketplaceSkuMappings",
+    "marketplaceImports",
   ];
   if (!data || arrays.some((key) => !Array.isArray(data[key])))
     return "Format data stok tidak valid";
@@ -1856,6 +2106,10 @@ function validateState(data) {
         (sale.discountType === "percentage" && sale.discountValue > 100) ||
         !isNumber(sale.total) ||
         sale.total < 0 ||
+        !isNumber(sale.platformFee ?? 0) ||
+        Number(sale.platformFee || 0) < 0 ||
+        !isNumber(sale.netPayout ?? Math.max(0, sale.total - Number(sale.platformFee || 0))) ||
+        Number(sale.netPayout ?? 0) < 0 ||
         !Array.isArray(sale.items) ||
         sale.items.some(
           (item) =>
@@ -1875,6 +2129,52 @@ function validateState(data) {
     )
   )
     return "Transaksi penjualan tidak valid";
+  const mappingKeys = new Set();
+  for (const mapping of data.marketplaceSkuMappings) {
+    const key = `${mapping.platform}|${mapping.externalSku}`;
+    if (
+      !String(mapping.platform || "").trim() ||
+      !String(mapping.externalSku || "").trim() ||
+      !variants.has(mapping.variantId) ||
+      mappingKeys.has(key)
+    )
+      return "Pemetaan SKU marketplace tidak valid atau duplikat";
+    mappingKeys.add(key);
+  }
+  const importFingerprints = new Set();
+  const importedOrderIds = new Set();
+  const saleIds = new Set(data.sales.map((sale) => sale.id));
+  for (const record of data.marketplaceImports) {
+    const recordOrderIds = Array.isArray(record.externalOrderIds)
+      ? record.externalOrderIds
+      : [];
+    if (
+      !String(record.id || "").trim() ||
+      !String(record.platform || "").trim() ||
+      !String(record.fingerprint || "").trim() ||
+      !locations.has(record.locationId) ||
+      !saleIds.has(record.saleId) ||
+      ![
+        record.rowCount,
+        record.ignoredRowCount,
+        record.duplicateOrderCount,
+        record.totalQuantity,
+        record.grossTotal,
+        record.discountAmount,
+        record.platformFee,
+        record.netPayout,
+      ].every((value) => isNumber(value) && value >= 0) ||
+      importFingerprints.has(`${record.platform}|${record.fingerprint}`) ||
+      recordOrderIds.some((orderId) => {
+        const key = `${record.platform}|${String(orderId)}`;
+        if (!String(orderId).trim() || importedOrderIds.has(key)) return true;
+        importedOrderIds.add(key);
+        return false;
+      })
+    )
+      return "Riwayat impor marketplace tidak valid atau duplikat";
+    importFingerprints.add(`${record.platform}|${record.fingerprint}`);
+  }
   if (
     data.transfers.some(
       (item) =>
@@ -2187,16 +2487,16 @@ async function loadStateForCommand(conn, orgId) {
   if (!conn) return ensureDemoState(orgId);
   return getStateFromSQL(conn, orgId);
 }
-async function commitCommandState(conn, orgId, state, version) {
+async function commitCommandState(conn, orgId, state, version, previousState) {
   if (!conn) {
     demoStates.set(orgId, { version, data: state });
     return;
   }
   await conn.execute(
     "INSERT INTO app_state (id, version, payload) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE version=VALUES(version), payload=VALUES(payload)",
-    [orgId, version, JSON.stringify(state)],
+    [orgId, version, JSON.stringify(compactMarketplaceSnapshot(state))],
   );
-  await syncStateToSQL(conn, orgId, state);
+  await syncStateToSQL(conn, orgId, state, previousState);
 }
 
 const demoCommandLocks = new Map();
@@ -2270,6 +2570,8 @@ async function executeCommand(req, res, mutate) {
     state.payrolls ||= [];
     state.cashEntries ||= [];
     state.sales ||= [];
+    state.marketplaceSkuMappings ||= [];
+    state.marketplaceImports ||= [];
     state.shipments ||= [];
     state.shipmentHandovers ||= [];
     for (const sale of state.sales) sale.cashierId ||= "system-migration";
@@ -2281,7 +2583,13 @@ async function executeCommand(req, res, mutate) {
     const invalid = validateState(state);
     if (invalid) throw invalidCommand(invalid);
     const nextVersion = Number(loaded.version || 0) + 1;
-    await commitCommandState(connection, req.auth.org, state, nextVersion);
+    await commitCommandState(
+      connection,
+      req.auth.org,
+      state,
+      nextVersion,
+      loaded.data,
+    );
     if (connection) await connection.commit();
     res.status(201).json({ version: nextVersion });
     return { ok: true, version: nextVersion };
@@ -2970,14 +3278,17 @@ app.get("/api/state", requireAuth, async (req, res) => {
         return operationalVariant;
       }),
     }));
-    const visibleSales = (sales = []) => sales.map((sale) => ({
-      ...sale,
-      items: (sale.items || []).map((item) => {
-        if (canViewCosts) return item;
-        const { unitCost: _unitCost, ...operationalItem } = item;
-        return operationalItem;
-      }),
-    }));
+    const visibleSales = (sales = []) =>
+      sales.map(({ externalOrderIds: _externalOrderIds, ...sale }) => ({
+        ...sale,
+        items: (sale.items || []).map((item) => {
+          if (canViewCosts) return item;
+          const { unitCost: _unitCost, ...operationalItem } = item;
+          return operationalItem;
+        }),
+      }));
+    const visibleMarketplaceImports = (imports = []) =>
+      imports.map(({ externalOrderIds: _externalOrderIds, ...record }) => record);
     const visibleReceipts = (receipts = []) => receipts.map((receipt) => {
       if (canViewCosts) return receipt;
       const { unitCost: _unitCost, ...operationalReceipt } = receipt;
@@ -2996,6 +3307,12 @@ app.get("/api/state", requireAuth, async (req, res) => {
         packingEvidenceDisposals: _packingEvidenceDisposals,
         ...publicSource
       } = source;
+      publicSource.sales = (publicSource.sales || []).map(
+        ({ externalOrderIds: _externalOrderIds, ...sale }) => sale,
+      );
+      publicSource.marketplaceImports = (
+        publicSource.marketplaceImports || []
+      ).map(({ externalOrderIds: _externalOrderIds, ...record }) => record);
       const safeShipments = (source.shipments || []).map((shipment) =>
         publicShipmentEvidence(shipment),
       );
@@ -3068,6 +3385,12 @@ app.get("/api/state", requireAuth, async (req, res) => {
               "report.view",
             )
               ? visibleSales(source.sales)
+              : [],
+            marketplaceSkuMappings: hasAny("sale.create")
+              ? source.marketplaceSkuMappings || []
+              : [],
+            marketplaceImports: hasAny("sale.create")
+              ? visibleMarketplaceImports(source.marketplaceImports)
               : [],
             transfers: hasAny(
               "transfer.view",
@@ -3195,6 +3518,9 @@ app.get("/api/state", requireAuth, async (req, res) => {
       ),
       sales: (data.sales || []).filter((s) =>
         effectiveLocationIds.includes(s.locationId),
+      ),
+      marketplaceImports: (data.marketplaceImports || []).filter((record) =>
+        effectiveLocationIds.includes(record.locationId),
       ),
       movements: (data.movements || []).filter((m) =>
         effectiveLocationIds.includes(m.locationId),
@@ -3423,11 +3749,15 @@ app.put("/api/state", requireAuth, async (req, res) => {
     // Legacy blob save (for backwards compatibility/raw dump)
     await connection.execute(
       "INSERT INTO app_state (id, version, payload) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE version=VALUES(version), payload=VALUES(payload)",
-      [req.auth.org, next, JSON.stringify(nextData)],
+      [
+        req.auth.org,
+        next,
+        JSON.stringify(compactMarketplaceSnapshot(nextData)),
+      ],
     );
 
     // Sync into SQL Relational schema
-    await syncStateToSQL(connection, req.auth.org, nextData);
+    await syncStateToSQL(connection, req.auth.org, nextData, previous);
 
     await connection.commit();
     res.json({ version: next });
@@ -5301,8 +5631,75 @@ app.post("/api/commands/payrolls", requireAuth, async (req, res) => {
   });
 });
 
+app.post("/api/marketplace/imports/check", requireAuth, async (req, res) => {
+  const conn = await db();
+  const actor = await currentUser(conn, req.auth);
+  if (!actor) return res.status(401).json({ message: "Akun tidak aktif" });
+  const loaded = conn
+    ? await getStateFromSQL(conn, req.auth.org)
+    : ensureDemoState(req.auth.org);
+  const state = loaded.data;
+  if (!state)
+    return res.status(400).json({
+      message: "Data usaha belum siap. Muat ulang halaman lalu coba lagi.",
+    });
+  actor.rolePermissions = state.rolePolicies?.[actor.role]?.permissions;
+  attachEmployeeLocation(state, actor);
+  const locationId = String(req.body?.locationId || "").trim();
+  const authorization = commandAuth(actor, "sale.create", locationId);
+  if (!authorization.allowed)
+    return res.status(403).json({ message: authorization.reason });
+  const platform = String(req.body?.platform || "").trim().toLowerCase();
+  const fingerprint = String(req.body?.fingerprint || "").trim();
+  const orderIds = Array.from(
+    new Set(
+      (Array.isArray(req.body?.externalOrderIds)
+        ? req.body.externalOrderIds
+        : []
+      )
+        .map((value) => String(value).trim())
+        .filter(Boolean),
+    ),
+  );
+  if (
+    platform !== "tiktok" ||
+    !/^[a-z0-9-]{8,128}$/i.test(fingerprint) ||
+    !orderIds.length ||
+    orderIds.length > 50_000 ||
+    orderIds.some((orderId) => orderId.length > 190)
+  )
+    return res
+      .status(400)
+      .json({ message: "Metadata impor marketplace tidak valid." });
+  const imports = state.marketplaceImports || [];
+  const fileImported = imports.some(
+    (record) =>
+      record.platform === platform && record.fingerprint === fingerprint,
+  );
+  const legacyOrderIds = new Set(
+    imports
+      .filter((record) => record.platform === platform)
+      .flatMap((record) => record.externalOrderIds || [])
+      .map(String),
+  );
+  const duplicateOrderIds = new Set(
+    orderIds.filter((orderId) => legacyOrderIds.has(orderId)),
+  );
+  for (const orderId of await findExistingMarketplaceOrderIds(
+    conn,
+    req.auth.org,
+    platform,
+    orderIds,
+  ))
+    duplicateOrderIds.add(orderId);
+  return res.json({
+    fileImported,
+    duplicateOrderIds: Array.from(duplicateOrderIds),
+  });
+});
+
 app.post("/api/commands/sales", requireAuth, async (req, res) => {
-  await executeCommand(req, res, async (state, actor) => {
+  await executeCommand(req, res, async (state, actor, connection) => {
     const {
       locationId,
       channel,
@@ -5313,6 +5710,10 @@ app.post("/api/commands/sales", requireAuth, async (req, res) => {
       discountValue,
       requiresPrint = false,
       note,
+      platformFee = 0,
+      netPayout,
+      sourceImport,
+      skuMappings = [],
     } = req.body || {};
     const authorization = commandAuth(actor, "sale.create", locationId);
     if (!authorization.allowed) throw forbiddenCommand(authorization.reason);
@@ -5329,6 +5730,67 @@ app.post("/api/commands/sales", requireAuth, async (req, res) => {
     if (!Array.isArray(items) || !items.length)
       throw invalidCommand("Pilih minimal satu varian untuk penjualan.");
 
+    const isMarketplaceImport = sourceImport != null;
+    let importContext = null;
+    if (isMarketplaceImport) {
+      if (channel !== "online")
+        throw invalidCommand("Impor marketplace hanya dapat dicatat sebagai penjualan online.");
+      const platform = String(sourceImport?.platform || "").trim().toLowerCase();
+      const fileFingerprint = String(sourceImport?.fingerprint || "").trim();
+      const externalOrderIds = Array.from(
+        new Set(
+          (Array.isArray(sourceImport?.externalOrderIds)
+            ? sourceImport.externalOrderIds
+            : []
+          )
+            .map((value) => String(value).trim())
+            .filter(Boolean),
+        ),
+      );
+      if (
+        platform !== "tiktok" ||
+        !/^[a-z0-9-]{8,128}$/i.test(fileFingerprint) ||
+        !externalOrderIds.length ||
+        externalOrderIds.length > 50_000 ||
+        externalOrderIds.some((orderId) => orderId.length > 190)
+      )
+        throw invalidCommand("Metadata impor marketplace tidak valid.");
+      const previousImports = state.marketplaceImports || [];
+      if (
+        previousImports.some(
+          (record) =>
+            record.platform === platform &&
+            record.fingerprint === fileFingerprint,
+        )
+      )
+        throw invalidCommand("File pesanan ini sudah pernah diimpor.");
+      const previouslyImportedOrders = new Set(
+        previousImports
+          .filter((record) => record.platform === platform)
+          .flatMap((record) => record.externalOrderIds || [])
+          .map(String),
+      );
+      const databaseDuplicates = await findExistingMarketplaceOrderIds(
+        connection,
+        req.auth.org,
+        platform,
+        externalOrderIds,
+      );
+      const duplicateOrderId =
+        externalOrderIds.find((orderId) =>
+          previouslyImportedOrders.has(orderId),
+        ) || databaseDuplicates[0];
+      if (duplicateOrderId)
+        throw invalidCommand(
+          "Sebagian pesanan pada file ini sudah pernah diimpor. Muat ulang data lalu pilih file kembali.",
+        );
+      importContext = {
+        platform,
+        fileFingerprint,
+        externalOrderIds,
+      };
+    }
+
     const variants = new Map(
       state.products
         .filter((product) => product.active !== false)
@@ -5344,17 +5806,35 @@ app.post("/api/commands/sales", requireAuth, async (req, res) => {
       const quantity = Number(item?.quantity);
       if (!item?.variantId || !Number.isInteger(quantity) || quantity <= 0)
         throw invalidCommand("Jumlah produk harus berupa bilangan positif.");
-      combined.set(
-        item.variantId,
-        (combined.get(item.variantId) || 0) + quantity,
-      );
+      const lineGross = isMarketplaceImport ? Number(item?.grossAmount) : 0;
+      const lineNet = isMarketplaceImport ? Number(item?.netSalesAmount) : 0;
+      if (
+        isMarketplaceImport &&
+        (!Number.isSafeInteger(lineGross) ||
+          lineGross <= 0 ||
+          !Number.isSafeInteger(lineNet) ||
+          lineNet < 0 ||
+          lineNet > lineGross)
+      )
+        throw invalidCommand("Nilai omzet pada salah satu varian impor tidak valid.");
+      const current = combined.get(item.variantId) || {
+        quantity: 0,
+        grossAmount: 0,
+        netSalesAmount: 0,
+      };
+      combined.set(item.variantId, {
+        quantity: current.quantity + quantity,
+        grossAmount: current.grossAmount + lineGross,
+        netSalesAmount: current.netSalesAmount + lineNet,
+      });
     }
 
     const saleItems = [];
     let balances = state.balances;
     let grossTotal = 0;
     const movements = [];
-    for (const [variantId, quantity] of combined) {
+    for (const [variantId, requested] of combined) {
+      const quantity = requested.quantity;
       const variant = variants.get(variantId);
       if (!variant || variant.active === false)
         throw invalidCommand(
@@ -5365,13 +5845,15 @@ app.post("/api/commands/sales", requireAuth, async (req, res) => {
         throw invalidCommand(
           `Stok ${variant.productName} ${variant.name} tidak mencukupi. Tersedia ${available} ${variant.unit}.`,
         );
-      const price = Math.round(
-        channel === "reseller"
-          ? Number(variant.resellerPrice || 0)
-          : channel === "online"
-            ? Number(variant.onlinePrice ?? variant.price ?? 0)
-            : Number(variant.price || 0),
-      );
+      const price = isMarketplaceImport
+        ? Math.round(requested.grossAmount / quantity)
+        : Math.round(
+            channel === "reseller"
+              ? Number(variant.resellerPrice || 0)
+              : channel === "online"
+                ? Number(variant.onlinePrice ?? variant.price ?? 0)
+                : Number(variant.price || 0),
+          );
       const unitCost = Math.round(
         channel === "online"
           ? Number(variant.onlineCost ?? variant.cost ?? 0)
@@ -5391,15 +5873,21 @@ app.post("/api/commands/sales", requireAuth, async (req, res) => {
         variantId,
         -quantity,
       );
-      grossTotal += quantity * price;
+      const lineSubtotal = isMarketplaceImport
+        ? requested.grossAmount
+        : quantity * price;
+      const lineDiscount = isMarketplaceImport
+        ? requested.grossAmount - requested.netSalesAmount
+        : 0;
+      grossTotal += lineSubtotal;
       saleItems.push({
         variantId,
         quantity,
         unit: variant.unit,
         unitCost,
         price,
-        discount: 0,
-        subtotal: quantity * price,
+        discount: lineDiscount,
+        subtotal: lineSubtotal,
       });
       movements.push(
         commandMovement(
@@ -5407,28 +5895,31 @@ app.post("/api/commands/sales", requireAuth, async (req, res) => {
           locationId,
           `Penjualan ${channel}`,
           -quantity,
-          `${quantity} ${variant.unit}`,
+          isMarketplaceImport
+            ? `${quantity} ${variant.unit} · impor ${importContext.platform}`
+            : `${quantity} ${variant.unit}`,
           actor,
         ),
       );
     }
-    if (!["nominal", "percentage"].includes(discountType))
+    if (!isMarketplaceImport && !["nominal", "percentage"].includes(discountType))
       throw invalidCommand("Jenis diskon pembeli tidak valid.");
-    const normalizedDiscountValue = Number(
-      discountValue ?? (discountType === "nominal" ? discountAmount : 0),
-    );
+    const effectiveDiscountType = isMarketplaceImport ? "nominal" : discountType;
+    const normalizedDiscountValue = isMarketplaceImport
+      ? saleItems.reduce((sum, item) => sum + item.discount, 0)
+      : Number(discountValue ?? (discountType === "nominal" ? discountAmount : 0));
     if (
       !Number.isFinite(normalizedDiscountValue) ||
       normalizedDiscountValue < 0 ||
-      (discountType === "percentage" && normalizedDiscountValue > 100)
+      (effectiveDiscountType === "percentage" && normalizedDiscountValue > 100)
     )
       throw invalidCommand(
-        discountType === "percentage"
+        effectiveDiscountType === "percentage"
           ? "Diskon persentase harus berada di antara 0 sampai 100%."
           : "Diskon pembeli harus berupa nominal rupiah yang tidak melebihi total belanja.",
       );
     const normalizedDiscount =
-      discountType === "percentage"
+      effectiveDiscountType === "percentage"
         ? Math.round((grossTotal * normalizedDiscountValue) / 100)
         : normalizedDiscountValue;
     if (
@@ -5438,44 +5929,128 @@ app.post("/api/commands/sales", requireAuth, async (req, res) => {
       throw invalidCommand(
         "Diskon pembeli harus berupa nominal rupiah yang tidak melebihi total belanja.",
       );
-    let remainingDiscount = normalizedDiscount;
-    saleItems.forEach((item, index) => {
-      const allocated =
-        index === saleItems.length - 1
-          ? remainingDiscount
-          : Math.min(
-              remainingDiscount,
-              Math.floor(
-                normalizedDiscount * (Number(item.subtotal || 0) / grossTotal),
-              ),
-            );
-      item.discount = allocated;
-      remainingDiscount -= allocated;
-    });
+    if (!isMarketplaceImport) {
+      let remainingDiscount = normalizedDiscount;
+      saleItems.forEach((item, index) => {
+        const allocated =
+          index === saleItems.length - 1
+            ? remainingDiscount
+            : Math.min(
+                remainingDiscount,
+                Math.floor(
+                  normalizedDiscount * (Number(item.subtotal || 0) / grossTotal),
+                ),
+              );
+        item.discount = allocated;
+        remainingDiscount -= allocated;
+      });
+    }
     const total = grossTotal - normalizedDiscount;
+    // Biaya dan pencairan hanya berasal dari alur impor marketplace yang
+    // memiliki ledger deduplikasi. Request penjualan manual tidak boleh dapat
+    // menyuntikkan angka finansial tersembunyi ke laporan.
+    const normalizedPlatformFee = isMarketplaceImport
+      ? Math.round(Number(platformFee || 0))
+      : 0;
+    const normalizedNetPayout = isMarketplaceImport
+      ? Math.round(
+          Number(netPayout ?? Math.max(0, total - normalizedPlatformFee)),
+        )
+      : total;
+    if (
+      !Number.isSafeInteger(normalizedPlatformFee) ||
+      normalizedPlatformFee < 0 ||
+      !Number.isSafeInteger(normalizedNetPayout) ||
+      normalizedNetPayout < 0
+    )
+      throw invalidCommand("Biaya atau pencairan marketplace tidak valid.");
+    const createdAt = new Date().toISOString();
+    const saleId = commandId("sale");
+    const importId = importContext ? commandId("market-import") : undefined;
     state.balances = balances;
     state.sales.unshift({
-      id: commandId("sale"),
+      id: saleId,
       locationId,
       channel,
       grossTotal,
       discountAmount: normalizedDiscount,
-      discountType,
+      discountType: effectiveDiscountType,
       discountValue:
-        discountType === "percentage"
+        effectiveDiscountType === "percentage"
           ? normalizedDiscountValue
           : normalizedDiscount,
       total,
+      platformFee: normalizedPlatformFee,
+      netPayout: normalizedNetPayout,
+      sourcePlatform: importContext?.platform,
+      sourceImportId: importId,
       payment: String(payment || "Tunai"),
       note:
         String(note || "")
           .trim()
           .slice(0, 300) || undefined,
       cashierId: actor.id,
-      createdAt: new Date().toISOString(),
+      createdAt,
       items: saleItems,
       status: requiresPrint === true ? "pending_print" : "completed",
     });
+    if (importContext) {
+      const normalizedMappings = Array.isArray(skuMappings) ? skuMappings : [];
+      if (normalizedMappings.length > 5_000)
+        throw invalidCommand("Jumlah pemetaan SKU marketplace terlalu banyak.");
+      for (const mapping of normalizedMappings) {
+        const externalSku = String(mapping?.externalSku || "").trim().slice(0, 190);
+        const variantId = String(mapping?.variantId || "").trim();
+        if (!externalSku || !variants.has(variantId))
+          throw invalidCommand("Pemetaan SKU marketplace tidak valid.");
+        const existing = state.marketplaceSkuMappings.find(
+          (item) =>
+            item.platform === importContext.platform &&
+            item.externalSku === externalSku,
+        );
+        if (existing) {
+          existing.variantId = variantId;
+          existing.updatedAt = createdAt;
+        } else {
+          state.marketplaceSkuMappings.push({
+            platform: importContext.platform,
+            externalSku,
+            variantId,
+            createdAt,
+            updatedAt: createdAt,
+          });
+        }
+      }
+      state.marketplaceImports.unshift({
+        id: importId,
+        platform: importContext.platform,
+        fingerprint: importContext.fileFingerprint,
+        incomeFingerprint:
+          String(sourceImport?.incomeFingerprint || "").trim().slice(0, 128) || undefined,
+        sourceFileName: path.basename(String(sourceImport?.sourceFileName || "pesanan.xlsx")).slice(0, 180),
+        incomeFileName:
+          path.basename(String(sourceImport?.incomeFileName || "")).slice(0, 180) || undefined,
+        locationId,
+        saleId,
+        externalOrderIds: importContext.externalOrderIds,
+        rowCount: Math.max(0, Math.trunc(Number(sourceImport?.rowCount) || 0)),
+        ignoredRowCount: Math.max(
+          0,
+          Math.trunc(Number(sourceImport?.ignoredRowCount) || 0),
+        ),
+        duplicateOrderCount: Math.max(
+          0,
+          Math.trunc(Number(sourceImport?.duplicateOrderCount) || 0),
+        ),
+        totalQuantity: saleItems.reduce((sum, item) => sum + item.quantity, 0),
+        grossTotal,
+        discountAmount: normalizedDiscount,
+        platformFee: normalizedPlatformFee,
+        netPayout: normalizedNetPayout,
+        createdAt,
+        createdBy: actor.id,
+      });
+    }
     state.movements.unshift(...movements);
   });
 });
@@ -6775,7 +7350,11 @@ const sweepOrganizationPackingEvidence = async (conn, organizationId) => {
     const nextVersion = Number(rows[0].version || 0) + 1;
     await connection.execute(
       "UPDATE app_state SET version=?, payload=? WHERE id=?",
-      [nextVersion, JSON.stringify(state), organizationId],
+      [
+        nextVersion,
+        JSON.stringify(compactMarketplaceSnapshot(state)),
+        organizationId,
+      ],
     );
     await connection.commit();
   } catch (error) {
@@ -6878,16 +7457,33 @@ app.use((error, req, res, next) => {
 
 app.use(express.static(path.join(root, "dist")));
 app.use((_req, res) => res.sendFile(path.join(root, "dist", "index.html")));
-app.listen(port, () =>
-  console.log(`MENENGS server running on http://localhost:${port}`),
-);
-const firstPackingEvidenceSweep = setTimeout(
-  () => void runPackingEvidenceRetentionSweep(),
-  15_000,
-);
-firstPackingEvidenceSweep.unref?.();
-const packingEvidenceSweepTimer = setInterval(
-  () => void runPackingEvidenceRetentionSweep(),
-  60 * 60 * 1000,
-);
-packingEvidenceSweepTimer.unref?.();
+
+const startServer = async () => {
+  // Production tidak boleh menerima request sebelum koneksi dan seluruh
+  // migrasi database selesai. Jika migrasi gagal, proses berhenti sehingga
+  // platform dapat mempertahankan deployment lama yang masih sehat.
+  if (process.env.DB_HOST || databaseRequired) await db();
+  app.listen(port, () =>
+    console.log(`MENENGS server running on http://localhost:${port}`),
+  );
+  const firstPackingEvidenceSweep = setTimeout(
+    () => void runPackingEvidenceRetentionSweep(),
+    15_000,
+  );
+  firstPackingEvidenceSweep.unref?.();
+  const packingEvidenceSweepTimer = setInterval(
+    () => void runPackingEvidenceRetentionSweep(),
+    60 * 60 * 1000,
+  );
+  packingEvidenceSweepTimer.unref?.();
+};
+
+startServer().catch(async (error) => {
+  console.error("MENENGS server gagal dimulai:", error);
+  try {
+    await pool?.end();
+  } catch {
+    // Pertahankan error startup asli sebagai penyebab utama kegagalan proses.
+  }
+  process.exitCode = 1;
+});

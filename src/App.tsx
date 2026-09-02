@@ -26,6 +26,13 @@ import {
   type OperationalNotification,
 } from "./utils/operationalNotifications";
 import {
+  parseTikTokIncome,
+  parseTikTokOrders,
+  type ParsedTikTokOrder,
+  type TikTokIncomeParseResult,
+  type TikTokOrderParseResult,
+} from "./utils/tiktokParser";
+import {
   BarChart,
   Bar,
   LineChart,
@@ -2216,6 +2223,31 @@ function App() {
       hasPendingLocalChanges.current = false;
     }
   };
+  const checkMarketplaceImport = async (payload: {
+    locationId: string;
+    platform: "tiktok";
+    fingerprint: string;
+    externalOrderIds: string[];
+  }) => {
+    if (!token) throw new Error("Sesi tidak ditemukan. Silakan masuk kembali.");
+    const response = await fetch("/api/marketplace/imports/check", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(payload),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok)
+      throw new Error(result.message || "Riwayat impor tidak dapat diperiksa");
+    return {
+      fileImported: result.fileImported === true,
+      duplicateOrderIds: Array.isArray(result.duplicateOrderIds)
+        ? result.duplicateOrderIds.map(String)
+        : [],
+    };
+  };
   const runFormCommand = async (path: string, body: FormData) => {
     if (!token) throw new Error("Sesi tidak ditemukan. Silakan masuk kembali.");
     hasPendingLocalChanges.current = true;
@@ -3883,6 +3915,7 @@ function App() {
         <SaleModal
           data={data}
           notify={notify}
+          checkMarketplaceImport={checkMarketplaceImport}
           initialChannel={modal.slice("sale:".length) as Channel}
           fixedLocation={
             scope.scopeType === "specific" ? user.outletId : undefined
@@ -3899,13 +3932,24 @@ function App() {
           save={async (
             loc: string,
             channel: Channel,
-            cart: Array<{ variantId: string; quantity: number }>,
+            cart: Array<{
+              variantId: string;
+              quantity: number;
+              grossAmount?: number;
+              netSalesAmount?: number;
+            }>,
             payment: string,
             requiresPrint: boolean,
             discountAmount: number,
             discountType: "nominal" | "percentage",
             discountValue: number,
             note?: string,
+            platformFee?: number,
+            importOptions?: {
+              netPayout: number;
+              sourceImport: Record<string, unknown>;
+              skuMappings: Array<{ externalSku: string; variantId: string }>;
+            },
           ) => {
             if (!cart.some((item) => isPositiveNumber(item.quantity)))
               return notify("Tidak ada produk valid di keranjang");
@@ -3921,6 +3965,8 @@ function App() {
                 discountValue,
                 requiresPrint,
                 note,
+                platformFee,
+                ...(importOptions || {}),
               }),
             );
             const sale =
@@ -10874,7 +10920,31 @@ function Reports({
             ? Number(sale.discountAmount || 0) *
               (selectedGrossValue / allGrossValue)
             : 0;
-    return { ...sale, items, reportTotal, reportDiscount };
+    const reportPlatformFee =
+      product === "all"
+        ? Number(sale.platformFee || 0)
+        : allItemValue > 0
+          ? Number(sale.platformFee || 0) *
+            (selectedItemValue / allItemValue)
+          : 0;
+    const saleNetPayout = Number(
+      sale.netPayout ??
+        Math.max(0, Number(sale.total || 0) - Number(sale.platformFee || 0)),
+    );
+    const reportNetPayout =
+      product === "all"
+        ? saleNetPayout
+        : allItemValue > 0
+          ? saleNetPayout * (selectedItemValue / allItemValue)
+          : 0;
+    return {
+      ...sale,
+      items,
+      reportTotal,
+      reportDiscount,
+      reportPlatformFee,
+      reportNetPayout,
+    };
   };
   const sales = scopedSales
     .filter((s: any) => inPeriod(s.createdAt))
@@ -10896,6 +10966,17 @@ function Reports({
     (sum: number, sale: any) => sum + Number(sale.reportDiscount || 0),
     0,
   );
+  const totalMarketplaceFees = sales.reduce(
+    (sum: number, sale: any) =>
+      sum + Number(sale.reportPlatformFee || 0),
+    0,
+  );
+  const totalNetPayout = sales
+    .filter((sale: any) => sale.channel === "online")
+    .reduce(
+      (sum: number, sale: any) => sum + Number(sale.reportNetPayout || 0),
+      0,
+    );
   const revenueChange =
     previousTotal > 0 ? ((total - previousTotal) / previousTotal) * 100 : null;
   const cogs = sales.reduce(
@@ -11041,7 +11122,8 @@ function Reports({
   );
   const stockOutCostForProfit = channel === "all" ? stockOutCost : 0;
   const netProfit =
-    calculateNetProfit(grossProfit, cashbookSummary) - stockOutCostForProfit;
+    calculateNetProfit(grossProfit - totalMarketplaceFees, cashbookSummary) -
+    stockOutCostForProfit;
   const netProfitBase = total + cashbookSummary.otherIncome;
   const netMargin = netProfitBase > 0 ? (netProfit / netProfitBase) * 100 : 0;
   const netProfitQuality = !cashbookFilterCompatible
@@ -11175,12 +11257,14 @@ function Reports({
     const index = trendMap[jakartaDateKey(sale.createdAt)];
     if (index === undefined) return;
     trend[index].Omzet += sale.reportTotal;
-    trend[index].HPP += sale.items.reduce(
+    const saleCogs = sale.items.reduce(
       (sum: number, item: any) =>
         sum + item.quantity * saleItemUnitCost(sale, item),
       0,
     );
-    trend[index]["Laba Bersih"] = trend[index].Omzet - trend[index].HPP;
+    trend[index].HPP += saleCogs;
+    trend[index]["Laba Bersih"] +=
+      sale.reportTotal - saleCogs - Number(sale.reportPlatformFee || 0);
   });
   stockOutLines.forEach((item: any) => {
     const index = trendMap[jakartaDateKey(item.createdAt)];
@@ -11207,6 +11291,15 @@ function Reports({
     const salesData: any[] = [];
     sales.forEach((s: any) => {
       s.items.forEach((item: any) => {
+        const lineNet =
+          Number(item.subtotal || 0) - Number(item.discount || 0);
+        const allocatedMarketplaceFee =
+          Number(s.reportTotal || 0) > 0
+            ? Number(s.reportPlatformFee || 0) *
+              (lineNet / Number(s.reportTotal || 1))
+            : 0;
+        const lineHpp =
+          Number(item.quantity || 0) * Number(item.unitCost || 0);
         salesData.push([
           new Date(s.createdAt).toLocaleString("id-ID"),
           s.id.substring(0, 8).toUpperCase(), // Receipt No (short ID)
@@ -11219,12 +11312,12 @@ function Reports({
           item.price || (item.quantity ? item.subtotal / item.quantity : 0),
           item.subtotal || 0,
           item.discount || 0,
-          Number(item.subtotal || 0) - Number(item.discount || 0),
+          lineNet,
           item.unitCost || 0,
-          Number(item.quantity || 0) * Number(item.unitCost || 0),
-          Number(item.subtotal || 0) -
-            Number(item.discount || 0) -
-            Number(item.quantity || 0) * Number(item.unitCost || 0),
+          lineHpp,
+          lineNet - lineHpp,
+          allocatedMarketplaceFee,
+          lineNet - lineHpp - allocatedMarketplaceFee,
           s.payment || "-",
           s.discountType === "percentage" ? "Persentase" : "Nominal",
           s.discountType === "percentage"
@@ -11271,6 +11364,8 @@ function Reports({
       ["Diskon pembeli", totalDiscount],
       ["HPP", cogs],
       ["Estimasi laba kotor", grossProfit],
+      ["Biaya marketplace", totalMarketplaceFees],
+      ["Pencairan bersih penjualan online", totalNetPayout],
       ["Margin kotor", `${grossMargin.toFixed(1)}%`],
       ["Pendapatan kas lain", cashbookSummary.otherIncome],
       ["Beban operasional dari Buku Kas", cashbookSummary.operatingExpense],
@@ -11366,8 +11461,8 @@ function Reports({
             ],
             [
               "Laba bersih",
-              "Laba kotor, Buku Kas, dan stok keluar",
-              "Laba kotor + pendapatan lain − beban operasional − HPP stok keluar",
+              "Laba kotor, biaya marketplace, Buku Kas, dan stok keluar",
+              "Laba kotor − biaya marketplace + pendapatan lain − beban operasional − HPP stok keluar",
               qualityLabel(netProfitQuality),
               cashbookFilterCompatible
                 ? `${cashbookSummary.entries.length} transaksi Buku Kas diperiksa`
@@ -11471,6 +11566,8 @@ function Reports({
             { header: "HPP Satuan", key: "hppsatuan", width: 15 },
             { header: "Total HPP", key: "totalhpp", width: 15 },
             { header: "Laba Kotor", key: "labakotor", width: 15 },
+            { header: "Biaya Marketplace", key: "biayamarketplace", width: 20 },
+            { header: "Laba Setelah Marketplace", key: "labasetelahmarketplace", width: 24 },
             { header: "Pembayaran", key: "pembayaran", width: 15 },
             { header: "Jenis Diskon", key: "jenisdiskon", width: 15 },
             { header: "Input Diskon", key: "inputdiskon", width: 16 },
@@ -11774,6 +11871,14 @@ function Reports({
               <em>{grossMargin.toFixed(1)}% margin kotor</em>
             </article>
             <article className="report-kpi">
+              <span>Biaya marketplace</span>
+              <i className="metric-quality verified">Tercatat</i>
+              <b>{money(totalMarketplaceFees)}</b>
+              <small>
+                Biaya admin/layanan · pencairan {money(totalNetPayout)}
+              </small>
+            </article>
+            <article className="report-kpi">
               <span>Nilai pembelian stok</span>
               <i className={`metric-quality ${receiptQuality}`}>
                 {qualityLabel(receiptQuality)}
@@ -11975,8 +12080,14 @@ function Reports({
                   <td>
                     <b>Laba bersih</b>
                   </td>
-                  <td>Laba kotor + transaksi Buku Kas terklasifikasi</td>
-                  <td>Laba kotor + pendapatan lain − beban operasional − HPP stok keluar</td>
+                  <td>
+                    Laba kotor + biaya marketplace + transaksi Buku Kas
+                    terklasifikasi
+                  </td>
+                  <td>
+                    Laba kotor − biaya marketplace + pendapatan lain − beban
+                    operasional − HPP stok keluar
+                  </td>
                   <td>
                     <span className={`metric-quality ${netProfitQuality}`}>
                       {qualityLabel(netProfitQuality)}
@@ -17819,6 +17930,521 @@ function SaleChannelModal({
   );
 }
 
+interface BulkMappedLine {
+  variantId: string;
+  quantity: number;
+  grossAmount: number;
+  netSalesAmount: number;
+  externalSkus: string[];
+}
+
+function BulkOnlineProcessor({
+  data,
+  variants,
+  loc,
+  save,
+  notify,
+  checkMarketplaceImport,
+}: any) {
+  const [loading, setLoading] = useState<"orders" | "income" | "save" | null>(null);
+  const [orders, setOrders] = useState<TikTokOrderParseResult | null>(null);
+  const [income, setIncome] = useState<TikTokIncomeParseResult | null>(null);
+  const [manualMappings, setManualMappings] = useState<Record<string, string>>({});
+  const [manualPlatformFee, setManualPlatformFee] = useState(0);
+  const [duplicateOrderIds, setDuplicateOrderIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [duplicateFingerprint, setDuplicateFingerprint] = useState(false);
+  const [mappingSearch, setMappingSearch] = useState("");
+  const [mappingPage, setMappingPage] = useState(0);
+
+  const newRows = useMemo(
+    () =>
+      (orders?.eligibleRows || []).filter(
+        (row) => !duplicateOrderIds.has(row.orderId),
+      ),
+    [duplicateOrderIds, orders],
+  );
+  const externalGroups = useMemo(() => {
+    const groups = new Map<
+      string,
+      {
+        externalSku: string;
+        productName: string;
+        variation: string;
+        rows: ParsedTikTokOrder[];
+        quantity: number;
+        grossAmount: number;
+        netSalesAmount: number;
+      }
+    >();
+    for (const row of newRows) {
+      const current = groups.get(row.externalSku) || {
+        externalSku: row.externalSku,
+        productName: row.productName,
+        variation: row.variation,
+        rows: [],
+        quantity: 0,
+        grossAmount: 0,
+        netSalesAmount: 0,
+      };
+      current.rows.push(row);
+      current.quantity += row.netQuantity;
+      current.grossAmount += row.grossAmount;
+      current.netSalesAmount += row.netSalesAmount;
+      groups.set(row.externalSku, current);
+    }
+    return Array.from(groups.values());
+  }, [newRows]);
+  const persistedMappings = useMemo(
+    () =>
+      new Map<string, string>(
+        (data.marketplaceSkuMappings || [])
+          .filter((mapping: any) => mapping.platform === "tiktok")
+          .map(
+            (mapping: any) =>
+              [String(mapping.externalSku), String(mapping.variantId)] as [
+                string,
+                string,
+              ],
+          ),
+      ),
+    [data.marketplaceSkuMappings],
+  );
+  const exactSkuMappings = useMemo(
+    () =>
+      new Map<string, string>(
+        variants
+          .filter((variant: any) => String(variant.sku || "").trim())
+          .map(
+            (variant: any) =>
+              [
+                String(variant.sku).trim().toLowerCase(),
+                String(variant.id),
+              ] as [string, string],
+          ),
+      ),
+    [variants],
+  );
+  const resolvedGroups = useMemo(
+    () =>
+      externalGroups.map((group) => ({
+        ...group,
+        variantId:
+          manualMappings[group.externalSku] ||
+          persistedMappings.get(group.externalSku) ||
+          exactSkuMappings.get(group.externalSku.trim().toLowerCase()) ||
+          "",
+      })),
+    [externalGroups, exactSkuMappings, manualMappings, persistedMappings],
+  );
+  const unmatched = resolvedGroups.filter(
+    (group) =>
+      !group.variantId ||
+      !variants.some((variant: any) => variant.id === group.variantId),
+  );
+  const filteredUnmatched = useMemo(() => {
+    const query = mappingSearch.trim().toLowerCase();
+    if (!query) return unmatched;
+    return unmatched.filter((group) =>
+      `${group.productName} ${group.variation} ${group.externalSku}`
+        .toLowerCase()
+        .includes(query),
+    );
+  }, [mappingSearch, unmatched]);
+  const mappingPageSize = 30;
+  const mappingPageCount = Math.max(
+    1,
+    Math.ceil(filteredUnmatched.length / mappingPageSize),
+  );
+  const visibleUnmatched = filteredUnmatched.slice(
+    mappingPage * mappingPageSize,
+    (mappingPage + 1) * mappingPageSize,
+  );
+  useEffect(() => {
+    setMappingPage((current) => Math.min(current, mappingPageCount - 1));
+  }, [mappingPageCount]);
+  const mappedLines = useMemo(() => {
+    const lines = new Map<string, BulkMappedLine>();
+    for (const group of resolvedGroups) {
+      if (!group.variantId) continue;
+      const current: BulkMappedLine = lines.get(group.variantId) || {
+        variantId: group.variantId,
+        quantity: 0,
+        grossAmount: 0,
+        netSalesAmount: 0,
+        externalSkus: [],
+      };
+      current.quantity += group.quantity;
+      current.grossAmount += group.grossAmount;
+      current.netSalesAmount += group.netSalesAmount;
+      current.externalSkus.push(group.externalSku);
+      lines.set(group.variantId, current);
+    }
+    return Array.from(lines.values());
+  }, [resolvedGroups]);
+  const stockErrors = mappedLines.filter(
+    (line) => line.quantity > getBalance(data.balances, loc, line.variantId),
+  );
+  const importedOrderIds = useMemo(
+    () => Array.from(new Set(newRows.map((row) => row.orderId))),
+    [newRows],
+  );
+  const incomeTotals = useMemo(() => {
+    if (!income) return null;
+    return importedOrderIds.reduce(
+      (totals, orderId) => {
+        const row = income.orders[orderId];
+        if (row) {
+          totals.matchedOrders += 1;
+          totals.platformFee += row.platformFee;
+          totals.netPayout += row.netPayout;
+        }
+        return totals;
+      },
+      { matchedOrders: 0, platformFee: 0, netPayout: 0 },
+    );
+  }, [importedOrderIds, income]);
+  const grossTotal = mappedLines.reduce((sum, line) => sum + line.grossAmount, 0);
+  const netSalesTotal = mappedLines.reduce(
+    (sum, line) => sum + line.netSalesAmount,
+    0,
+  );
+  const platformFee = incomeTotals?.platformFee ?? manualPlatformFee;
+  const netPayout = incomeTotals
+    ? incomeTotals.netPayout
+    : Math.max(0, netSalesTotal - platformFee);
+  const canSave = Boolean(
+    orders &&
+      importedOrderIds.length &&
+      mappedLines.length &&
+      !unmatched.length &&
+      !stockErrors.length &&
+      !duplicateFingerprint &&
+      loading === null,
+  );
+
+  const uploadOrders = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setLoading("orders");
+    try {
+      const parsed = await parseTikTokOrders(file);
+      const check = await checkMarketplaceImport({
+        locationId: loc,
+        platform: "tiktok",
+        fingerprint: parsed.fingerprint,
+        externalOrderIds: Array.from(
+          new Set(parsed.eligibleRows.map((row) => row.orderId)),
+        ),
+      });
+      setOrders(parsed);
+      setDuplicateFingerprint(check.fileImported);
+      setDuplicateOrderIds(new Set(check.duplicateOrderIds));
+      setIncome(null);
+      setManualMappings({});
+      setManualPlatformFee(0);
+      setMappingSearch("");
+      setMappingPage(0);
+    } catch (error) {
+      setOrders(null);
+      setDuplicateFingerprint(false);
+      setDuplicateOrderIds(new Set());
+      notify(
+        error instanceof Error ? error.message : "File pesanan gagal dibaca.",
+        "error",
+      );
+    } finally {
+      setLoading(null);
+    }
+  };
+
+  const uploadIncome = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setLoading("income");
+    try {
+      setIncome(await parseTikTokIncome(file));
+    } catch (error) {
+      setIncome(null);
+      notify(
+        error instanceof Error
+          ? error.message
+          : "File pendapatan TikTok gagal dibaca.",
+        "error",
+      );
+    } finally {
+      setLoading(null);
+    }
+  };
+
+  const submitImport = async () => {
+    if (!canSave || !orders) return;
+    setLoading("save");
+    try {
+      await save(
+        loc,
+        "online",
+        mappedLines.map((line) => ({
+          variantId: line.variantId,
+          quantity: line.quantity,
+          grossAmount: line.grossAmount,
+          netSalesAmount: line.netSalesAmount,
+        })),
+        "Transfer",
+        false,
+        0,
+        "nominal",
+        0,
+        `Impor TikTok · ${importedOrderIds.length} pesanan`,
+        platformFee,
+        {
+          netPayout,
+          sourceImport: {
+            platform: "tiktok",
+            fingerprint: orders.fingerprint,
+            incomeFingerprint: income?.fingerprint,
+            sourceFileName: orders.sourceFileName,
+            incomeFileName: income?.sourceFileName,
+            externalOrderIds: importedOrderIds,
+            rowCount: newRows.length,
+            ignoredRowCount: orders.ignoredRows.length,
+            duplicateOrderCount: duplicateOrderIds.size,
+          },
+          skuMappings: resolvedGroups.map((group) => ({
+            externalSku: group.externalSku,
+            variantId: group.variantId,
+          })),
+        },
+      );
+      setOrders(null);
+      setIncome(null);
+      setManualMappings({});
+      setManualPlatformFee(0);
+      setDuplicateFingerprint(false);
+      setDuplicateOrderIds(new Set());
+      setMappingSearch("");
+      setMappingPage(0);
+    } catch (error) {
+      notify(
+        error instanceof Error ? error.message : "Impor TikTok gagal disimpan.",
+        "error",
+      );
+    } finally {
+      setLoading(null);
+    }
+  };
+
+  return (
+    <section className="bulk-online-import">
+      <header className="bulk-online-heading">
+        <div>
+          <small>IMPOR MARKETPLACE</small>
+          <h3>Rekap penjualan TikTok</h3>
+          <p>
+            Pesanan belum dibayar, dibatalkan, sudah diretur penuh, dan yang
+            pernah diimpor tidak akan memotong stok.
+          </p>
+        </div>
+      </header>
+
+      <div className="bulk-online-upload-grid">
+        <label className="bulk-file-card">
+          <Upload size={20} />
+          <span>
+            <b>1. Laporan pesanan</b>
+            <small>{orders?.sourceFileName || "Semua pesanan-....xlsx · wajib"}</small>
+          </span>
+          <input type="file" accept=".xlsx" onChange={uploadOrders} disabled={loading !== null} />
+        </label>
+        <label className={`bulk-file-card ${!orders ? "disabled" : ""}`}>
+          <Upload size={20} />
+          <span>
+            <b>2. Laporan pendapatan</b>
+            <small>{income?.sourceFileName || "income_....xlsx · opsional"}</small>
+          </span>
+          <input
+            type="file"
+            accept=".xlsx"
+            onChange={uploadIncome}
+            disabled={!orders || loading !== null}
+          />
+        </label>
+      </div>
+      {loading === "orders" && <p className="bulk-progress">Membaca dan memvalidasi laporan pesanan…</p>}
+      {loading === "income" && <p className="bulk-progress">Merekonsiliasi biaya marketplace…</p>}
+
+      {orders && (
+        <>
+          <div className="bulk-preview-metrics">
+            <span><b>{importedOrderIds.length.toLocaleString("id-ID")}</b> pesanan baru</span>
+            <span><b>{newRows.length.toLocaleString("id-ID")}</b> baris layak</span>
+            <span><b>{orders.ignoredRows.length.toLocaleString("id-ID")}</b> baris diabaikan</span>
+            <span><b>{duplicateOrderIds.size.toLocaleString("id-ID")}</b> pesanan duplikat</span>
+          </div>
+
+          {duplicateFingerprint && (
+            <div className="bulk-alert danger">
+              <AlertTriangle size={18} /> File pesanan ini sudah pernah diimpor.
+            </div>
+          )}
+          {!newRows.length && !duplicateFingerprint && (
+            <div className="bulk-alert warning">
+              <Info size={18} /> Tidak ada pesanan baru yang dapat diimpor dari file ini.
+            </div>
+          )}
+          {unmatched.length > 0 && (
+            <div className="bulk-mapping-panel">
+              <div className="bulk-panel-title">
+                <span>
+                  <AlertTriangle size={18} />
+                  <b>{unmatched.length} SKU perlu dipasangkan</b>
+                </span>
+                <small>Pilih varian yang tepat. Pilihan akan disimpan untuk impor berikutnya.</small>
+              </div>
+              <div className="bulk-mapping-tools">
+                <input
+                  type="search"
+                  value={mappingSearch}
+                  onChange={(event) => {
+                    setMappingSearch(event.target.value);
+                    setMappingPage(0);
+                  }}
+                  placeholder="Cari produk, variasi, atau SKU TikTok"
+                  aria-label="Cari SKU TikTok yang perlu dipasangkan"
+                />
+                <small>
+                  {filteredUnmatched.length.toLocaleString("id-ID")} dari{" "}
+                  {unmatched.length.toLocaleString("id-ID")} SKU
+                </small>
+              </div>
+              <div className="bulk-mapping-list">
+                {visibleUnmatched.map((group) => (
+                  <label key={group.externalSku} className="bulk-mapping-row">
+                    <span>
+                      <b>{group.productName || "Produk TikTok"}</b>
+                      <small>{group.variation || group.externalSku} · Qty {group.quantity}</small>
+                    </span>
+                    <select
+                      value={manualMappings[group.externalSku] || ""}
+                      onChange={(event) =>
+                        setManualMappings((current) => ({
+                          ...current,
+                          [group.externalSku]: event.target.value,
+                        }))
+                      }
+                    >
+                      <option value="">Pilih varian Menengs</option>
+                      {variants.map((variant: any) => (
+                        <option key={variant.id} value={variant.id}>
+                          {variant.productName} · {variant.name} · stok {getBalance(data.balances, loc, variant.id)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ))}
+              </div>
+              {filteredUnmatched.length > mappingPageSize && (
+                <div className="bulk-mapping-pagination">
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={mappingPage === 0}
+                    onClick={() => setMappingPage((page) => Math.max(0, page - 1))}
+                  >
+                    Sebelumnya
+                  </button>
+                  <span>
+                    Halaman {mappingPage + 1} dari {mappingPageCount}
+                  </span>
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={mappingPage >= mappingPageCount - 1}
+                    onClick={() =>
+                      setMappingPage((page) =>
+                        Math.min(mappingPageCount - 1, page + 1),
+                      )
+                    }
+                  >
+                    Berikutnya
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {mappedLines.length > 0 && (
+            <div className="bulk-matched-panel">
+              <div className="bulk-panel-title">
+                <b>{mappedLines.length} varian siap dicatat</b>
+                <small>Hanya varian pada preview ini yang akan mengurangi stok.</small>
+              </div>
+              <div className="bulk-matched-list">
+                {mappedLines.map((line) => {
+                  const variant = variants.find((item: any) => item.id === line.variantId);
+                  const available = getBalance(data.balances, loc, line.variantId);
+                  return (
+                    <div key={line.variantId} className="bulk-matched-row">
+                      <span>
+                        <b>{variant?.productName} · {variant?.name}</b>
+                        <small>Stok {available} · dipotong {line.quantity}</small>
+                      </span>
+                      <strong>{money(line.netSalesAmount)}</strong>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          {stockErrors.length > 0 && (
+            <div className="bulk-alert danger">
+              <AlertTriangle size={18} /> Stok {stockErrors.length} varian tidak mencukupi. Perbarui stok atau koreksi pemetaan.
+            </div>
+          )}
+
+          <div className="bulk-finance-panel">
+            <div className="bulk-finance-summary">
+              <span><small>Omzet sebelum diskon penjual</small><b>{money(grossTotal)}</b></span>
+              <span><small>Omzet penjualan</small><b>{money(netSalesTotal)}</b></span>
+              <span><small>Biaya marketplace</small><b>{money(platformFee)}</b></span>
+              <span><small>Pencairan tercatat</small><b>{money(netPayout)}</b></span>
+            </div>
+            {incomeTotals ? (
+              <p className="bulk-reconcile-note">
+                Biaya otomatis cocok untuk {incomeTotals.matchedOrders} dari {importedOrderIds.length} pesanan. Pesanan yang belum cair tetap tercatat dengan biaya Rp 0.
+              </p>
+            ) : (
+              <div className="bulk-manual-fee">
+                <RupiahInput
+                  label="Biaya marketplace (opsional)"
+                  value={manualPlatformFee}
+                  onValue={setManualPlatformFee}
+                />
+                <small>Unggah laporan pendapatan agar biaya dan pencairan terisi otomatis.</small>
+              </div>
+            )}
+          </div>
+
+          <button
+            type="button"
+            className="primary bulk-save-button"
+            onClick={submitImport}
+            disabled={!canSave}
+          >
+            <Check size={18} />
+            {loading === "save"
+              ? "Menyimpan impor…"
+              : `Simpan ${importedOrderIds.length.toLocaleString("id-ID")} Pesanan`}
+          </button>
+        </>
+      )}
+    </section>
+  );
+}
+
 function SaleModal({
   data,
   close,
@@ -17828,6 +18454,7 @@ function SaleModal({
   fixedLocation,
   defaultLocation,
   notify,
+  checkMarketplaceImport,
   initialChannel = "offline",
 }: any) {
   const activeLocations = data.locations.filter((l: any) => l.active),
@@ -17859,6 +18486,7 @@ function SaleModal({
     [posFlavorFilter, setPosFlavorFilter] = useState("all"),
     [posLevelFilter, setPosLevelFilter] = useState("all"),
     [payment, setPayment] = useState("QRIS"),
+    [onlineInputMode, setOnlineInputMode] = useState<"satuan" | "bulk">("satuan"),
     [discountType, setDiscountType] = useState<"nominal" | "percentage">(
       "nominal",
     ),
@@ -18461,6 +19089,38 @@ function SaleModal({
             </div>
           </section>
         )}
+
+        {channel === "online" && (
+          <div style={{ padding: "0 24px" }}>
+            <div className="pos-category-tabs" style={{ padding: "8px 0 16px" }}>
+              <button
+                type="button"
+                className={onlineInputMode === "satuan" ? "active" : ""}
+                onClick={() => setOnlineInputMode("satuan")}
+              >
+                Satuan (Manual)
+              </button>
+              <button
+                type="button"
+                className={onlineInputMode === "bulk" ? "active" : ""}
+                onClick={() => setOnlineInputMode("bulk")}
+              >
+                Bulk Process (Import Excel)
+              </button>
+            </div>
+          </div>
+        )}
+
+        {channel === "online" && onlineInputMode === "bulk" ? (
+          <BulkOnlineProcessor
+            data={data}
+            variants={variants}
+            loc={loc}
+            save={save}
+            notify={notify}
+            checkMarketplaceImport={checkMarketplaceImport}
+          />
+        ) : (
         <div className="pos-counter-workspace">
           <section className="pos-catalog-panel">
             <div
@@ -19090,6 +19750,7 @@ function SaleModal({
             </footer>
           </aside>
         </div>
+        )}
       </form>
     </Modal>
   );
@@ -26455,6 +27116,10 @@ function AnalyticsPage({
       (sum, sale) => sum + Number(sale.discountAmount || 0),
       0,
     );
+    const platformFees = filteredSales.reduce(
+      (sum, sale) => sum + Number(sale.platformFee || 0),
+      0,
+    );
 
     const grossProfit = revenue - cogs;
     const stockOutCost = filteredStockOuts.reduce(
@@ -26469,7 +27134,7 @@ function AnalyticsPage({
     const stockOutDocuments = new Set(
       filteredStockOuts.map((item) => item.stockOutCode || item.id),
     ).size;
-    const operationalProfit = grossProfit - stockOutCost;
+    const operationalProfit = grossProfit - platformFees - stockOutCost;
     const stockOutByCategory = Object.entries(
       filteredStockOuts.reduce(
         (result: Record<string, number>, item) => {
@@ -26546,7 +27211,13 @@ function AnalyticsPage({
       .sort((a, b) => b.date.getTime() - a.date.getTime())
       .slice(0, 10);
 
-    const salesTrend: { date: string; Omset: number; Modal: number; "Stok Keluar": number }[] = [];
+    const salesTrend: {
+      date: string;
+      Omset: number;
+      Modal: number;
+      "Biaya Marketplace": number;
+      "Stok Keluar": number;
+    }[] = [];
     const trendByKey: Record<string, number> = {};
     for (
       let key = dateFrom, day = 0;
@@ -26561,6 +27232,7 @@ function AnalyticsPage({
         }),
         Omset: 0,
         Modal: 0,
+        "Biaya Marketplace": 0,
         "Stok Keluar": 0,
       });
     }
@@ -26568,6 +27240,9 @@ function AnalyticsPage({
       const index = trendByKey[jakartaDateKey(sale.createdAt)];
       if (index === undefined) return;
       salesTrend[index].Omset += sale.total;
+      salesTrend[index]["Biaya Marketplace"] += Number(
+        sale.platformFee || 0,
+      );
       sale.items.forEach((item) => {
         salesTrend[index].Modal += item.quantity * saleItemUnitCost(sale, item);
       });
@@ -26602,13 +27277,14 @@ function AnalyticsPage({
     // Profit / Loss Chart Data
     const profitData = [
       { name: "Modal (HPP)", value: cogs, color: "#f87171" },
+      { name: "Biaya Marketplace", value: platformFees, color: "#f59e0b" },
       { name: "Stok Keluar", value: stockOutCost, color: "#dc2626" },
       operationalProfit >= 0
         ? { name: "Estimasi Laba Operasional", value: operationalProfit, color: "#10b981" }
         : { name: "Estimasi Kerugian Operasional", value: Math.abs(operationalProfit), color: "#7f1d1d" },
     ];
 
-    const channelSales = (["offline", "online"] as Channel[]).reduce(
+    const channelSales = (["offline", "online", "reseller"] as Channel[]).reduce(
       (result, channel) => {
         const transactions = filteredSales.filter(
           (sale) => sale.channel === channel,
@@ -26625,6 +27301,7 @@ function AnalyticsPage({
     return {
       revenue,
       discounts,
+      platformFees,
       grossProfit,
       stockValue,
       lowStockAlerts,
@@ -26653,10 +27330,11 @@ function AnalyticsPage({
         const summaryData = [
           ["Total Omset", stats.revenue],
           ["Total Diskon Pembeli", stats.discounts],
+          ["Biaya Marketplace", stats.platformFees],
           ["Estimasi Laba Kotor", stats.grossProfit],
           ["Total Modal (HPP)", stats.cogs],
           ["Biaya Stok Keluar", stats.stockOutCost],
-          ["Estimasi Laba Setelah Stok Keluar", stats.operationalProfit],
+          ["Estimasi Laba Operasional", stats.operationalProfit],
           ["Dokumen Stok Keluar", stats.stockOutDocuments],
           ["Barang Stok Keluar", stats.stockOutQuantity],
           ["Nilai Stok Saat Ini", stats.stockValue],
@@ -26665,6 +27343,8 @@ function AnalyticsPage({
           ["Transaksi Outlet", stats.channelSales.offline.count],
           ["Penjualan Online", stats.channelSales.online.total],
           ["Transaksi Online", stats.channelSales.online.count],
+          ["Penjualan Reseller", stats.channelSales.reseller.total],
+          ["Transaksi Reseller", stats.channelSales.reseller.count],
           ["Total Varian Produk", stats.totalProductsCount],
         ];
 
@@ -26672,6 +27352,7 @@ function AnalyticsPage({
           t.date,
           t.Omset,
           t.Modal,
+          t["Biaya Marketplace"],
           t["Stok Keluar"],
         ]);
         const topProductsData = stats.topProducts.map((t: any, idx: number) => [
@@ -26698,6 +27379,7 @@ function AnalyticsPage({
                 { header: "Tanggal", key: "tanggal", width: 20 },
                 { header: "Omset Penjualan", key: "omset", width: 25 },
                 { header: "Modal (HPP)", key: "modal", width: 25 },
+                { header: "Biaya Marketplace", key: "marketplace", width: 25 },
                 { header: "Stok Keluar", key: "stokkeluar", width: 25 },
               ],
               data: trendData,
@@ -27003,6 +27685,13 @@ function AnalyticsPage({
                     barSize={24}
                   />
                   <Bar
+                    dataKey="Biaya Marketplace"
+                    name="Biaya Marketplace"
+                    stackId="a"
+                    fill="#f59e0b"
+                    barSize={24}
+                  />
+                  <Bar
                     dataKey="Omset"
                     name="Omset Kotor"
                     stackId="a"
@@ -27086,7 +27775,7 @@ function AnalyticsPage({
           {/* Laba Rugi */}
           <article className="dash-widget">
             <header>
-              <h3>Estimasi Setelah Stok Keluar</h3>
+              <h3>Estimasi Laba Operasional</h3>
               <button
                 className="icon-btn"
                 style={{ padding: 4, margin: -4 }}
@@ -27172,6 +27861,12 @@ function AnalyticsPage({
                     Nilai HPP
                   </div>
                   <b>{money(stats.cogs)}</b>
+                </div>
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontSize: 13, color: "var(--muted)" }}>
+                    Biaya Marketplace
+                  </div>
+                  <b>{money(stats.platformFees)}</b>
                 </div>
                 <div
                   style={{ borderTop: "1px solid var(--line)", paddingTop: 8 }}

@@ -11,6 +11,22 @@ async function getColumn(pool, table, column) {
   return rows[0] || null;
 }
 
+async function ensureColumnDefinition(
+  pool,
+  table,
+  column,
+  expectedType,
+  nullable,
+  alterStatement,
+) {
+  const current = await getColumn(pool, table, column);
+  if (!current) throw new Error(`Kolom database ${table}.${column} tidak ditemukan`);
+  const typeMatches =
+    String(current.Type || '').toLowerCase() === expectedType.toLowerCase();
+  const nullabilityMatches = current.Null === (nullable ? 'YES' : 'NO');
+  if (!typeMatches || !nullabilityMatches) await pool.execute(alterStatement);
+}
+
 async function init() {
   const pool = mysql.createPool({
     host: '127.0.0.1',
@@ -120,11 +136,15 @@ async function init() {
       id VARCHAR(40) PRIMARY KEY,
       organization_id VARCHAR(40) NOT NULL,
       location_id VARCHAR(40) NOT NULL,
-      gross_total INT NOT NULL DEFAULT 0,
-      discount_amount INT NOT NULL DEFAULT 0,
+      gross_total BIGINT NOT NULL DEFAULT 0,
+      discount_amount BIGINT NOT NULL DEFAULT 0,
       discount_type VARCHAR(20) NOT NULL DEFAULT 'nominal',
-      discount_value DECIMAL(12,2) NOT NULL DEFAULT 0,
-      total INT NOT NULL,
+      discount_value DECIMAL(18,2) NOT NULL DEFAULT 0,
+      total BIGINT NOT NULL,
+      platform_fee BIGINT NOT NULL DEFAULT 0,
+      net_payout BIGINT NULL,
+      source_platform VARCHAR(40) NULL,
+      source_import_id VARCHAR(80) NULL,
       channel VARCHAR(20) NOT NULL DEFAULT 'offline',
       method VARCHAR(50) NOT NULL,
       status VARCHAR(50) NOT NULL,
@@ -137,11 +157,50 @@ async function init() {
       sale_id VARCHAR(40) NOT NULL,
       variant_id VARCHAR(40) NOT NULL,
       quantity INT NOT NULL,
-      unit_cost INT NULL,
-      price INT NOT NULL,
-      discount INT NOT NULL DEFAULT 0,
-      subtotal INT NOT NULL,
+      unit_cost BIGINT NULL,
+      price BIGINT NOT NULL,
+      discount BIGINT NOT NULL DEFAULT 0,
+      subtotal BIGINT NOT NULL,
       INDEX idx_sale (sale_id)
+    )`,
+    `CREATE TABLE IF NOT EXISTS marketplace_sku_mappings (
+      organization_id VARCHAR(40) NOT NULL,
+      platform VARCHAR(40) NOT NULL,
+      external_sku VARCHAR(190) NOT NULL,
+      variant_id VARCHAR(40) NOT NULL,
+      created_at VARCHAR(100) NOT NULL,
+      updated_at VARCHAR(100) NOT NULL,
+      PRIMARY KEY (organization_id, platform, external_sku),
+      INDEX idx_marketplace_mapping_variant (organization_id, variant_id)
+    )`,
+    `CREATE TABLE IF NOT EXISTS marketplace_imports (
+      id VARCHAR(80) PRIMARY KEY,
+      organization_id VARCHAR(40) NOT NULL,
+      platform VARCHAR(40) NOT NULL,
+      fingerprint VARCHAR(128) NOT NULL,
+      income_fingerprint VARCHAR(128) NULL,
+      source_file_name VARCHAR(180) NOT NULL,
+      income_file_name VARCHAR(180) NULL,
+      location_id VARCHAR(40) NOT NULL,
+      sale_id VARCHAR(40) NOT NULL,
+      row_count INT NOT NULL DEFAULT 0,
+      ignored_row_count INT NOT NULL DEFAULT 0,
+      duplicate_order_count INT NOT NULL DEFAULT 0,
+      total_quantity BIGINT NOT NULL DEFAULT 0,
+      gross_total BIGINT NOT NULL DEFAULT 0,
+      discount_amount BIGINT NOT NULL DEFAULT 0,
+      platform_fee BIGINT NOT NULL DEFAULT 0,
+      net_payout BIGINT NOT NULL DEFAULT 0,
+      created_at VARCHAR(100) NOT NULL,
+      created_by VARCHAR(40) NULL,
+      UNIQUE KEY uq_marketplace_import_file (organization_id, platform, fingerprint),
+      INDEX idx_marketplace_import_org_date (organization_id, created_at),
+      INDEX idx_marketplace_import_sale (sale_id)
+    )`,
+    `CREATE TABLE IF NOT EXISTS marketplace_order_hashes (
+      organization_hash BINARY(16) NOT NULL,
+      order_hash BINARY(16) NOT NULL,
+      PRIMARY KEY (organization_hash, order_hash)
     )`,
     `CREATE TABLE IF NOT EXISTS transfers (
       id VARCHAR(40) PRIMARY KEY,
@@ -201,18 +260,39 @@ async function init() {
   }
   const grossTotalColumn = await getColumn(pool, 'sales', 'gross_total');
   if (!grossTotalColumn) {
-    await pool.execute("ALTER TABLE sales ADD COLUMN gross_total INT NULL AFTER location_id");
+    await pool.execute("ALTER TABLE sales ADD COLUMN gross_total BIGINT NULL AFTER location_id");
   }
   if (!grossTotalColumn || grossTotalColumn.Null === 'YES') {
     await pool.execute("UPDATE sales SET gross_total = total WHERE gross_total IS NULL");
-    await pool.execute("ALTER TABLE sales MODIFY gross_total INT NOT NULL DEFAULT 0");
+    await pool.execute("ALTER TABLE sales MODIFY gross_total BIGINT NOT NULL DEFAULT 0");
   }
-  try { await pool.execute("ALTER TABLE sales ADD COLUMN discount_amount INT NOT NULL DEFAULT 0 AFTER gross_total"); } catch (error) { if (error?.code !== 'ER_DUP_FIELDNAME') throw error; }
+  try { await pool.execute("ALTER TABLE sales ADD COLUMN discount_amount BIGINT NOT NULL DEFAULT 0 AFTER gross_total"); } catch (error) { if (error?.code !== 'ER_DUP_FIELDNAME') throw error; }
   try { await pool.execute("ALTER TABLE sales ADD COLUMN discount_type VARCHAR(20) NOT NULL DEFAULT 'nominal' AFTER discount_amount"); } catch (error) { if (error?.code !== 'ER_DUP_FIELDNAME') throw error; }
   try {
-    await pool.execute("ALTER TABLE sales ADD COLUMN discount_value DECIMAL(12,2) NOT NULL DEFAULT 0 AFTER discount_type");
+    await pool.execute("ALTER TABLE sales ADD COLUMN discount_value DECIMAL(18,2) NOT NULL DEFAULT 0 AFTER discount_type");
     await pool.execute("UPDATE sales SET discount_value = discount_amount");
   } catch (error) { if (error?.code !== 'ER_DUP_FIELDNAME') throw error; }
+  for (const statement of [
+    "ALTER TABLE sales ADD COLUMN platform_fee BIGINT NOT NULL DEFAULT 0 AFTER total",
+    "ALTER TABLE sales ADD COLUMN net_payout BIGINT NULL AFTER platform_fee",
+    "ALTER TABLE sales ADD COLUMN source_platform VARCHAR(40) NULL AFTER net_payout",
+    "ALTER TABLE sales ADD COLUMN source_import_id VARCHAR(80) NULL AFTER source_platform",
+  ]) {
+    try { await pool.execute(statement); }
+    catch (error) { if (error?.code !== 'ER_DUP_FIELDNAME') throw error; }
+  }
+  for (const migration of [
+    ['sales', 'gross_total', 'bigint', false, "ALTER TABLE sales MODIFY gross_total BIGINT NOT NULL DEFAULT 0"],
+    ['sales', 'discount_amount', 'bigint', false, "ALTER TABLE sales MODIFY discount_amount BIGINT NOT NULL DEFAULT 0"],
+    ['sales', 'total', 'bigint', false, "ALTER TABLE sales MODIFY total BIGINT NOT NULL"],
+    ['sales', 'platform_fee', 'bigint', false, "ALTER TABLE sales MODIFY platform_fee BIGINT NOT NULL DEFAULT 0"],
+    ['sales', 'net_payout', 'bigint', true, "ALTER TABLE sales MODIFY net_payout BIGINT NULL"],
+    ['sales', 'discount_value', 'decimal(18,2)', false, "ALTER TABLE sales MODIFY discount_value DECIMAL(18,2) NOT NULL DEFAULT 0"],
+    ['sale_items', 'unit_cost', 'bigint', true, "ALTER TABLE sale_items MODIFY unit_cost BIGINT NULL"],
+    ['sale_items', 'price', 'bigint', false, "ALTER TABLE sale_items MODIFY price BIGINT NOT NULL"],
+    ['sale_items', 'discount', 'bigint', false, "ALTER TABLE sale_items MODIFY discount BIGINT NOT NULL DEFAULT 0"],
+    ['sale_items', 'subtotal', 'bigint', false, "ALTER TABLE sale_items MODIFY subtotal BIGINT NOT NULL"],
+  ]) await ensureColumnDefinition(pool, ...migration);
   console.log("All tables created successfully");
   await pool.end();
 }

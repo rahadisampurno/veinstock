@@ -622,6 +622,89 @@ describe('multi-tenant API', () => {
     expect(afterArchivedAttempt.body.data.balances.find(item => item.variantId === variantId).quantity).toBe(1);
   });
 
+  it('imports marketplace sales atomically and rejects duplicate order IDs', async () => {
+    const suffix = `${Date.now()}-marketplace-import`;
+    const owner = await post('/api/register', {
+      organizationName: 'Marketplace Import', name: 'Owner',
+      email: `owner-${suffix}@test.local`, password: 'Password123!',
+    });
+    const variantId = `variant-${suffix}`;
+    expect((await post('/api/commands/products', {
+      product: {
+        id: `product-${suffix}`, name: 'Keripik TikTok', category: 'Snack', unit: 'Pcs', active: true,
+        variants: [{ id: variantId, name: 'Balado 250g', sku: `TIK-${suffix}`, cost: 6000, onlineCost: 7000, price: 10000, onlinePrice: 12000, resellerPrice: 9000, minStock: 0 }],
+      },
+      initialStocks: [{ locationId: 'loc-owner', variantId, quantity: 10 }],
+    }, owner.body.token)).status).toBe(201);
+
+    const payload = {
+      locationId: 'loc-owner', channel: 'online', payment: 'Transfer',
+      platformFee: 4000, netPayout: 14000,
+      items: [{ variantId, quantity: 2, grossAmount: 24000, netSalesAmount: 18000 }],
+      sourceImport: {
+        platform: 'tiktok', fingerprint: 'a'.repeat(64), sourceFileName: 'Semua pesanan-test.xlsx',
+        externalOrderIds: ['order-1'], rowCount: 1, ignoredRowCount: 2, duplicateOrderCount: 0,
+      },
+      skuMappings: [{ externalSku: `TIK-${suffix}`, variantId }],
+    };
+    const previewBefore = await post('/api/marketplace/imports/check', {
+      locationId: 'loc-owner', platform: 'tiktok', fingerprint: 'a'.repeat(64),
+      externalOrderIds: ['order-1'],
+    }, owner.body.token);
+    expect(previewBefore.status).toBe(200);
+    expect(previewBefore.body).toEqual({ fileImported: false, duplicateOrderIds: [] });
+    const oversizedOrderId = await post('/api/marketplace/imports/check', {
+      locationId: 'loc-owner', platform: 'tiktok', fingerprint: 'a'.repeat(64),
+      externalOrderIds: ['x'.repeat(191)],
+    }, owner.body.token);
+    expect(oversizedOrderId.status).toBe(400);
+    expect((await post('/api/commands/sales', payload, owner.body.token)).status).toBe(201);
+
+    let state = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    expect(state.body.data.sales[0]).toEqual(expect.objectContaining({
+      channel: 'online', grossTotal: 24000, discountAmount: 6000, total: 18000,
+      platformFee: 4000, netPayout: 14000, sourcePlatform: 'tiktok',
+    }));
+    expect(state.body.data.sales[0]).not.toHaveProperty('externalOrderIds');
+    expect(state.body.data.sales[0].items[0]).toEqual(expect.objectContaining({
+      variantId, quantity: 2, subtotal: 24000, discount: 6000, unitCost: 7000,
+    }));
+    expect(state.body.data.marketplaceImports).toHaveLength(1);
+    expect(state.body.data.marketplaceImports[0]).not.toHaveProperty('externalOrderIds');
+    expect(state.body.data.marketplaceSkuMappings).toContainEqual(expect.objectContaining({
+      platform: 'tiktok', externalSku: `TIK-${suffix}`, variantId,
+    }));
+    expect(state.body.data.balances.find(item => item.variantId === variantId).quantity).toBe(8);
+
+    const previewAfter = await post('/api/marketplace/imports/check', {
+      locationId: 'loc-owner', platform: 'tiktok', fingerprint: 'a'.repeat(64),
+      externalOrderIds: ['order-1', 'order-new'],
+    }, owner.body.token);
+    expect(previewAfter.status).toBe(200);
+    expect(previewAfter.body).toEqual({ fileImported: true, duplicateOrderIds: ['order-1'] });
+
+    const duplicate = await post('/api/commands/sales', {
+      ...payload,
+      sourceImport: { ...payload.sourceImport, fingerprint: 'b'.repeat(64) },
+    }, owner.body.token);
+    expect(duplicate.status).toBe(400);
+    expect(duplicate.body.message).toMatch(/sudah pernah diimpor/i);
+    state = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    expect(state.body.data.sales).toHaveLength(1);
+    expect(state.body.data.balances.find(item => item.variantId === variantId).quantity).toBe(8);
+
+    const manual = await post('/api/commands/sales', {
+      locationId: 'loc-owner', channel: 'online', payment: 'Transfer',
+      platformFee: 999999, netPayout: 1,
+      items: [{ variantId, quantity: 1 }],
+    }, owner.body.token);
+    expect(manual.status).toBe(201);
+    state = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    expect(state.body.data.sales[0]).toEqual(expect.objectContaining({
+      platformFee: 0, netPayout: 12000, total: 12000,
+    }));
+  });
+
   it('commits employee, attendance, loan, and payroll commands without a browser snapshot', async () => {
     const suffix = `${Date.now()}-people`;
     const owner = await post('/api/register', { organizationName: 'SDM Command', name: 'Owner', email: `owner-${suffix}@test.local`, password: 'Password123!' });
