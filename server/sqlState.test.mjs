@@ -122,12 +122,17 @@ describe('SQL state synchronization', () => {
       7000, 21000, 'tiktok', 'market-import-1', 'offline', 'Transfer',
     ]);
     expect(insertedSale.query).not.toContain('external_order_ids');
-    expect(calls.some(call => call.query.startsWith('INSERT INTO marketplace_imports'))).toBe(true);
+    const importInsert = calls.find(call => call.query.startsWith('INSERT INTO marketplace_imports'));
+    expect(importInsert.query).toContain('sale_id=VALUES(sale_id)');
     expect(calls.some(call => call.query.startsWith('INSERT INTO marketplace_sku_mappings'))).toBe(true);
-    const dedupInsert = calls.find(call => call.query.startsWith('INSERT IGNORE INTO marketplace_order_hashes'));
-    expect(dedupInsert.params).toHaveLength(4);
-    expect(dedupInsert.params.every(value => Buffer.isBuffer(value))).toBe(true);
-    expect(dedupInsert.params.every(value => value.length === 16)).toBe(true);
+    const dedupInsert = calls.find(call => call.query.startsWith('INSERT INTO marketplace_order_hashes'));
+    expect(dedupInsert.query).toContain('import_id=VALUES(import_id)');
+    expect(dedupInsert.params).toHaveLength(6);
+    expect([0, 1, 3, 4].every(index => Buffer.isBuffer(dedupInsert.params[index]))).toBe(true);
+    expect([0, 1, 3, 4].every(index => dedupInsert.params[index].length === 16)).toBe(true);
+    expect([dedupInsert.params[2], dedupInsert.params[5]]).toEqual([
+      'market-import-1', 'market-import-1',
+    ]);
   });
 
   it('syncs only new or changed history records when a previous state is supplied', async () => {

@@ -205,6 +205,12 @@ const marketplaceTenantDigest = (organizationId) =>
     .update(String(organizationId))
     .digest()
     .subarray(0, 16);
+const marketplaceImportIsActive = (state, record) => {
+  const sale = (state?.sales || []).find((item) => item.id === record?.saleId);
+  // Riwayat yang kehilangan relasi transaksi tetap dianggap aktif agar
+  // kegagalan data lama tidak membuka celah impor duplikat.
+  return !sale || sale.status !== "voided";
+};
 const findExistingMarketplaceOrderIds = async (
   connection,
   organizationId,
@@ -221,8 +227,18 @@ const findExistingMarketplaceOrderIds = async (
     const chunk = entries.slice(offset, offset + 750);
     const placeholders = chunk.map(() => "?").join(",");
     const [rows] = await connection.execute(
-      `SELECT HEX(order_hash) AS orderHash FROM marketplace_order_hashes WHERE organization_hash = ? AND order_hash IN (${placeholders})`,
+      `SELECT HEX(h.order_hash) AS orderHash
+       FROM marketplace_order_hashes h
+       LEFT JOIN marketplace_imports i
+         ON i.id = h.import_id AND i.organization_id = ?
+       LEFT JOIN sales s
+         ON s.id = i.sale_id AND s.organization_id = ?
+       WHERE h.organization_hash = ?
+         AND h.order_hash IN (${placeholders})
+         AND (h.import_id IS NULL OR s.status IS NULL OR s.status <> 'voided')`,
       [
+        organizationId,
+        organizationId,
         marketplaceTenantDigest(organizationId),
         ...chunk.map((entry) => entry.digest),
       ],
@@ -1204,8 +1220,23 @@ async function db() {
     await pool.execute(`CREATE TABLE IF NOT EXISTS marketplace_order_hashes (
       organization_hash BINARY(16) NOT NULL,
       order_hash BINARY(16) NOT NULL,
+      import_id VARCHAR(80) NULL,
       PRIMARY KEY (organization_hash, order_hash)
     )`);
+    try {
+      await pool.execute(
+        "ALTER TABLE marketplace_order_hashes ADD COLUMN import_id VARCHAR(80) NULL AFTER order_hash",
+      );
+    } catch (error) {
+      if (error?.code !== "ER_DUP_FIELDNAME") throw error;
+    }
+    try {
+      await pool.execute(
+        "ALTER TABLE marketplace_order_hashes ADD INDEX idx_marketplace_order_import (import_id)",
+      );
+    } catch (error) {
+      if (error?.code !== "ER_DUP_KEYNAME") throw error;
+    }
     await backfillLegacySaleCashiers(pool);
     await pool.execute(`CREATE TABLE IF NOT EXISTS sale_items (
       sale_id VARCHAR(40) NOT NULL,
@@ -5672,12 +5703,21 @@ app.post("/api/marketplace/imports/check", requireAuth, async (req, res) => {
       .status(400)
       .json({ message: "Metadata impor marketplace tidak valid." });
   const imports = state.marketplaceImports || [];
-  const fileImported = imports.some(
+  const activeImports = imports.filter((record) =>
+    marketplaceImportIsActive(state, record),
+  );
+  const reusableImport = imports.find(
+    (record) =>
+      record.platform === platform &&
+      record.fingerprint === fingerprint &&
+      !marketplaceImportIsActive(state, record),
+  );
+  const fileImported = activeImports.some(
     (record) =>
       record.platform === platform && record.fingerprint === fingerprint,
   );
   const legacyOrderIds = new Set(
-    imports
+    activeImports
       .filter((record) => record.platform === platform)
       .flatMap((record) => record.externalOrderIds || [])
       .map(String),
@@ -5685,13 +5725,17 @@ app.post("/api/marketplace/imports/check", requireAuth, async (req, res) => {
   const duplicateOrderIds = new Set(
     orderIds.filter((orderId) => legacyOrderIds.has(orderId)),
   );
-  for (const orderId of await findExistingMarketplaceOrderIds(
-    conn,
-    req.auth.org,
-    platform,
-    orderIds,
-  ))
-    duplicateOrderIds.add(orderId);
+  // File yang identik dengan impor yang sudah dibatalkan boleh digunakan
+  // kembali. Untuk ledger lama, hash order belum mempunyai relasi import_id,
+  // sehingga fingerprint identik menjadi bukti aman untuk melewati hash lama.
+  if (!reusableImport)
+    for (const orderId of await findExistingMarketplaceOrderIds(
+      conn,
+      req.auth.org,
+      platform,
+      orderIds,
+    ))
+      duplicateOrderIds.add(orderId);
   return res.json({
     fileImported,
     duplicateOrderIds: Array.from(duplicateOrderIds),
@@ -5756,8 +5800,17 @@ app.post("/api/commands/sales", requireAuth, async (req, res) => {
       )
         throw invalidCommand("Metadata impor marketplace tidak valid.");
       const previousImports = state.marketplaceImports || [];
+      const activePreviousImports = previousImports.filter((record) =>
+        marketplaceImportIsActive(state, record),
+      );
+      const reusableImport = previousImports.find(
+        (record) =>
+          record.platform === platform &&
+          record.fingerprint === fileFingerprint &&
+          !marketplaceImportIsActive(state, record),
+      );
       if (
-        previousImports.some(
+        activePreviousImports.some(
           (record) =>
             record.platform === platform &&
             record.fingerprint === fileFingerprint,
@@ -5765,17 +5818,19 @@ app.post("/api/commands/sales", requireAuth, async (req, res) => {
       )
         throw invalidCommand("File pesanan ini sudah pernah diimpor.");
       const previouslyImportedOrders = new Set(
-        previousImports
+        activePreviousImports
           .filter((record) => record.platform === platform)
           .flatMap((record) => record.externalOrderIds || [])
           .map(String),
       );
-      const databaseDuplicates = await findExistingMarketplaceOrderIds(
-        connection,
-        req.auth.org,
-        platform,
-        externalOrderIds,
-      );
+      const databaseDuplicates = reusableImport
+        ? []
+        : await findExistingMarketplaceOrderIds(
+            connection,
+            req.auth.org,
+            platform,
+            externalOrderIds,
+          );
       const duplicateOrderId =
         externalOrderIds.find((orderId) =>
           previouslyImportedOrders.has(orderId),
@@ -5788,6 +5843,7 @@ app.post("/api/commands/sales", requireAuth, async (req, res) => {
         platform,
         fileFingerprint,
         externalOrderIds,
+        reusableImport,
       };
     }
 
@@ -5946,27 +6002,38 @@ app.post("/api/commands/sales", requireAuth, async (req, res) => {
       });
     }
     const total = grossTotal - normalizedDiscount;
-    // Biaya dan pencairan hanya berasal dari alur impor marketplace yang
-    // memiliki ledger deduplikasi. Request penjualan manual tidak boleh dapat
-    // menyuntikkan angka finansial tersembunyi ke laporan.
-    const normalizedPlatformFee = isMarketplaceImport
+    // Penjualan online manual boleh mencatat satu biaya marketplace yang
+    // terlihat di form. Kanal offline/reseller tetap mengabaikan angka ini,
+    // sedangkan net payout manual selalu dihitung server agar tidak dapat
+    // disuntikkan lewat request tersembunyi.
+    const acceptsManualPlatformFee =
+      !isMarketplaceImport && channel === "online";
+    const normalizedPlatformFee =
+      isMarketplaceImport || acceptsManualPlatformFee
       ? Math.round(Number(platformFee || 0))
       : 0;
     const normalizedNetPayout = isMarketplaceImport
       ? Math.round(
           Number(netPayout ?? Math.max(0, total - normalizedPlatformFee)),
         )
-      : total;
+      : Math.max(0, total - normalizedPlatformFee);
     if (
       !Number.isSafeInteger(normalizedPlatformFee) ||
       normalizedPlatformFee < 0 ||
+      (acceptsManualPlatformFee && normalizedPlatformFee > total) ||
       !Number.isSafeInteger(normalizedNetPayout) ||
       normalizedNetPayout < 0
     )
-      throw invalidCommand("Biaya atau pencairan marketplace tidak valid.");
+      throw invalidCommand(
+        acceptsManualPlatformFee
+          ? "Biaya marketplace tidak boleh melebihi total penjualan."
+          : "Biaya atau pencairan marketplace tidak valid.",
+      );
     const createdAt = new Date().toISOString();
     const saleId = commandId("sale");
-    const importId = importContext ? commandId("market-import") : undefined;
+    const importId = importContext
+      ? importContext.reusableImport?.id || commandId("market-import")
+      : undefined;
     state.balances = balances;
     state.sales.unshift({
       id: saleId,
@@ -6021,7 +6088,7 @@ app.post("/api/commands/sales", requireAuth, async (req, res) => {
           });
         }
       }
-      state.marketplaceImports.unshift({
+      const importRecord = {
         id: importId,
         platform: importContext.platform,
         fingerprint: importContext.fileFingerprint,
@@ -6049,7 +6116,10 @@ app.post("/api/commands/sales", requireAuth, async (req, res) => {
         netPayout: normalizedNetPayout,
         createdAt,
         createdBy: actor.id,
-      });
+      };
+      if (importContext.reusableImport)
+        Object.assign(importContext.reusableImport, importRecord);
+      else state.marketplaceImports.unshift(importRecord);
     }
     state.movements.unshift(...movements);
   });

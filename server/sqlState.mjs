@@ -282,7 +282,7 @@ export async function syncStateToSQL(conn, orgId, data, previousData = null) {
   }
   for (const record of importsToSync) {
     await conn.execute(
-      `INSERT INTO marketplace_imports (id, organization_id, platform, fingerprint, income_fingerprint, source_file_name, income_file_name, location_id, sale_id, row_count, ignored_row_count, duplicate_order_count, total_quantity, gross_total, discount_amount, platform_fee, net_payout, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE income_fingerprint=VALUES(income_fingerprint), income_file_name=VALUES(income_file_name), row_count=VALUES(row_count), ignored_row_count=VALUES(ignored_row_count), duplicate_order_count=VALUES(duplicate_order_count), total_quantity=VALUES(total_quantity), gross_total=VALUES(gross_total), discount_amount=VALUES(discount_amount), platform_fee=VALUES(platform_fee), net_payout=VALUES(net_payout)`,
+      `INSERT INTO marketplace_imports (id, organization_id, platform, fingerprint, income_fingerprint, source_file_name, income_file_name, location_id, sale_id, row_count, ignored_row_count, duplicate_order_count, total_quantity, gross_total, discount_amount, platform_fee, net_payout, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE income_fingerprint=VALUES(income_fingerprint), source_file_name=VALUES(source_file_name), income_file_name=VALUES(income_file_name), location_id=VALUES(location_id), sale_id=VALUES(sale_id), row_count=VALUES(row_count), ignored_row_count=VALUES(ignored_row_count), duplicate_order_count=VALUES(duplicate_order_count), total_quantity=VALUES(total_quantity), gross_total=VALUES(gross_total), discount_amount=VALUES(discount_amount), platform_fee=VALUES(platform_fee), net_payout=VALUES(net_payout), created_at=VALUES(created_at), created_by=VALUES(created_by)`,
       [
         record.id,
         orgId,
@@ -310,12 +310,13 @@ export async function syncStateToSQL(conn, orgId, data, previousData = null) {
     );
     for (let offset = 0; offset < orderIds.length; offset += 500) {
       const chunk = orderIds.slice(offset, offset + 500);
-      const placeholders = chunk.map(() => "(?, ?)").join(",");
+      const placeholders = chunk.map(() => "(?, ?, ?)").join(",");
       await conn.execute(
-        `INSERT IGNORE INTO marketplace_order_hashes (organization_hash, order_hash) VALUES ${placeholders}`,
+        `INSERT INTO marketplace_order_hashes (organization_hash, order_hash, import_id) VALUES ${placeholders} ON DUPLICATE KEY UPDATE import_id=VALUES(import_id)`,
         chunk.flatMap((orderId) => [
           marketplaceTenantDigest(orgId),
           marketplaceOrderDigest(record.platform, orderId),
+          record.id,
         ]),
       );
     }

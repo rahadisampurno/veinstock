@@ -18730,6 +18730,7 @@ function SaleModal({
     ),
     [discountValue, setDiscountValue] = useState(0),
     [buyerNote, setBuyerNote] = useState(""),
+    [manualSalePlatformFee, setManualSalePlatformFee] = useState(0),
     [transactionSettingsOpen, setTransactionSettingsOpen] = useState(false),
     [cart, setCart] = useState<Array<{ variantId: string; quantity: number }>>(
       [],
@@ -18798,6 +18799,7 @@ function SaleModal({
     setDiscountType("nominal");
     setDiscountValue(0);
     setBuyerNote("");
+    setManualSalePlatformFee(0);
     setSkuSearch("");
     setSelectedPosProduct(null);
     resetPosVariantFilters();
@@ -19184,6 +19186,11 @@ function SaleModal({
         : Math.min(current, totalAmount),
     );
   }, [discountType, totalAmount]);
+  useEffect(() => {
+    setManualSalePlatformFee((current) =>
+      channel === "online" ? Math.min(current, payableAmount) : 0,
+    );
+  }, [channel, payableAmount]);
 
   return (
     <Modal
@@ -19217,6 +19224,7 @@ function SaleModal({
               discountType,
               discountValue,
               buyerNote.trim() || undefined,
+              channel === "online" ? manualSalePlatformFee : 0,
             );
             if (shouldPrint) {
               try {
@@ -19317,7 +19325,11 @@ function SaleModal({
               <Field label="Kanal">
                 <select
                   value={channel}
-                  onChange={(e) => setChannel(e.target.value as Channel)}
+                  onChange={(e) => {
+                    const nextChannel = e.target.value as Channel;
+                    setChannel(nextChannel);
+                    if (nextChannel !== "online") setManualSalePlatformFee(0);
+                  }}
                 >
                   <option value="offline">Offline</option>
                   <option value="online">Online</option>
@@ -19828,6 +19840,23 @@ function SaleModal({
                     Diskon dipotong dari total transaksi dan tersimpan di laporan.
                   </small>
                 </Field>
+                {channel === "online" && (
+                  <Field label="Biaya marketplace (opsional)">
+                    <RupiahInput
+                      label="Biaya admin atau layanan marketplace"
+                      value={manualSalePlatformFee}
+                      onValue={(value) =>
+                        setManualSalePlatformFee(
+                          Math.min(value, payableAmount),
+                        )
+                      }
+                    />
+                    <small className="pos-note-hint">
+                      Default Rp0. Biaya tidak mengubah tagihan pembeli, tetapi
+                      mengurangi pencairan dan laba pada laporan.
+                    </small>
+                  </Field>
+                )}
                 <div
                   className="pos-cart-summary"
                   style={{
@@ -19853,6 +19882,12 @@ function SaleModal({
                           ? `${percentage(discountValue)} `
                           : ""}
                         −{money(discountAmount)}
+                      </small>
+                    )}
+                    {channel === "online" && manualSalePlatformFee > 0 && (
+                      <small style={{ display: "block", opacity: 0.8 }}>
+                        Biaya marketplace −{money(manualSalePlatformFee)} ·
+                        pencairan {money(payableAmount - manualSalePlatformFee)}
                       </small>
                     )}
                   </div>

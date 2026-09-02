@@ -200,7 +200,9 @@ async function init() {
     `CREATE TABLE IF NOT EXISTS marketplace_order_hashes (
       organization_hash BINARY(16) NOT NULL,
       order_hash BINARY(16) NOT NULL,
-      PRIMARY KEY (organization_hash, order_hash)
+      import_id VARCHAR(80) NULL,
+      PRIMARY KEY (organization_hash, order_hash),
+      INDEX idx_marketplace_order_import (import_id)
     )`,
     `CREATE TABLE IF NOT EXISTS transfers (
       id VARCHAR(40) PRIMARY KEY,

@@ -697,16 +697,67 @@ describe('multi-tenant API', () => {
     expect(state.body.data.sales).toHaveLength(1);
     expect(state.body.data.balances.find(item => item.variantId === variantId).quantity).toBe(8);
 
+    const originalSaleId = state.body.data.sales[0].id;
+    const originalImportId = state.body.data.marketplaceImports[0].id;
+    expect((await post('/api/commands/cancel', {
+      kind: 'sale', id: originalSaleId, reason: 'Batalkan agar file dapat dikoreksi dan diimpor ulang',
+    }, owner.body.token)).status).toBe(201);
+    state = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    expect(state.body.data.sales.find(item => item.id === originalSaleId).status).toBe('voided');
+    expect(state.body.data.balances.find(item => item.variantId === variantId).quantity).toBe(10);
+
+    const previewAfterCancellation = await post('/api/marketplace/imports/check', {
+      locationId: 'loc-owner', platform: 'tiktok', fingerprint: 'a'.repeat(64),
+      externalOrderIds: ['order-1'],
+    }, owner.body.token);
+    expect(previewAfterCancellation.status).toBe(200);
+    expect(previewAfterCancellation.body).toEqual({ fileImported: false, duplicateOrderIds: [] });
+    expect((await post('/api/commands/sales', payload, owner.body.token)).status).toBe(201);
+
+    state = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    expect(state.body.data.marketplaceImports).toHaveLength(1);
+    expect(state.body.data.marketplaceImports[0]).toEqual(expect.objectContaining({
+      id: originalImportId,
+      fingerprint: 'a'.repeat(64),
+    }));
+    expect(state.body.data.marketplaceImports[0].saleId).not.toBe(originalSaleId);
+    expect(state.body.data.balances.find(item => item.variantId === variantId).quantity).toBe(8);
+    const previewAfterReimport = await post('/api/marketplace/imports/check', {
+      locationId: 'loc-owner', platform: 'tiktok', fingerprint: 'a'.repeat(64),
+      externalOrderIds: ['order-1'],
+    }, owner.body.token);
+    expect(previewAfterReimport.body).toEqual({ fileImported: true, duplicateOrderIds: ['order-1'] });
+
     const manual = await post('/api/commands/sales', {
       locationId: 'loc-owner', channel: 'online', payment: 'Transfer',
-      platformFee: 999999, netPayout: 1,
+      platformFee: 2000, netPayout: 1,
       items: [{ variantId, quantity: 1 }],
     }, owner.body.token);
     expect(manual.status).toBe(201);
     state = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
     expect(state.body.data.sales[0]).toEqual(expect.objectContaining({
-      platformFee: 0, netPayout: 12000, total: 12000,
+      platformFee: 2000, netPayout: 10000, total: 12000,
     }));
+
+    const invalidManualFee = await post('/api/commands/sales', {
+      locationId: 'loc-owner', channel: 'online', payment: 'Transfer',
+      platformFee: 12001,
+      items: [{ variantId, quantity: 1 }],
+    }, owner.body.token);
+    expect(invalidManualFee.status).toBe(400);
+    expect(invalidManualFee.body.message).toMatch(/tidak boleh melebihi/i);
+
+    const offlineInjection = await post('/api/commands/sales', {
+      locationId: 'loc-owner', channel: 'offline', payment: 'Tunai',
+      platformFee: 3000, netPayout: 1,
+      items: [{ variantId, quantity: 1 }],
+    }, owner.body.token);
+    expect(offlineInjection.status).toBe(201);
+    state = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    expect(state.body.data.sales[0]).toEqual(expect.objectContaining({
+      channel: 'offline', platformFee: 0, netPayout: 10000, total: 10000,
+    }));
+    expect(state.body.data.balances.find(item => item.variantId === variantId).quantity).toBe(6);
   });
 
   it('commits employee, attendance, loan, and payroll commands without a browser snapshot', async () => {
