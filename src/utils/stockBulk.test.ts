@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyProductVariantBulkValues,
   applyReceiptBulkValues,
   applyTransferBulkQuantity,
   parseOptionalBulkCost,
@@ -7,6 +8,54 @@ import {
 } from "./stockBulk";
 
 describe("stock bulk updates", () => {
+  it("updates min stock only for variants in the active product filter", () => {
+    const variants = [
+      { id: "balado-150", minStock: 10, price: 12_000 },
+      { id: "balado-250", minStock: 10, price: 18_000 },
+      { id: "keju-150", minStock: 20, price: 13_000 },
+      { id: "keju-250", minStock: 20, price: 19_000 },
+    ];
+
+    expect(
+      applyProductVariantBulkValues(
+        variants,
+        ["keju-150", "keju-250"],
+        { minStock: 500 },
+      ),
+    ).toEqual([
+      { id: "balado-150", minStock: 10, price: 12_000 },
+      { id: "balado-250", minStock: 10, price: 18_000 },
+      { id: "keju-150", minStock: 500, price: 13_000 },
+      { id: "keju-250", minStock: 500, price: 19_000 },
+    ]);
+  });
+
+  it("keeps omitted product bulk fields unchanged and accepts zero", () => {
+    expect(
+      applyProductVariantBulkValues(
+        [{ id: "variant-1", minStock: 25, price: 10_000 }],
+        ["variant-1"],
+        { minStock: 0 },
+      ),
+    ).toEqual([{ id: "variant-1", minStock: 0, price: 10_000 }]);
+  });
+
+  it("supports numeric variant ids without widening the update scope", () => {
+    expect(
+      applyProductVariantBulkValues(
+        [
+          { id: 101, minStock: 10 },
+          { id: 102, minStock: 20 },
+        ],
+        [102],
+        { minStock: 500 },
+      ),
+    ).toEqual([
+      { id: 101, minStock: 10 },
+      { id: 102, minStock: 500 },
+    ]);
+  });
+
   it("parses only valid optional quantities and costs", () => {
     expect(parseOptionalBulkQuantity("")).toBeUndefined();
     expect(parseOptionalBulkQuantity("20")).toBe(20);

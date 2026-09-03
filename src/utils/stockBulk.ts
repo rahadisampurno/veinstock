@@ -1,5 +1,35 @@
 export type OptionalBulkValue = number | undefined | null;
 
+export type ProductVariantBulkValues = Partial<
+  Record<
+    | "cost"
+    | "price"
+    | "onlineCost"
+    | "onlinePrice"
+    | "resellerPrice"
+    | "minStock"
+    | "initialStock",
+    number
+  >
+>;
+
+export const applyProductVariantBulkValues = <
+  T extends { id: string | number },
+>(
+  variants: T[],
+  targetVariantIds: Iterable<string | number>,
+  values: ProductVariantBulkValues,
+): T[] => {
+  const targets = new Set(targetVariantIds);
+  const updates = Object.fromEntries(
+    Object.entries(values).filter(([, value]) => value !== undefined),
+  ) as ProductVariantBulkValues;
+
+  return variants.map((variant) =>
+    targets.has(variant.id) ? ({ ...variant, ...updates } as T) : variant,
+  );
+};
+
 export const parseOptionalBulkQuantity = (
   draft: string,
 ): OptionalBulkValue => {

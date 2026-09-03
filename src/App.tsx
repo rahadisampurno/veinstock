@@ -120,6 +120,7 @@ import {
 } from "./utils/hppProductPublish";
 import { printPayrollSlip } from "./utils/payrollSlip";
 import {
+  applyProductVariantBulkValues,
   applyReceiptBulkValues,
   applyTransferBulkQuantity,
   parseOptionalBulkCost,
@@ -13476,10 +13477,12 @@ function ProductModal({
   const [bulkOnlinePrice, setBulkOnlinePrice] = useState("");
   const [bulkReseller, setBulkReseller] = useState("");
   const [bulkMinStock, setBulkMinStock] = useState("");
+  const bulkMinStockRef = useRef<HTMLInputElement>(null);
   const [bulkInitialStock, setBulkInitialStock] = useState("");
   const [bulkProductScope, setBulkProductScope] = useState<"all" | "visible">(
-    "all",
+    editing ? "visible" : "all",
   );
+  const [bulkProductFeedback, setBulkProductFeedback] = useState("");
   const [variantSearch, setVariantSearch] = useState("");
   const [variantPackageFilter, setVariantPackageFilter] = useState("all");
   const [variantFlavorFilter, setVariantFlavorFilter] = useState("all");
@@ -13533,35 +13536,55 @@ function ProductModal({
     });
 
   const applyBulk = () => {
-    const visibleIndexes = new Set(
-      visibleVariantEntries.map((entry) => entry.index),
+    const bulkMinStockDraft = String(
+      bulkMinStock || bulkMinStockRef.current?.value || "",
+    ).trim();
+    const parsedBulkMinStock = Number(bulkMinStockDraft);
+    if (
+      bulkMinStockDraft !== "" &&
+      (!Number.isInteger(parsedBulkMinStock) || parsedBulkMinStock < 0)
+    ) {
+      setBulkProductFeedback("Min stok harus berupa bilangan bulat minimal 0.");
+      return;
+    }
+    const targetVariantIds =
+      editing && bulkProductScope === "visible"
+        ? visibleVariantEntries.map(({ variant }) => variant.id)
+        : variants.map((variant) => variant.id);
+    const bulkValues = {
+      cost: bulkCost !== "" ? Number(bulkCost) : undefined,
+      price: bulkPrice !== "" ? Number(bulkPrice) : undefined,
+      onlineCost:
+        bulkOnlineCost !== "" ? Number(bulkOnlineCost) : undefined,
+      onlinePrice:
+        bulkOnlinePrice !== "" ? Number(bulkOnlinePrice) : undefined,
+      resellerPrice:
+        bulkReseller !== "" ? Number(bulkReseller) : undefined,
+      minStock:
+        bulkMinStockDraft !== "" ? parsedBulkMinStock : undefined,
+      initialStock:
+        !editing && includeInitialStock && bulkInitialStock !== ""
+          ? Number(bulkInitialStock)
+          : undefined,
+    };
+    const changedFields = Object.values(bulkValues).filter(
+      (value) => value !== undefined,
+    ).length;
+    if (!changedFields) {
+      setBulkProductFeedback("Isi minimal satu nilai yang ingin diperbarui.");
+      return;
+    }
+    if (!targetVariantIds.length) {
+      setBulkProductFeedback(
+        "Tidak ada varian pada hasil pencarian atau filter saat ini.",
+      );
+      return;
+    }
+    setVariants((current) =>
+      applyProductVariantBulkValues(current, targetVariantIds, bulkValues),
     );
-    setVariants(
-      variants.map((v, index) =>
-        editing && bulkProductScope === "visible" && !visibleIndexes.has(index)
-          ? v
-          : {
-              ...v,
-              cost: bulkCost !== "" ? Number(bulkCost) : v.cost,
-              price: bulkPrice !== "" ? Number(bulkPrice) : v.price,
-              onlineCost:
-                bulkOnlineCost !== ""
-                  ? Number(bulkOnlineCost)
-                  : Number(v.onlineCost ?? v.cost ?? 0),
-              onlinePrice:
-                bulkOnlinePrice !== ""
-                  ? Number(bulkOnlinePrice)
-                  : Number(v.onlinePrice ?? v.price ?? 0),
-              resellerPrice:
-                bulkReseller !== "" ? Number(bulkReseller) : v.resellerPrice,
-              minStock:
-                bulkMinStock !== "" ? Number(bulkMinStock) : v.minStock,
-              initialStock:
-                !editing && includeInitialStock && bulkInitialStock !== ""
-                  ? Number(bulkInitialStock)
-                  : v.initialStock,
-            },
-      ),
+    setBulkProductFeedback(
+      `Perubahan diterapkan ke ${targetVariantIds.length} varian. Klik Simpan Produk untuk menyimpannya.`,
     );
     setBulkCost("");
     setBulkPrice("");
@@ -13913,14 +13936,17 @@ function ProductModal({
             <Field label="Terapkan perubahan ke">
               <select
                 value={bulkProductScope}
-                onChange={(event) =>
-                  setBulkProductScope(event.target.value as "all" | "visible")
-                }
+                onChange={(event) => {
+                  setBulkProductScope(
+                    event.target.value as "all" | "visible",
+                  );
+                  setBulkProductFeedback("");
+                }}
               >
-                <option value="all">Semua {variants.length} varian</option>
                 <option value="visible">
-                  {visibleVariantEntries.length} hasil pencarian / filter
+                  Hasil filter saat ini ({visibleVariantEntries.length} varian)
                 </option>
+                <option value="all">Semua varian ({variants.length})</option>
               </select>
             </Field>
           )}
@@ -13962,14 +13988,19 @@ function ProductModal({
             </Field>
             <Field label="Min Stok">
               <input
-                type="number"
-                min="0"
+                ref={bulkMinStockRef}
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
                 value={String(bulkMinStock)}
-                onChange={(e) =>
+                onInput={(event) => {
                   setBulkMinStock(
-                    e.currentTarget.value.replace(/^0+(?=\d)/, ""),
-                  )
-                }
+                    event.currentTarget.value
+                      .replace(/\D/g, "")
+                      .replace(/^0+(?=\d)/, ""),
+                  );
+                  setBulkProductFeedback("");
+                }}
                 placeholder="Opsional"
                 style={{ background: "white" }}
               />
@@ -13989,6 +14020,21 @@ function ProductModal({
               </Field>
             )}
           </div>
+          {bulkProductFeedback && (
+            <small
+              role="status"
+              style={{
+                display: "block",
+                marginTop: "12px",
+                color: bulkProductFeedback.startsWith("Perubahan")
+                  ? "#15803d"
+                  : "#b91c1c",
+                fontWeight: 700,
+              }}
+            >
+              {bulkProductFeedback}
+            </small>
+          )}
         </div>
 
         {!editing && (

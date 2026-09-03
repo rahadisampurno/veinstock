@@ -277,6 +277,36 @@ describe('multi-tenant API', () => {
     expect(state.body.data.products.find(item => item.id === product.id).imageUrl).toBe(imageUrl);
   });
 
+  it('persists filtered bulk minimum stock updates without changing other variants', async () => {
+    const suffix = `${Date.now()}-bulk-min-stock`;
+    const owner = await post('/api/register', { organizationName: 'Minimum Stok', name: 'Owner', email: `owner-${suffix}@test.local`, password: 'Password123!' });
+    const product = {
+      id: `product-${suffix}`, name: 'Kerupuk Mix', category: 'Snack', unit: 'Pcs', active: true,
+      variants: [
+        { id: `balado-${suffix}`, name: 'Balado 150 gram', sku: `BAL-${suffix}`, cost: 6000, price: 9000, onlineCost: 7000, onlinePrice: 10000, resellerPrice: 8500, minStock: 10 },
+        { id: `keju-${suffix}`, name: 'Keju 150 gram', sku: `KEJ-${suffix}`, cost: 6000, price: 9000, onlineCost: 7000, onlinePrice: 10000, resellerPrice: 8500, minStock: 20 },
+      ],
+    };
+    expect((await post('/api/commands/products', { product }, owner.body.token)).status).toBe(201);
+
+    const updated = {
+      ...product,
+      variants: product.variants.map(variant => variant.id.startsWith('keju-') ? { ...variant, minStock: 500 } : variant),
+    };
+    expect((await patch(`/api/commands/products/${product.id}`, { product: updated }, owner.body.token)).status).toBe(201);
+
+    const state = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    const persisted = state.body.data.products.find(item => item.id === product.id);
+    expect(persisted.variants.find(item => item.id.startsWith('balado-')).minStock).toBe(10);
+    expect(persisted.variants.find(item => item.id.startsWith('keju-')).minStock).toBe(500);
+
+    const invalid = {
+      ...updated,
+      variants: updated.variants.map(variant => ({ ...variant, minStock: -1 })),
+    };
+    expect((await patch(`/api/commands/products/${product.id}`, { product: invalid }, owner.body.token)).status).toBe(400);
+  });
+
   it('rejects products whose selling price is zero', async () => {
     const suffix = `${Date.now()}-zero-price`;
     const owner = await post('/api/register', { organizationName: 'Validasi Harga', name: 'Owner', email: `owner-${suffix}@test.local`, password: 'Password123!' });

@@ -2485,7 +2485,8 @@ const validateCommandProduct = (product) => {
     const cost = Number(variant?.cost),
       price = Number(variant?.price),
       onlineCost = Number(variant?.onlineCost ?? variant?.cost),
-      onlinePrice = Number(variant?.onlinePrice ?? variant?.price);
+      onlinePrice = Number(variant?.onlinePrice ?? variant?.price),
+      minStock = Number(variant?.minStock ?? 0);
     const sku = String(variant?.sku || "")
       .trim()
       .toLowerCase();
@@ -2499,6 +2500,8 @@ const validateCommandProduct = (product) => {
       return "HPP online varian tidak valid.";
     if (!Number.isFinite(onlinePrice) || onlinePrice <= 0)
       return "Harga jual online varian harus lebih dari nol.";
+    if (!Number.isInteger(minStock) || minStock < 0)
+      return "Minimum stok varian harus berupa bilangan bulat nol atau lebih.";
     if (sku && skuSet.has(sku))
       return "SKU varian tidak boleh duplikat dalam satu produk.";
     if (sku) skuSet.add(sku);
