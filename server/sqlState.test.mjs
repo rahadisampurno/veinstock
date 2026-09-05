@@ -59,6 +59,42 @@ describe('SQL state synchronization', () => {
     expect(insert.params.slice(9, 14)).toEqual([6000, 8000, 10000, 13000, 9000]);
   });
 
+  it('upserts a large product variant list in batches instead of one query per variant', async () => {
+    const calls = [];
+    const conn = {
+      execute: async (query, params) => {
+        calls.push({ query, params });
+        return [[], []];
+      },
+    };
+    const variants = Array.from({ length: 120 }, (_, index) => ({
+      id: `variant-${index}`,
+      name: `Varian ${index}`,
+      sku: `SKU-${index}`,
+      barcode: String(20_000_000_000_0 + index),
+      cost: 5_000,
+      onlineCost: 6_000,
+      price: 10_000,
+      onlinePrice: 12_000,
+      resellerPrice: 9_000,
+      minStock: index,
+      active: true,
+    }));
+
+    await syncStateToSQL(conn, 'org-1', {
+      locations: [], balances: [], transfers: [], movements: [], stockCounts: [], sales: [],
+      products: [{
+        id: 'product-large', name: 'Mie Kremes', category: 'Snack',
+        unit: 'Pcs', active: true, variants,
+      }],
+    });
+
+    const inserts = calls.filter(call => call.query.startsWith('INSERT INTO variants'));
+    expect(inserts).toHaveLength(1);
+    expect(inserts[0].params).toHaveLength(120 * 16);
+    expect(inserts[0].query.match(/\(\?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?\)/g)).toHaveLength(120);
+  });
+
   it('rewrites sale items idempotently and removes duplicate line items', async () => {
     const calls = [];
     const conn = {
@@ -81,7 +117,9 @@ describe('SQL state synchronization', () => {
       0, 20000, null, null, 'offline', 'QRIS',
     ]);
 
-    expect(calls.filter(call => call.query === 'DELETE FROM sale_items WHERE sale_id = ?')).toHaveLength(1);
+    const deletedItems = calls.filter(call => call.query.startsWith('DELETE FROM sale_items WHERE sale_id IN'));
+    expect(deletedItems).toHaveLength(1);
+    expect(deletedItems[0].params).toEqual(['sale-1']);
     const insertedItems = calls.filter(call => call.query.startsWith('INSERT INTO sale_items'));
     expect(insertedItems).toHaveLength(1);
     expect(insertedItems[0].params).toEqual(['sale-1', 'variant-1', 2, 6000, 10000, 0, 20000]);
@@ -171,5 +209,33 @@ describe('SQL state synchronization', () => {
     const movementInserts = calls.filter(call => call.query.startsWith('INSERT IGNORE INTO stock_movements'));
     expect(movementInserts).toHaveLength(1);
     expect(movementInserts[0].params[0]).toBe('move-new');
+  });
+
+  it('batches high-volume operational writes used by stock and transfer menus', async () => {
+    const calls = [];
+    const conn = {
+      execute: async (query, params) => {
+        calls.push({ query, params });
+        return [[], []];
+      },
+    };
+    const rows = Array.from({ length: 120 }, (_, index) => index);
+
+    await syncStateToSQL(conn, 'org-1', {
+      locations: [], products: [], sales: [], marketplaceSkuMappings: [], marketplaceImports: [],
+      balances: rows.map(index => ({ locationId: 'warehouse', variantId: `variant-${index}`, quantity: index })),
+      transfers: rows.map(index => ({ id: `transfer-${index}`, fromId: 'warehouse', toId: 'outlet', variantId: `variant-${index}`, quantity: 1 })),
+      movements: rows.map(index => ({ id: `movement-${index}`, locationId: 'warehouse', variantId: `variant-${index}`, quantity: -1 })),
+      stockCounts: rows.map(index => ({ id: `count-${index}`, locationId: 'warehouse', variantId: `variant-${index}`, systemQty: 1, actualQty: 0 })),
+    });
+
+    expect(calls.filter(call => call.query.startsWith('INSERT INTO balances'))).toHaveLength(1);
+    expect(calls.filter(call => call.query.startsWith('INSERT INTO transfers'))).toHaveLength(1);
+    expect(calls.filter(call => call.query.startsWith('INSERT IGNORE INTO stock_movements'))).toHaveLength(1);
+    expect(calls.filter(call => call.query.startsWith('INSERT IGNORE INTO stock_counts'))).toHaveLength(1);
+    expect(calls.find(call => call.query.startsWith('INSERT INTO balances')).params).toHaveLength(120 * 4);
+    expect(calls.find(call => call.query.startsWith('INSERT INTO transfers')).params).toHaveLength(120 * 13);
+    expect(calls.find(call => call.query.startsWith('INSERT IGNORE INTO stock_movements')).params).toHaveLength(120 * 10);
+    expect(calls.find(call => call.query.startsWith('INSERT IGNORE INTO stock_counts')).params).toHaveLength(120 * 9);
   });
 });

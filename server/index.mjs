@@ -259,13 +259,12 @@ async function backfillBarcodes(pool) {
       JSON.stringify(compactMarketplaceSnapshot(state)),
       row.id,
     ]);
-    for (const product of state.products || [])
-      for (const variant of product.variants || []) {
-        await pool.execute(
-          "UPDATE variants SET barcode = ? WHERE id = ? AND organization_id = ?",
-          [variant.barcode, variant.id, row.id],
-        );
-      }
+    await syncStateToSQL(
+      pool,
+      row.id,
+      { products: state.products || [] },
+      { products: [] },
+    );
   }
 }
 async function backfillChannelPricing(pool) {

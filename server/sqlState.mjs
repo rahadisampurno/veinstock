@@ -23,6 +23,48 @@ const changedRecords = (next = [], previous = [], keyOf = (item) => item.id) => 
   );
 };
 
+
+const SQL_WRITE_BATCH_SIZE = 250;
+const executeBatchedValues = async (
+  conn,
+  rows,
+  valuesPerRow,
+  statement,
+) => {
+  for (
+    let offset = 0;
+    offset < rows.length;
+    offset += SQL_WRITE_BATCH_SIZE
+  ) {
+    const batch = rows.slice(offset, offset + SQL_WRITE_BATCH_SIZE);
+    const placeholders = batch
+      .map(() => `(${Array(valuesPerRow).fill("?").join(", ")})`)
+      .join(", ");
+    await conn.execute(
+      statement(placeholders),
+      batch.flatMap((row) => row),
+    );
+  }
+};
+const variantValues = (variant, product, organizationId) => [
+  variant.id ?? "unknown",
+  product.id ?? "unknown",
+  organizationId,
+  variant.name ?? "Unknown",
+  variant.sku ?? "",
+  variant.barcode ?? null,
+  variant.packageWeight ?? null,
+  variant.flavor ?? null,
+  variant.spiceLevel ?? null,
+  variant.cost ?? 0,
+  variant.onlineCost ?? variant.cost ?? 0,
+  variant.price ?? 0,
+  variant.onlinePrice ?? variant.price ?? 0,
+  variant.resellerPrice ?? 0,
+  variant.minStock ?? 0,
+  variant.active !== false,
+];
+
 export async function syncStateToSQL(conn, orgId, data, previousData = null) {
   const locationsToSync = changedRecords(
     data.locations,
@@ -57,10 +99,9 @@ export async function syncStateToSQL(conn, orgId, data, previousData = null) {
     previousData?.marketplaceImports,
   );
   // 1. Locations
-  for (const loc of locationsToSync) {
-    await conn.execute(
-      `INSERT INTO locations (id, organization_id, name, type, address, active, is_central_warehouse) VALUES (?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE name=VALUES(name), type=VALUES(type), address=VALUES(address), active=VALUES(active), is_central_warehouse=VALUES(is_central_warehouse)`,
-      [
+  await executeBatchedValues(
+    conn,
+    locationsToSync.map((loc) => [
         loc.id ?? "unknown",
         orgId,
         loc.name ?? "Unknown",
@@ -68,102 +109,111 @@ export async function syncStateToSQL(conn, orgId, data, previousData = null) {
         loc.address ?? "",
         loc.active !== false,
         loc.isCentralWarehouse === true,
-      ],
-    );
-  }
+    ]),
+    7,
+    (values) =>
+      `INSERT INTO locations (id, organization_id, name, type, address, active, is_central_warehouse) VALUES ${values} ON DUPLICATE KEY UPDATE name=VALUES(name), type=VALUES(type), address=VALUES(address), active=VALUES(active), is_central_warehouse=VALUES(is_central_warehouse)`,
+  );
 
   // 2. Products and Variants
-  for (const prod of productsToSync) {
-    await conn.execute(
-      `INSERT INTO products (id, organization_id, name, category, unit, active, image_url) VALUES (?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE name=VALUES(name), category=VALUES(category), unit=VALUES(unit), active=VALUES(active), image_url=VALUES(image_url)`,
-      // Frontend memakai `imageUrl`. Tetap baca `image` untuk data lama yang
-      // pernah tersimpan sebelum nama properti distandarkan.
-      [
+  await executeBatchedValues(
+    conn,
+    productsToSync.map((prod) => [
         prod.id ?? "unknown",
         orgId,
         prod.name ?? "Unknown",
         prod.category ?? "",
         prod.unit ?? "Pcs",
         prod.active !== false,
+        // Frontend memakai `imageUrl`. Tetap baca `image` untuk data lama yang
+        // pernah tersimpan sebelum nama properti distandarkan.
         prod.imageUrl ?? prod.image ?? null,
-      ],
-    );
-    for (const v of prod.variants || []) {
-      await conn.execute(
-        `INSERT INTO variants (id, product_id, organization_id, name, sku, barcode, package_weight, flavor, spice_level, cost, online_cost, price, online_price, reseller_price, min_stock, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE name=VALUES(name), sku=VALUES(sku), barcode=VALUES(barcode), package_weight=VALUES(package_weight), flavor=VALUES(flavor), spice_level=VALUES(spice_level), cost=VALUES(cost), online_cost=VALUES(online_cost), price=VALUES(price), online_price=VALUES(online_price), reseller_price=VALUES(reseller_price), min_stock=VALUES(min_stock), active=VALUES(active)`,
-        [
-          v.id ?? "unknown",
-          prod.id ?? "unknown",
-          orgId,
-          v.name ?? "Unknown",
-          v.sku ?? "",
-          v.barcode ?? null,
-          v.packageWeight ?? null,
-          v.flavor ?? null,
-          v.spiceLevel ?? null,
-          v.cost ?? 0,
-          v.onlineCost ?? v.cost ?? 0,
-          v.price ?? 0,
-          v.onlinePrice ?? v.price ?? 0,
-          v.resellerPrice ?? 0,
-          v.minStock ?? 0,
-          v.active !== false,
-        ],
-      );
-    }
-  }
+    ]),
+    7,
+    (values) =>
+      `INSERT INTO products (id, organization_id, name, category, unit, active, image_url) VALUES ${values} ON DUPLICATE KEY UPDATE name=VALUES(name), category=VALUES(category), unit=VALUES(unit), active=VALUES(active), image_url=VALUES(image_url)`,
+  );
+  await executeBatchedValues(
+    conn,
+    productsToSync.flatMap((product) =>
+      (product.variants || []).map((variant) =>
+        variantValues(variant, product, orgId),
+      ),
+    ),
+    16,
+    (values) =>
+      `INSERT INTO variants (id, product_id, organization_id, name, sku, barcode, package_weight, flavor, spice_level, cost, online_cost, price, online_price, reseller_price, min_stock, active) VALUES ${values} ON DUPLICATE KEY UPDATE name=VALUES(name), sku=VALUES(sku), barcode=VALUES(barcode), package_weight=VALUES(package_weight), flavor=VALUES(flavor), spice_level=VALUES(spice_level), cost=VALUES(cost), online_cost=VALUES(online_cost), price=VALUES(price), online_price=VALUES(online_price), reseller_price=VALUES(reseller_price), min_stock=VALUES(min_stock), active=VALUES(active)`,
+  );
 
   // 3. Balances
-  for (const b of balancesToSync) {
-    await conn.execute(
-      `INSERT INTO balances (organization_id, location_id, variant_id, quantity) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE quantity=VALUES(quantity)`,
-      [
+  await executeBatchedValues(
+    conn,
+    balancesToSync.map((balance) => [
         orgId,
-        b.locationId ?? "unknown",
-        b.variantId ?? "unknown",
-        b.quantity ?? 0,
-      ],
-    );
-  }
+        balance.locationId ?? "unknown",
+        balance.variantId ?? "unknown",
+        balance.quantity ?? 0,
+    ]),
+    4,
+    (values) =>
+      `INSERT INTO balances (organization_id, location_id, variant_id, quantity) VALUES ${values} ON DUPLICATE KEY UPDATE quantity=VALUES(quantity)`,
+  );
 
   // 4. Sales
-  for (const sale of salesToSync) {
+  const saleRows = salesToSync.map((sale) => {
     const lineGrossTotal = (sale.items || []).reduce(
       (sum, item) => sum + Number(item.subtotal || 0),
       0,
     );
-    await conn.execute(
-      `INSERT INTO sales (id, organization_id, location_id, gross_total, discount_amount, discount_type, discount_value, total, platform_fee, net_payout, source_platform, source_import_id, channel, method, status, note, cashier_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE gross_total=VALUES(gross_total), discount_amount=VALUES(discount_amount), discount_type=VALUES(discount_type), discount_value=VALUES(discount_value), total=VALUES(total), platform_fee=VALUES(platform_fee), net_payout=VALUES(net_payout), source_platform=VALUES(source_platform), source_import_id=VALUES(source_import_id), channel=VALUES(channel), method=VALUES(method), status=VALUES(status), note=VALUES(note), cashier_id=VALUES(cashier_id)`,
-      [
-        sale.id ?? "unknown",
-        orgId,
-        sale.locationId ?? "unknown",
-        sale.grossTotal ??
-          (lineGrossTotal ||
-            Number(sale.total || 0) + Number(sale.discountAmount || 0)),
-        sale.discountAmount ?? 0,
-        sale.discountType === "percentage" ? "percentage" : "nominal",
-        sale.discountValue ?? sale.discountAmount ?? 0,
-        sale.total ?? 0,
-        sale.platformFee ?? 0,
-        sale.netPayout ?? Math.max(0, Number(sale.total || 0) - Number(sale.platformFee || 0)),
-        sale.sourcePlatform ?? null,
-        sale.sourceImportId ?? null,
-        sale.channel ?? "offline",
-        sale.payment ?? sale.method ?? "Tunai",
-        sale.status ?? "completed",
-        sale.note ?? null,
-        sale.cashierId || LEGACY_CASHIER_ID,
-        sale.createdAt ?? new Date().toISOString(),
-      ],
-    );
-    // `sale_items` tidak memiliki primary key sendiri pada instalasi lama.
-    // Menambahkan ulang seluruh state dengan INSERT IGNORE menyebabkan setiap
-    // refresh menambah baris duplikat. Jadikan detail setiap transaksi sebagai
-    // snapshot idempoten: hapus detail lama lalu tulis satu kali per item unik.
-    await conn.execute("DELETE FROM sale_items WHERE sale_id = ?", [
+    return [
       sale.id ?? "unknown",
-    ]);
+      orgId,
+      sale.locationId ?? "unknown",
+      sale.grossTotal ??
+        (lineGrossTotal ||
+          Number(sale.total || 0) + Number(sale.discountAmount || 0)),
+      sale.discountAmount ?? 0,
+      sale.discountType === "percentage" ? "percentage" : "nominal",
+      sale.discountValue ?? sale.discountAmount ?? 0,
+      sale.total ?? 0,
+      sale.platformFee ?? 0,
+      sale.netPayout ??
+        Math.max(
+          0,
+          Number(sale.total || 0) - Number(sale.platformFee || 0),
+        ),
+      sale.sourcePlatform ?? null,
+      sale.sourceImportId ?? null,
+      sale.channel ?? "offline",
+      sale.payment ?? sale.method ?? "Tunai",
+      sale.status ?? "completed",
+      sale.note ?? null,
+      sale.cashierId || LEGACY_CASHIER_ID,
+      sale.createdAt ?? new Date().toISOString(),
+    ];
+  });
+  await executeBatchedValues(
+    conn,
+    saleRows,
+    18,
+    (values) =>
+      `INSERT INTO sales (id, organization_id, location_id, gross_total, discount_amount, discount_type, discount_value, total, platform_fee, net_payout, source_platform, source_import_id, channel, method, status, note, cashier_id, created_at) VALUES ${values} ON DUPLICATE KEY UPDATE gross_total=VALUES(gross_total), discount_amount=VALUES(discount_amount), discount_type=VALUES(discount_type), discount_value=VALUES(discount_value), total=VALUES(total), platform_fee=VALUES(platform_fee), net_payout=VALUES(net_payout), source_platform=VALUES(source_platform), source_import_id=VALUES(source_import_id), channel=VALUES(channel), method=VALUES(method), status=VALUES(status), note=VALUES(note), cashier_id=VALUES(cashier_id)`,
+  );
+  for (
+    let offset = 0;
+    offset < salesToSync.length;
+    offset += SQL_WRITE_BATCH_SIZE
+  ) {
+    // `sale_items` tidak memiliki primary key sendiri pada instalasi lama.
+    // Hapus snapshot detail seluruh penjualan yang berubah dalam satu query,
+    // kemudian tulis ulang baris uniknya secara batch.
+    const batch = salesToSync.slice(offset, offset + SQL_WRITE_BATCH_SIZE);
+    await conn.execute(
+      `DELETE FROM sale_items WHERE sale_id IN (${batch.map(() => "?").join(", ")})`,
+      batch.map((sale) => sale.id ?? "unknown"),
+    );
+  }
+  const saleItemRows = salesToSync.flatMap((sale) => {
     const uniqueItems = Array.from(
       new Map(
         (sale.items || []).map((item) => {
@@ -179,7 +229,7 @@ export async function syncStateToSQL(conn, orgId, data, previousData = null) {
         }),
       ).values(),
     );
-    for (const item of uniqueItems) {
+    return uniqueItems.map((item) => {
       const quantity = Number(item.quantity || 0);
       const subtotal = Number(item.subtotal || 0);
       const price =
@@ -190,100 +240,107 @@ export async function syncStateToSQL(conn, orgId, data, previousData = null) {
           : quantity > 0
             ? Math.round(subtotal / quantity)
             : 0;
-      await conn.execute(
-        `INSERT INTO sale_items (sale_id, variant_id, quantity, unit_cost, price, discount, subtotal) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [
-          sale.id ?? "unknown",
-          item.variantId ?? "unknown",
-          quantity,
-          Number.isFinite(Number(item.unitCost)) ? Number(item.unitCost) : null,
-          price,
-          item.discount ?? 0,
-          subtotal,
-        ],
-      );
-    }
-  }
+      return [
+        sale.id ?? "unknown",
+        item.variantId ?? "unknown",
+        quantity,
+        Number.isFinite(Number(item.unitCost)) ? Number(item.unitCost) : null,
+        price,
+        item.discount ?? 0,
+        subtotal,
+      ];
+    });
+  });
+  await executeBatchedValues(
+    conn,
+    saleItemRows,
+    7,
+    (values) =>
+      `INSERT INTO sale_items (sale_id, variant_id, quantity, unit_cost, price, discount, subtotal) VALUES ${values}`,
+  );
 
   // 5. Transfers
-  for (const t of transfersToSync) {
-    await conn.execute(
-      `INSERT INTO transfers (id, transfer_code, organization_id, from_id, to_id, variant_id, quantity, status, created_at, received_at, cancelled_at, cancel_reason, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE transfer_code=VALUES(transfer_code), status=VALUES(status), received_at=VALUES(received_at), cancelled_at=VALUES(cancelled_at), cancel_reason=VALUES(cancel_reason)`,
-      [
-        t.id ?? "unknown",
-        t.transferCode ?? null,
+  await executeBatchedValues(
+    conn,
+    transfersToSync.map((transfer) => [
+        transfer.id ?? "unknown",
+        transfer.transferCode ?? null,
         orgId,
-        t.fromId ?? "unknown",
-        t.toId ?? "unknown",
-        t.variantId ?? "unknown",
-        t.quantity ?? 0,
-        t.status ?? "pending",
-        t.createdAt ?? new Date().toISOString(),
-        t.receivedAt ?? null,
-        t.cancelledAt ?? null,
-        t.cancelReason ?? null,
-        t.createdBy ?? null,
-      ],
-    );
-  }
+        transfer.fromId ?? "unknown",
+        transfer.toId ?? "unknown",
+        transfer.variantId ?? "unknown",
+        transfer.quantity ?? 0,
+        transfer.status ?? "pending",
+        transfer.createdAt ?? new Date().toISOString(),
+        transfer.receivedAt ?? null,
+        transfer.cancelledAt ?? null,
+        transfer.cancelReason ?? null,
+        transfer.createdBy ?? null,
+    ]),
+    13,
+    (values) =>
+      `INSERT INTO transfers (id, transfer_code, organization_id, from_id, to_id, variant_id, quantity, status, created_at, received_at, cancelled_at, cancel_reason, created_by) VALUES ${values} ON DUPLICATE KEY UPDATE transfer_code=VALUES(transfer_code), status=VALUES(status), received_at=VALUES(received_at), cancelled_at=VALUES(cancelled_at), cancel_reason=VALUES(cancel_reason)`,
+  );
 
   // 6. Movements
-  for (const m of movementsToSync) {
-    await conn.execute(
-      `INSERT IGNORE INTO stock_movements (id, organization_id, location_id, variant_id, quantity, type, reason, reference_id, date, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        m.id ?? "unknown",
+  await executeBatchedValues(
+    conn,
+    movementsToSync.map((movement) => [
+        movement.id ?? "unknown",
         orgId,
-        m.locationId ?? "unknown",
-        m.variantId ?? "unknown",
-        m.quantity ?? 0,
-        m.type ?? "other",
-        m.note ?? null,
-        m.referenceId ?? null,
-        m.createdAt ?? new Date().toISOString(),
-        m.user ?? null,
-      ],
-    );
-  }
+        movement.locationId ?? "unknown",
+        movement.variantId ?? "unknown",
+        movement.quantity ?? 0,
+        movement.type ?? "other",
+        movement.note ?? null,
+        movement.referenceId ?? null,
+        movement.createdAt ?? new Date().toISOString(),
+        movement.user ?? null,
+    ]),
+    10,
+    (values) =>
+      `INSERT IGNORE INTO stock_movements (id, organization_id, location_id, variant_id, quantity, type, reason, reference_id, date, created_by) VALUES ${values}`,
+  );
 
   // 7. Stock Counts (Opname)
-  for (const sc of stockCountsToSync) {
-    await conn.execute(
-      `INSERT IGNORE INTO stock_counts (id, organization_id, location_id, variant_id, expected, actual, reason, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        sc.id ?? "unknown",
+  await executeBatchedValues(
+    conn,
+    stockCountsToSync.map((stockCount) => [
+        stockCount.id ?? "unknown",
         orgId,
-        sc.locationId ?? "unknown",
-        sc.variantId ?? "unknown",
-        sc.systemQty ?? 0,
-        sc.actualQty ?? 0,
-        sc.reason ?? null,
-        sc.createdBy ?? null,
-        sc.createdAt ?? new Date().toISOString(),
-      ],
-    );
-  }
+        stockCount.locationId ?? "unknown",
+        stockCount.variantId ?? "unknown",
+        stockCount.systemQty ?? 0,
+        stockCount.actualQty ?? 0,
+        stockCount.reason ?? null,
+        stockCount.createdBy ?? null,
+        stockCount.createdAt ?? new Date().toISOString(),
+    ]),
+    9,
+    (values) =>
+      `INSERT IGNORE INTO stock_counts (id, organization_id, location_id, variant_id, expected, actual, reason, created_by, created_at) VALUES ${values}`,
+  );
 
   // Ledger marketplace sengaja dinormalisasi. Satu file tetap satu transaksi
   // dan satu baris per varian, sedangkan ribuan ID order hanya disimpan sebagai
   // hash 16 byte yang terindeks agar snapshot aplikasi tetap kecil.
-  for (const mapping of mappingsToSync) {
-    await conn.execute(
-      `INSERT INTO marketplace_sku_mappings (organization_id, platform, external_sku, variant_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE variant_id=VALUES(variant_id), updated_at=VALUES(updated_at)`,
-      [
+  await executeBatchedValues(
+    conn,
+    mappingsToSync.map((mapping) => [
         orgId,
         String(mapping.platform || "").toLowerCase(),
         mapping.externalSku,
         mapping.variantId,
         mapping.createdAt,
         mapping.updatedAt,
-      ],
-    );
-  }
-  for (const record of importsToSync) {
-    await conn.execute(
-      `INSERT INTO marketplace_imports (id, organization_id, platform, fingerprint, income_fingerprint, source_file_name, income_file_name, location_id, sale_id, row_count, ignored_row_count, duplicate_order_count, total_quantity, gross_total, discount_amount, platform_fee, net_payout, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE income_fingerprint=VALUES(income_fingerprint), source_file_name=VALUES(source_file_name), income_file_name=VALUES(income_file_name), location_id=VALUES(location_id), sale_id=VALUES(sale_id), row_count=VALUES(row_count), ignored_row_count=VALUES(ignored_row_count), duplicate_order_count=VALUES(duplicate_order_count), total_quantity=VALUES(total_quantity), gross_total=VALUES(gross_total), discount_amount=VALUES(discount_amount), platform_fee=VALUES(platform_fee), net_payout=VALUES(net_payout), created_at=VALUES(created_at), created_by=VALUES(created_by)`,
-      [
+    ]),
+    6,
+    (values) =>
+      `INSERT INTO marketplace_sku_mappings (organization_id, platform, external_sku, variant_id, created_at, updated_at) VALUES ${values} ON DUPLICATE KEY UPDATE variant_id=VALUES(variant_id), updated_at=VALUES(updated_at)`,
+  );
+  await executeBatchedValues(
+    conn,
+    importsToSync.map((record) => [
         record.id,
         orgId,
         String(record.platform || "").toLowerCase(),
@@ -303,24 +360,27 @@ export async function syncStateToSQL(conn, orgId, data, previousData = null) {
         record.netPayout || 0,
         record.createdAt,
         record.createdBy || null,
-      ],
-    );
-    const orderIds = Array.from(
+    ]),
+    19,
+    (values) =>
+      `INSERT INTO marketplace_imports (id, organization_id, platform, fingerprint, income_fingerprint, source_file_name, income_file_name, location_id, sale_id, row_count, ignored_row_count, duplicate_order_count, total_quantity, gross_total, discount_amount, platform_fee, net_payout, created_at, created_by) VALUES ${values} ON DUPLICATE KEY UPDATE income_fingerprint=VALUES(income_fingerprint), source_file_name=VALUES(source_file_name), income_file_name=VALUES(income_file_name), location_id=VALUES(location_id), sale_id=VALUES(sale_id), row_count=VALUES(row_count), ignored_row_count=VALUES(ignored_row_count), duplicate_order_count=VALUES(duplicate_order_count), total_quantity=VALUES(total_quantity), gross_total=VALUES(gross_total), discount_amount=VALUES(discount_amount), platform_fee=VALUES(platform_fee), net_payout=VALUES(net_payout), created_at=VALUES(created_at), created_by=VALUES(created_by)`,
+  );
+  const marketplaceOrderRows = importsToSync.flatMap((record) =>
+    Array.from(
       new Set((record.externalOrderIds || []).map(String).filter(Boolean)),
-    );
-    for (let offset = 0; offset < orderIds.length; offset += 500) {
-      const chunk = orderIds.slice(offset, offset + 500);
-      const placeholders = chunk.map(() => "(?, ?, ?)").join(",");
-      await conn.execute(
-        `INSERT INTO marketplace_order_hashes (organization_hash, order_hash, import_id) VALUES ${placeholders} ON DUPLICATE KEY UPDATE import_id=VALUES(import_id)`,
-        chunk.flatMap((orderId) => [
+    ).map((orderId) => [
           marketplaceTenantDigest(orgId),
           marketplaceOrderDigest(record.platform, orderId),
           record.id,
-        ]),
-      );
-    }
-  }
+    ]),
+  );
+  await executeBatchedValues(
+    conn,
+    marketplaceOrderRows,
+    3,
+    (values) =>
+      `INSERT INTO marketplace_order_hashes (organization_hash, order_hash, import_id) VALUES ${values} ON DUPLICATE KEY UPDATE import_id=VALUES(import_id)`,
+  );
 }
 
 export async function getStateFromSQL(conn, orgId) {

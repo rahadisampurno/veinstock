@@ -119,6 +119,7 @@ import {
   hasPublishableHpp,
 } from "./utils/hppProductPublish";
 import { printPayrollSlip } from "./utils/payrollSlip";
+import { commandErrorMessage } from "./utils/commandError";
 import {
   applyProductVariantBulkValues,
   applyReceiptBulkValues,
@@ -2209,17 +2210,24 @@ function App() {
     if (!token) throw new Error("Sesi tidak ditemukan. Silakan masuk kembali.");
     hasPendingLocalChanges.current = true;
     try {
-      const response = await fetch(path, {
-        method,
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify(payload),
-      });
+      let response: Response;
+      try {
+        response = await fetch(path, {
+          method,
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(payload),
+        });
+      } catch {
+        throw new Error(
+          "Koneksi ke server terputus. Data belum berubah; periksa internet lalu coba lagi.",
+        );
+      }
       const result = await response.json().catch(() => ({}));
       if (!response.ok)
-        throw new Error(result.message || "Transaksi tidak dapat disimpan");
+        throw new Error(commandErrorMessage(response.status, result.message));
       serverVersion.current = Number(result.version || serverVersion.current);
       return refreshCommandState();
     } finally {
@@ -2255,14 +2263,21 @@ function App() {
     if (!token) throw new Error("Sesi tidak ditemukan. Silakan masuk kembali.");
     hasPendingLocalChanges.current = true;
     try {
-      const response = await fetch(path, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-        body,
-      });
+      let response: Response;
+      try {
+        response = await fetch(path, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+          body,
+        });
+      } catch {
+        throw new Error(
+          "Koneksi ke server terputus. Data belum berubah; periksa internet lalu coba lagi.",
+        );
+      }
       const result = await response.json().catch(() => ({}));
       if (!response.ok)
-        throw new Error(result.message || "Transaksi tidak dapat disimpan");
+        throw new Error(commandErrorMessage(response.status, result.message));
       serverVersion.current = Number(result.version || serverVersion.current);
       return refreshCommandState();
     } finally {
