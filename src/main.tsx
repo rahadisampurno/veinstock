@@ -1,7 +1,8 @@
-import { Component, lazy, StrictMode, Suspense, useState, type ErrorInfo, type ReactNode } from 'react'
+import { Component, lazy, StrictMode, Suspense, useCallback, useState, type ErrorInfo, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import LoginEntry from './LoginEntry.tsx'
+import { readStoredAuthSession } from './authSession.ts'
 
 const App = lazy(() => import('./App.tsx'))
 
@@ -49,9 +50,15 @@ window.addEventListener('error', (event) => {
 });
 
 export function Bootstrap() {
-  const [authenticated, setAuthenticated] = useState(() => Boolean(sessionStorage.getItem('veinstock_saved_session') || localStorage.getItem('veinstock_saved_session')))
-  if (!authenticated) return <LoginEntry onAuthenticated={() => setAuthenticated(true)} />
-  return <Suspense fallback={<main style={{minHeight:'100vh',display:'grid',placeItems:'center',fontFamily:'system-ui'}}>Memuat aplikasi MENENGS...</main>}><App /></Suspense>
+  const [authenticated, setAuthenticated] = useState(() => Boolean(readStoredAuthSession()))
+  const [authenticationError, setAuthenticationError] = useState('')
+  const handleUnauthenticated = useCallback((message = '') => {
+    setAuthenticationError(message)
+    setAuthenticated(false)
+  }, [])
+
+  if (!authenticated) return <LoginEntry initialError={authenticationError} onAuthenticated={() => { setAuthenticationError(''); setAuthenticated(true) }} />
+  return <Suspense fallback={<main style={{minHeight:'100vh',display:'grid',placeItems:'center',fontFamily:'system-ui'}}>Memuat aplikasi MENENGS...</main>}><App onUnauthenticated={handleUnauthenticated} /></Suspense>
 }
 
 createRoot(document.getElementById('root')!).render(<StrictMode><AppErrorBoundary><Bootstrap /></AppErrorBoundary></StrictMode>)

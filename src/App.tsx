@@ -164,6 +164,7 @@ import type {
   StockUnit,
   Variant,
 } from "./types";
+import { readStoredAuthSession, savedSessionKey } from "./authSession";
 import {
   createEmptyData,
   getBalance,
@@ -1774,18 +1775,10 @@ const receiptDisplayCode = (receipt: any) => {
   const timestamp = /^rcv-(\d+)-/i.exec(receipt.id || "")?.[1];
   return timestamp ? `RCV-${timestamp.slice(-6)}` : receipt.id;
 };
-const savedSessionKey = "veinstock_saved_session";
-
 const readSession = () => {
-  const current = sessionStorage.getItem(savedSessionKey);
-  const saved = localStorage.getItem(savedSessionKey);
+  const session = readStoredAuthSession();
+  if (session) return session;
   try {
-    const session = JSON.parse(current || saved || "null") as {
-      user: SessionUser;
-      token: string;
-    } | null;
-    if (session?.user && session.token) return session;
-
     // Pertahankan sesi dari versi aplikasi sebelumnya saat pengguna memperbarui aplikasi.
     const legacyUser = sessionStorage.getItem("veinstock_user");
     const legacyToken = sessionStorage.getItem("veinstock_token");
@@ -1797,7 +1790,11 @@ const readSession = () => {
   }
 };
 
-function App() {
+function App({
+  onUnauthenticated,
+}: {
+  onUnauthenticated?: (message?: string) => void;
+} = {}) {
   // Data transaksi selalu dimuat dari server setelah autentikasi. localStorage
   // tidak lagi dipakai sebagai sumber data operasional.
   const [data, setDataState] = useState<AppData>(() => normalizeData(seedData));
@@ -1831,6 +1828,8 @@ function App() {
     () => readSession()?.token || null,
   );
   const [hydrated, setHydrated] = useState(false);
+  const [hydrateError, setHydrateError] = useState("");
+  const [hydrateAttempt, setHydrateAttempt] = useState(0);
   const [page, setPageState] = useState<Page>("dashboard");
   const [helpSection, setHelpSection] = useState<string | null>(null);
   const [sidebar, setSidebar] = useState(false);
@@ -2030,9 +2029,11 @@ function App() {
   useEffect(() => {
     if (!token || !user) {
       setHydrated(false);
+      setHydrateError("");
       return;
     }
     setHydrated(false);
+    setHydrateError("");
     fetch("/api/state", { headers: { Authorization: `Bearer ${token}` } })
       .then((r) => {
         if (r.status === 401 || r.status === 403) {
@@ -2042,6 +2043,9 @@ function App() {
           sessionStorage.removeItem("veinstock_token");
           setAuthUser(null);
           setToken(null);
+          onUnauthenticated?.(
+            "Sesi tidak dapat diverifikasi. Silakan masuk kembali.",
+          );
           return null;
         }
         if (!r.ok) throw new Error("network");
@@ -2061,19 +2065,15 @@ function App() {
         setHydrated(true);
       })
       .catch(() => {
-        // Gangguan jaringan bukan berarti token tidak valid. Jangan hapus sesi
-        // persisten yang dipilih pengguna; setelah server kembali tersedia,
-        // muat ulang aplikasi akan langsung mencoba sesi yang sama lagi.
-        setAuthUser(null);
-        setToken(null);
-        showToast(
-          "Server tidak dapat dihubungi. Data operasional tidak dibuka dari cache.",
-          "error",
+        // Gangguan jaringan bukan berarti token tidak valid. Pertahankan sesi
+        // dan tampilkan aksi retry agar pengguna tidak dilempar ke form kosong.
+        setHydrateError(
+          "Server tidak dapat dihubungi. Data operasional belum dapat dimuat.",
         );
       });
-    // Identitas profil tidak boleh memicu hydrate ulang; data tenant hanya berubah saat token/organisasi berubah.
+    // Identitas profil tidak boleh memicu hydrate ulang; data tenant hanya berubah saat token/organisasi berubah atau pengguna meminta retry.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, user?.organizationId]);
+  }, [token, user?.organizationId, hydrateAttempt]);
   useEffect(() => {
     if (!token || !hydrated) return;
 
@@ -2487,6 +2487,7 @@ function App() {
     localStorage.removeItem(savedSessionKey);
     sessionStorage.removeItem("veinstock_user");
     sessionStorage.removeItem("veinstock_token");
+    onUnauthenticated?.();
   };
   const cancelTransaction = async (
     kind: string,
@@ -2538,11 +2539,36 @@ function App() {
   if (!user || !token) return <Login onLogin={login} />;
   if (!hydrated)
     return (
-      <div className="loading-page">
+      <div className={`loading-page ${hydrateError ? "loading-error-page" : ""}`}>
         <div className="brand-mark">
           <img src="/menengs-icon-192.png" alt="Logo Menengs" />
         </div>
-        <b>Memuat ruang usaha {user.organizationName}…</b>
+        <b>
+          {hydrateError
+            ? "Ruang usaha belum dapat dimuat"
+            : `Memuat ruang usaha ${user.organizationName}…`}
+        </b>
+        {hydrateError && (
+          <>
+            <p>{hydrateError}</p>
+            <div className="loading-error-actions">
+              <button
+                type="button"
+                className="primary"
+                onClick={() => setHydrateAttempt((current) => current + 1)}
+              >
+                Coba lagi
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => void logout()}
+              >
+                Kembali ke login
+              </button>
+            </div>
+          </>
+        )}
       </div>
     );
 

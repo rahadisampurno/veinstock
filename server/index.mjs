@@ -7527,6 +7527,13 @@ app.use((error, req, res, next) => {
   next(error);
 });
 
+// Endpoint API yang tidak dikenal harus tetap mengembalikan JSON gagal.
+// Tanpa guard ini, fallback SPA merespons POST /api/* dengan index.html 200
+// dan frontend dapat salah menganggap autentikasi berhasil.
+app.use("/api", (_req, res) =>
+  res.status(404).json({ message: "Endpoint API tidak ditemukan" }),
+);
+
 app.use(express.static(path.join(root, "dist")));
 app.use((_req, res) => res.sendFile(path.join(root, "dist", "index.html")));
 

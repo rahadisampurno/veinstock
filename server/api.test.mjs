@@ -24,6 +24,12 @@ beforeAll(async () => {
 afterAll(() => server?.kill('SIGTERM'));
 
 describe('multi-tenant API', () => {
+  it('returns JSON 404 for unknown API routes instead of the SPA document', async () => {
+    const response = await post('/api/route-that-does-not-exist', {});
+    expect(response.status).toBe(404);
+    expect(response.body.message).toMatch(/endpoint api tidak ditemukan/i);
+  });
+
   it('initializes the built-in demo organization before operational commands', async () => {
     const owner = await post('/api/login', {
       email: 'owner@meneng.id',

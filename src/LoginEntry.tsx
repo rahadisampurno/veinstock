@@ -1,9 +1,14 @@
 import { useEffect, useState, type FormEvent } from "react";
+import { parseLoginPayload, savedSessionKey } from "./authSession";
 import "./login-entry.css";
 
-const sessionKey = "veinstock_saved_session";
-
-export default function LoginEntry({ onAuthenticated }: { onAuthenticated: () => void }) {
+export default function LoginEntry({
+  onAuthenticated,
+  initialError = "",
+}: {
+  onAuthenticated: () => void;
+  initialError?: string;
+}) {
   const [mode, setMode] = useState<"login" | "forgot" | "verify">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -14,7 +19,7 @@ export default function LoginEntry({ onAuthenticated }: { onAuthenticated: () =>
   const [showPassword, setShowPassword] = useState(false);
   const [activeSlide, setActiveSlide] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useState(initialError);
   const [success, setSuccess] = useState("");
   const slides = [
     ["/menengs-landing-1.webp", "Panduan stok rapi Menengs"],
@@ -33,11 +38,22 @@ export default function LoginEntry({ onAuthenticated }: { onAuthenticated: () =>
     setLoading(true); setError("");
     try {
       const response = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password, remember }) });
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(result.message || "Email atau password tidak sesuai");
-      const session = JSON.stringify({ user: result.user, token: result.token, remember });
-      sessionStorage.setItem(sessionKey, session);
-      if (remember) localStorage.setItem(sessionKey, session); else localStorage.removeItem(sessionKey);
+      const result: unknown = await response.json().catch(() => null);
+      if (!response.ok) {
+        const message =
+          result &&
+          typeof result === "object" &&
+          "message" in result &&
+          typeof result.message === "string" &&
+          result.message.trim()
+            ? result.message
+            : "Email atau password tidak sesuai";
+        throw new Error(message);
+      }
+      const authenticated = parseLoginPayload(result);
+      const session = JSON.stringify({ ...authenticated, remember });
+      sessionStorage.setItem(savedSessionKey, session);
+      if (remember) localStorage.setItem(savedSessionKey, session); else localStorage.removeItem(savedSessionKey);
       onAuthenticated();
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Login gagal"); }
     finally { setLoading(false); }

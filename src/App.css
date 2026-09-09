@@ -1787,6 +1787,23 @@ td small.block {
 .loading-page b {
   font: 700 15px Manrope;
 }
+.loading-error-page {
+  flex-direction: column;
+  padding: 24px;
+  text-align: center;
+}
+.loading-error-page p {
+  max-width: 440px;
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+.loading-error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+}
 .product-img {
   overflow: hidden;
 }
