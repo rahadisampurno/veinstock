@@ -2359,6 +2359,8 @@ const RAW_MATERIAL_UNITS = new Set([
   "Dus",
   "Botol",
   "Roll",
+  "Renteng",
+  "Ball",
 ]);
 const RAW_MATERIAL_INTEGER_UNITS = new Set([
   "Pcs",
@@ -2366,7 +2368,58 @@ const RAW_MATERIAL_INTEGER_UNITS = new Set([
   "Dus",
   "Botol",
   "Roll",
+  "Renteng",
+  "Ball",
 ]);
+const normalizeRawMaterialUnits = (state) => {
+  let changed = false;
+  for (const material of state?.rawMaterials || []) {
+    if (material.unit === "Sachet") {
+      material.unit = "Renteng";
+      changed = true;
+    }
+  }
+  return changed;
+};
+const rawMaterialSkuPrefix = (name) => {
+  const parts = String(name || "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase()
+    .split(/[^A-Z0-9]+/)
+    .filter(Boolean)
+    .map((part) => part.slice(0, 3));
+  return parts.join("-").slice(0, 15).replace(/-+$/, "") || "ITEM";
+};
+const generateRawMaterialSku = (name, usedSkus) => {
+  const prefix = `BB-${rawMaterialSkuPrefix(name)}`;
+  for (let sequence = 1; sequence <= 999999; sequence += 1) {
+    const candidate = `${prefix}-${String(sequence).padStart(3, "0")}`;
+    if (!usedSkus.has(candidate)) {
+      usedSkus.add(candidate);
+      return candidate;
+    }
+  }
+  throw invalidCommand("Kode bahan otomatis tidak dapat dibuat. Isi kode bahan secara manual.");
+};
+const assignMissingRawMaterialSkus = (state) => {
+  const usedSkus = new Set(
+    (state?.rawMaterials || [])
+      .map((material) => String(material.sku || "").trim().toUpperCase())
+      .filter(Boolean),
+  );
+  let changed = false;
+  for (const material of state?.rawMaterials || []) {
+    const currentSku = String(material.sku || "").trim().toUpperCase();
+    if (currentSku) {
+      material.sku = currentSku;
+      continue;
+    }
+    material.sku = generateRawMaterialSku(material.name, usedSkus);
+    changed = true;
+  }
+  return changed;
+};
 const hasMaximumThreeDecimals = (value) =>
   Math.abs(value * 1000 - Math.round(value * 1000)) < 1e-8;
 const validateRawMaterialQuantity = (value, unit, label, { allowZero = false } = {}) => {
@@ -2672,6 +2725,8 @@ async function executeCommand(req, res, mutate) {
     state.rawMaterials ||= [];
     state.rawMaterialBalances ||= [];
     state.rawMaterialMovements ||= [];
+    normalizeRawMaterialUnits(state);
+    assignMissingRawMaterialSkus(state);
     state.returns ||= [];
     state.suppliers ||= [];
     state.employees ||= [];
@@ -2692,6 +2747,8 @@ async function executeCommand(req, res, mutate) {
     await mutate(state, actor, connection);
     normalizeChannelPricingState(state);
     assignMissingBarcodes(state, req.auth.org);
+    normalizeRawMaterialUnits(state);
+    assignMissingRawMaterialSkus(state);
     const invalid = validateState(state);
     if (invalid) throw invalidCommand(invalid);
     const nextVersion = Number(loaded.version || 0) + 1;
@@ -3710,7 +3767,11 @@ app.get("/api/state", requireAuth, async (req, res) => {
 
   if (!conn) {
     const state = ensureDemoState(req.auth.org);
-    if (state.data) assignMissingBarcodes(state.data, req.auth.org);
+    if (state.data) {
+      assignMissingBarcodes(state.data, req.auth.org);
+      normalizeRawMaterialUnits(state.data);
+      assignMissingRawMaterialSkus(state.data);
+    }
     const users = demoUsers
       .filter((item) => item.organization_id === req.auth.org)
       .map(safeUser)
@@ -3727,6 +3788,8 @@ app.get("/api/state", requireAuth, async (req, res) => {
   try {
     const sqlState = await getStateFromSQL(conn, req.auth.org);
     if (!sqlState.data) return res.json({ version: 0, data: null });
+    normalizeRawMaterialUnits(sqlState.data);
+    assignMissingRawMaterialSkus(sqlState.data);
     const [userRows] = await conn.execute(
       "SELECT id, organization_id, name, email, role, outlet_id, active FROM users WHERE organization_id = ? ORDER BY created_at",
       [req.auth.org],
@@ -3818,6 +3881,8 @@ app.put("/api/state", requireAuth, async (req, res) => {
       : data;
     normalizeChannelPricingState(nextData);
     assignMissingBarcodes(nextData, req.auth.org);
+    normalizeRawMaterialUnits(nextData);
+    assignMissingRawMaterialSkus(nextData);
     const invalid = validateState(nextData);
     if (invalid) return res.status(400).json({ message: invalid });
     const denied =
@@ -3856,6 +3921,8 @@ app.put("/api/state", requireAuth, async (req, res) => {
     const nextData = previous ? mergeScopedState(previous, data, actor) : data;
     normalizeChannelPricingState(nextData);
     assignMissingBarcodes(nextData, req.auth.org);
+    normalizeRawMaterialUnits(nextData);
+    assignMissingRawMaterialSkus(nextData);
     const invalid = validateState(nextData);
     if (invalid) {
       await connection.rollback();
@@ -6434,7 +6501,7 @@ app.post("/api/commands/raw-materials", requireAuth, async (req, res) => {
     const validated = inputs.map((input, index) => {
       const row = index + 1;
       const name = String(input?.name || "").trim();
-      const sku = String(input?.sku || "").trim().toUpperCase();
+      const requestedSku = String(input?.sku || "").trim().toUpperCase();
       const category = String(input?.category || "Lainnya").trim();
       const unit = String(input?.unit || "Pcs").trim();
       const minStock = Number(input?.minStock || 0);
@@ -6448,9 +6515,18 @@ app.post("/api/commands/raw-materials", requireAuth, async (req, res) => {
         { allowZero: true },
       );
       if (minStockError) throw invalidCommand(minStockError);
-      if (sku && (existingSkus.has(sku) || batchSkus.has(sku)))
-        throw invalidCommand(`Kode bahan ${sku} pada baris ${row} sudah digunakan.`);
-      if (sku) batchSkus.add(sku);
+      if (
+        requestedSku &&
+        (existingSkus.has(requestedSku) || batchSkus.has(requestedSku))
+      )
+        throw invalidCommand(
+          `Kode bahan ${requestedSku} pada baris ${row} sudah digunakan.`,
+        );
+      const sku = requestedSku || generateRawMaterialSku(
+        name,
+        new Set([...existingSkus, ...batchSkus]),
+      );
+      batchSkus.add(sku);
       return { name, sku, category, unit, minStock };
     });
     const createdAt = new Date().toISOString();
@@ -6458,7 +6534,7 @@ app.post("/api/commands/raw-materials", requireAuth, async (req, res) => {
       ...validated.map((input) => ({
         id: commandId("mat"),
         name: input.name,
-        sku: input.sku || undefined,
+        sku: input.sku,
         category: input.category,
         unit: input.unit,
         minStock: input.minStock,
@@ -6491,7 +6567,9 @@ app.patch("/api/commands/raw-materials/:id", requireAuth, async (req, res) => {
       return;
     }
     const name = String(input.name ?? material.name).trim();
-    const sku = String(input.sku ?? material.sku ?? "").trim().toUpperCase();
+    const requestedSku = String(input.sku ?? material.sku ?? "")
+      .trim()
+      .toUpperCase();
     const minStock = Number(input.minStock ?? material.minStock ?? 0);
     if (!name) throw invalidCommand("Nama bahan baku wajib diisi.");
     const unit = String(input.unit ?? material.unit).trim() || "Pcs";
@@ -6519,17 +6597,24 @@ app.patch("/api/commands/raw-materials/:id", requireAuth, async (req, res) => {
     );
     if (minStockError) throw invalidCommand(minStockError);
     if (
-      sku &&
+      requestedSku &&
       state.rawMaterials.some(
         (item) =>
           item.id !== material.id &&
-          String(item.sku || "").toUpperCase() === sku,
+          String(item.sku || "").toUpperCase() === requestedSku,
       )
     )
       throw invalidCommand("Kode bahan sudah digunakan.");
+    const usedSkus = new Set(
+      state.rawMaterials
+        .filter((item) => item.id !== material.id)
+        .map((item) => String(item.sku || "").trim().toUpperCase())
+        .filter(Boolean),
+    );
+    const sku = requestedSku || generateRawMaterialSku(name, usedSkus);
     Object.assign(material, {
       name,
-      sku: sku || undefined,
+      sku,
       category: String(input.category ?? material.category).trim() || "Lainnya",
       unit,
       minStock,

@@ -165,6 +165,12 @@ import type {
   StockUnit,
   Variant,
 } from "./types";
+import {
+  parseRawMaterialCurrency,
+  parseRawMaterialNumber,
+  sanitizeRawMaterialCurrencyInput,
+  sanitizeRawMaterialQuantityInput,
+} from "./utils/rawMaterialInput";
 import { readStoredAuthSession, savedSessionKey } from "./authSession";
 import {
   createEmptyData,
@@ -9253,6 +9259,8 @@ const RAW_MATERIAL_UNITS = [
   "Dus",
   "Botol",
   "Roll",
+  "Renteng",
+  "Ball",
 ] as const;
 const RAW_MATERIAL_INTEGER_UNITS = new Set([
   "Pcs",
@@ -9260,12 +9268,9 @@ const RAW_MATERIAL_INTEGER_UNITS = new Set([
   "Dus",
   "Botol",
   "Roll",
+  "Renteng",
+  "Ball",
 ]);
-const parseRawMaterialNumber = (value: string | number) => {
-  const normalized = String(value).trim().replace(",", ".");
-  if (!normalized || !/^-?\d+(?:\.\d+)?$/.test(normalized)) return Number.NaN;
-  return Number(normalized);
-};
 const emptyRawTransferItem = (materialId = "") => ({
   rowId: newId("transfer-row"),
   materialId,
@@ -9384,6 +9389,8 @@ function RawMaterialsPage({
     Record<string, { quantity?: string; actualQuantity?: string; unitCost?: string }>
   >({});
   const [movementFormError, setMovementFormError] = useState("");
+  const [movementValidationAttempted, setMovementValidationAttempted] =
+    useState(false);
   useEffect(() => {
     if (!locations.some((location: any) => location.id === locationId))
       setLocationId(defaultSourceLocationId);
@@ -9435,6 +9442,7 @@ function RawMaterialsPage({
     setTransferSearch("");
     setMovementItemErrors({});
     setMovementFormError("");
+    setMovementValidationAttempted(false);
     setDialog("movement");
   };
   const openEditMaterial = (material: any) => {
@@ -9663,6 +9671,17 @@ function RawMaterialsPage({
       return next;
     });
   };
+  const updateTransferItemValue = (
+    rowId: string,
+    field: "quantity" | "actualQuantity" | "unitCost",
+    value: string,
+  ) => {
+    setTransferItems((current) =>
+      current.map((row) =>
+        row.rowId === rowId ? { ...row, [field]: value } : row,
+      ),
+    );
+  };
   const saveMovement = async (event: FormEvent) => {
     event.preventDefault();
     const errors: Record<
@@ -9706,7 +9725,7 @@ function RawMaterialsPage({
           rowErrors.quantity = `Maksimal ${qty(available, material.unit)}.`;
       }
       if (movementDraft.type === "stock_in" && item.unitCost.trim() !== "") {
-        const unitCost = parseRawMaterialNumber(item.unitCost);
+        const unitCost = parseRawMaterialCurrency(item.unitCost);
         if (!Number.isFinite(unitCost) || unitCost < 0 || !Number.isInteger(unitCost))
           rowErrors.unitCost = `Harga per ${material.unit} harus Rupiah bulat, minimal 0.`;
       }
@@ -9717,6 +9736,7 @@ function RawMaterialsPage({
         ? "Pilih lokasi tujuan transfer."
         : "";
     if (Object.keys(errors).length || formError) {
+      setMovementValidationAttempted(true);
       setMovementItemErrors(errors);
       const invalidNames = transferItems
         .filter((item) => errors[item.rowId])
@@ -9745,7 +9765,7 @@ function RawMaterialsPage({
           materialId: item.materialId,
           quantity: parseRawMaterialNumber(item.quantity),
           actualQuantity: parseRawMaterialNumber(item.actualQuantity),
-          unitCost: parseRawMaterialNumber(item.unitCost || 0),
+          unitCost: parseRawMaterialCurrency(item.unitCost || 0),
         })),
         quantity: Number(movementDraft.quantity || 1),
         actualQuantity:
@@ -10057,8 +10077,13 @@ function RawMaterialsPage({
                     value={editMaterialDraft.sku}
                     aria-invalid={!!editMaterialErrors.sku}
                     onChange={(event) => updateEditMaterial("sku", event.target.value)}
-                    placeholder="Contoh: BB-MIE-001"
+                    placeholder="Otomatis jika dikosongkan"
                   />
+                  {!editMaterialDraft.sku.trim() && (
+                    <small className="raw-unit-hint">
+                      Kode unik akan dibuat otomatis saat disimpan.
+                    </small>
+                  )}
                   {editMaterialErrors.sku && <small className="field-validation-error" role="alert">{editMaterialErrors.sku}</small>}
                 </label>
                 <label className="field">
@@ -10089,7 +10114,15 @@ function RawMaterialsPage({
                     inputMode={RAW_MATERIAL_INTEGER_UNITS.has(editMaterialDraft.unit) ? "numeric" : "decimal"}
                     value={editMaterialDraft.minStock}
                     aria-invalid={!!editMaterialErrors.minStock}
-                    onChange={(event) => updateEditMaterial("minStock", event.target.value)}
+                    onChange={(event) =>
+                      updateEditMaterial(
+                        "minStock",
+                        sanitizeRawMaterialQuantityInput(
+                          event.currentTarget.value,
+                          RAW_MATERIAL_INTEGER_UNITS.has(editMaterialDraft.unit),
+                        ),
+                      )
+                    }
                   />
                   {editMaterialErrors.minStock && <small className="field-validation-error" role="alert">{editMaterialErrors.minStock}</small>}
                 </label>
@@ -10210,8 +10243,13 @@ function RawMaterialsPage({
                           onChange={(event) =>
                             updateMaterialDraft(material.rowId, "sku", event.target.value)
                           }
-                          placeholder="BB-MIE-001"
+                          placeholder="Otomatis jika dikosongkan"
                         />
+                        {!material.sku.trim() && (
+                          <small className="raw-unit-hint">
+                            Kode unik akan dibuat otomatis saat disimpan.
+                          </small>
+                        )}
                         {materialDraftErrors[material.rowId]?.sku && (
                           <small className="field-validation-error" role="alert">
                             {materialDraftErrors[material.rowId].sku}
@@ -10260,7 +10298,14 @@ function RawMaterialsPage({
                           aria-invalid={!!materialDraftErrors[material.rowId]?.minStock}
                           value={material.minStock}
                           onChange={(event) =>
-                            updateMaterialDraft(material.rowId, "minStock", event.target.value)
+                            updateMaterialDraft(
+                              material.rowId,
+                              "minStock",
+                              sanitizeRawMaterialQuantityInput(
+                                event.currentTarget.value,
+                                RAW_MATERIAL_INTEGER_UNITS.has(material.unit),
+                              ),
+                            )
                           }
                         />
                         {materialDraftErrors[material.rowId]?.minStock && (
@@ -10358,6 +10403,7 @@ function RawMaterialsPage({
                         setTransferSearch("");
                         setMovementItemErrors({});
                         setMovementFormError("");
+                        setMovementValidationAttempted(false);
                       }}
                     >
                       {canStockIn && <option value="stock_in">Stok masuk</option>}
@@ -10385,6 +10431,7 @@ function RawMaterialsPage({
                           setTransferStep(1);
                           setMovementItemErrors({});
                           setMovementFormError("");
+                          setMovementValidationAttempted(false);
                         }
                       }
                     >
@@ -10424,7 +10471,7 @@ function RawMaterialsPage({
                     </label>
                   )}
                 </div>
-                {movementFormError && transferStep === 2 && (
+                {movementValidationAttempted && movementFormError && transferStep === 2 && (
                   <div className="raw-movement-form-error" role="alert">
                     <AlertTriangle size={18} />
                     <span>{movementFormError}</span>
@@ -10530,7 +10577,7 @@ function RawMaterialsPage({
                         if (!selectedMaterial) return null;
                         const available = balanceAt(selectedMaterial.id, movementDraft.locationId);
                         return (
-                          <div className={`raw-transfer-item${movementDraft.type === "stock_in" ? " with-cost" : ""}${movementItemErrors[item.rowId] ? " has-error" : ""}`} key={item.rowId}>
+                          <div className={`raw-transfer-item${movementDraft.type === "stock_in" ? " with-cost" : ""}${movementValidationAttempted && movementItemErrors[item.rowId] ? " has-error" : ""}`} key={item.rowId}>
                             <span className="raw-transfer-number">{index + 1}</span>
                             <div className="raw-transfer-selected-material">
                               <span>Bahan baku</span>
@@ -10544,16 +10591,18 @@ function RawMaterialsPage({
                                   required
                                   type="text"
                                   inputMode={RAW_MATERIAL_INTEGER_UNITS.has(selectedMaterial.unit) ? "numeric" : "decimal"}
-                                  aria-invalid={!!movementItemErrors[item.rowId]?.actualQuantity}
+                                  aria-invalid={movementValidationAttempted && !!movementItemErrors[item.rowId]?.actualQuantity}
                                   value={item.actualQuantity}
                                   onChange={(event) => {
+                                    const value = sanitizeRawMaterialQuantityInput(
+                                      event.currentTarget.value,
+                                      RAW_MATERIAL_INTEGER_UNITS.has(selectedMaterial.unit),
+                                    );
                                     clearMovementItemError(item.rowId, "actualQuantity");
-                                    setTransferItems((current) =>
-                                      current.map((row) =>
-                                        row.rowId === item.rowId
-                                          ? { ...row, actualQuantity: event.target.value }
-                                        : row,
-                                      ),
+                                    updateTransferItemValue(
+                                      item.rowId,
+                                      "actualQuantity",
+                                      value,
                                     );
                                   }}
                                   placeholder={`Sistem: ${available}`}
@@ -10562,7 +10611,7 @@ function RawMaterialsPage({
                                 {!RAW_MATERIAL_INTEGER_UNITS.has(selectedMaterial.unit) && (
                                   <small>Desimal dapat ditulis 2,5 atau 2.5.</small>
                                 )}
-                                {movementItemErrors[item.rowId]?.actualQuantity && (
+                                {movementValidationAttempted && movementItemErrors[item.rowId]?.actualQuantity && (
                                   <small className="field-validation-error" role="alert">
                                     {movementItemErrors[item.rowId].actualQuantity}
                                   </small>
@@ -10575,16 +10624,18 @@ function RawMaterialsPage({
                                   required
                                   type="text"
                                   inputMode={RAW_MATERIAL_INTEGER_UNITS.has(selectedMaterial.unit) ? "numeric" : "decimal"}
-                                  aria-invalid={!!movementItemErrors[item.rowId]?.quantity}
+                                  aria-invalid={movementValidationAttempted && !!movementItemErrors[item.rowId]?.quantity}
                                   value={item.quantity}
                                   onChange={(event) => {
+                                    const value = sanitizeRawMaterialQuantityInput(
+                                      event.currentTarget.value,
+                                      RAW_MATERIAL_INTEGER_UNITS.has(selectedMaterial.unit),
+                                    );
                                     clearMovementItemError(item.rowId, "quantity");
-                                    setTransferItems((current) =>
-                                      current.map((row) =>
-                                        row.rowId === item.rowId
-                                          ? { ...row, quantity: event.target.value }
-                                        : row,
-                                      ),
+                                    updateTransferItemValue(
+                                      item.rowId,
+                                      "quantity",
+                                      value,
                                     );
                                   }}
                                   placeholder={movementDraft.type === "stock_in" ? "Jumlah masuk" : `Maks. ${available}`}
@@ -10599,7 +10650,7 @@ function RawMaterialsPage({
                                       : "Desimal dapat ditulis 2,5 atau 2.5."}
                                   </small>
                                 )}
-                                {movementItemErrors[item.rowId]?.quantity && (
+                                {movementValidationAttempted && movementItemErrors[item.rowId]?.quantity && (
                                   <small className="field-validation-error" role="alert">
                                     {movementItemErrors[item.rowId].quantity}
                                   </small>
@@ -10610,25 +10661,25 @@ function RawMaterialsPage({
                               <label className="field raw-transfer-cost">
                                 <span>Harga per {selectedMaterial.unit} (opsional)</span>
                                 <input
-                                  type="number"
-                                  min="0"
-                                  step="1"
-                                  aria-invalid={!!movementItemErrors[item.rowId]?.unitCost}
+                                  type="text"
+                                  inputMode="numeric"
+                                  aria-invalid={movementValidationAttempted && !!movementItemErrors[item.rowId]?.unitCost}
                                   value={item.unitCost}
                                   onChange={(event) => {
+                                    const value = sanitizeRawMaterialCurrencyInput(
+                                      event.currentTarget.value,
+                                    );
                                     clearMovementItemError(item.rowId, "unitCost");
-                                    setTransferItems((current) =>
-                                      current.map((row) =>
-                                        row.rowId === item.rowId
-                                          ? { ...row, unitCost: event.target.value }
-                                        : row,
-                                      ),
+                                    updateTransferItemValue(
+                                      item.rowId,
+                                      "unitCost",
+                                      value,
                                     );
                                   }}
-                                  placeholder="Rp 0"
+                                  placeholder="Contoh: 12.000"
                                 />
                                 <small>Rupiah untuk setiap 1 {selectedMaterial.unit}</small>
-                                {movementItemErrors[item.rowId]?.unitCost && (
+                                {movementValidationAttempted && movementItemErrors[item.rowId]?.unitCost && (
                                   <small className="field-validation-error" role="alert">
                                     {movementItemErrors[item.rowId].unitCost}
                                   </small>
@@ -10697,7 +10748,12 @@ function RawMaterialsPage({
                     type="button"
                     className="primary"
                     disabled={!transferItems.length}
-                    onClick={() => setTransferStep(2)}
+                    onClick={() => {
+                      setMovementItemErrors({});
+                      setMovementFormError("");
+                      setMovementValidationAttempted(false);
+                      setTransferStep(2);
+                    }}
                   >
                     Lanjut isi mutasi <ArrowRight size={17} />
                   </button>
