@@ -82,6 +82,41 @@ export interface Balance {
   variantId: string;
   quantity: number;
 }
+export interface RawMaterial {
+  id: string;
+  name: string;
+  sku?: string;
+  category: string;
+  unit: StockUnit;
+  minStock: number;
+  active: boolean;
+  createdAt: string;
+}
+export interface RawMaterialBalance {
+  locationId: string;
+  materialId: string;
+  quantity: number;
+}
+export type RawMaterialMovementType =
+  | "stock_in"
+  | "stock_out"
+  | "transfer_out"
+  | "transfer_in"
+  | "adjustment";
+export interface RawMaterialMovement {
+  id: string;
+  documentCode: string;
+  materialId: string;
+  locationId: string;
+  destinationLocationId?: string;
+  type: RawMaterialMovementType;
+  quantity: number;
+  unitCost?: number;
+  note: string;
+  createdAt: string;
+  createdBy?: string;
+  createdByName?: string;
+}
 export interface Transfer {
   id: string;
   transferCode?: string;
@@ -525,6 +560,9 @@ export interface AppData {
   locations: Location[];
   products: Product[];
   balances: Balance[];
+  rawMaterials?: RawMaterial[];
+  rawMaterialBalances?: RawMaterialBalance[];
+  rawMaterialMovements?: RawMaterialMovement[];
   transfers: Transfer[];
   sales: Sale[];
   movements: Movement[];

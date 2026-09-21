@@ -28,6 +28,7 @@ export const seedData: AppData = {
     ...['v-balado','v-jagung','v-keju','v-pedas','v-original'].map((variantId, i) => ({ locationId: ids.warehouse, variantId, quantity: 9000 - i * 400 })),
     ...['v-balado','v-jagung','v-keju','v-pedas','v-original'].map((variantId, i) => ({ locationId: ids.outlet, variantId, quantity: 2100 - i * 180 })),
   ],
+  rawMaterials: [], rawMaterialBalances: [], rawMaterialMovements: [],
   transfers: [], stockCounts: [], suppliers: [], receipts: [], returns: [], stockOuts: [], shipments: [], shipmentHandovers: [], marketplaceSkuMappings: [], marketplaceImports: [],
   sales: [
     { id: 'sale-1', locationId: ids.outlet, channel: 'offline', total: 1850000, payment: 'QRIS', createdAt: now(), items: [{ variantId: 'v-balado', quantity: 800, unit: 'gram', unitCost: 52, subtotal: 80000 }], status: 'completed' },
@@ -41,7 +42,7 @@ export const createEmptyData = (organizationName: string, owner: Pick<SessionUse
   business: { name: organizationName, ownerName: owner.name, email: owner.email },
   users: [{ id: owner.id, name: owner.name, email: owner.email, role: 'owner', active: true }],
   locations: [{ id: 'loc-owner', name: `Gudang ${organizationName}`, type: 'warehouse', active: true }],
-  products: [], balances: [], transfers: [], sales: [], movements: [], stockCounts: [], suppliers: [], receipts: [], returns: [], stockOuts: [], employees: [], attendanceSettings: [], attendances: [], liveSessions: [], loans: [], payrolls: [], cashEntries: [], debtEntries: [], shipments: [], shipmentHandovers: [], marketplaceSkuMappings: [], marketplaceImports: [],
+  products: [], balances: [], rawMaterials: [], rawMaterialBalances: [], rawMaterialMovements: [], transfers: [], sales: [], movements: [], stockCounts: [], suppliers: [], receipts: [], returns: [], stockOuts: [], employees: [], attendanceSettings: [], attendances: [], liveSessions: [], loans: [], payrolls: [], cashEntries: [], debtEntries: [], shipments: [], shipmentHandovers: [], marketplaceSkuMappings: [], marketplaceImports: [],
 });
 
 const stockUnitNames = ['Pcs', 'Botol', 'Cup', 'Pack', 'Box', 'Dus', 'Kg', 'Gram', 'Liter', 'Ml'] as const;
@@ -128,6 +129,9 @@ export const normalizeData = (data: AppData): AppData => {
     locations,
     products,
     balances: data.balances || [],
+    rawMaterials: data.rawMaterials || [],
+    rawMaterialBalances: data.rawMaterialBalances || [],
+    rawMaterialMovements: data.rawMaterialMovements || [],
     transfers: data.transfers || [],
     // Data legacy mendapat kanal serta harga online tanpa mengubah hasil historis.
     sales: normalizedSales,

@@ -345,6 +345,7 @@ async function backfillRolePolicyDependencies(pool) {
     pricing: "pricing.view",
     suppliers: "supplier.view",
     receipts: "stock.view",
+    "raw-materials": "stock.view",
     stock: "stock.view",
     "stock-outs": "stock.out",
     transfers: "transfer.view",
@@ -400,6 +401,20 @@ async function backfillRolePolicyDependencies(pool) {
           changed = true;
         }
       }
+    }
+    if (!state.securityMigrations?.rawMaterialsMenuV1) {
+      for (const role of ["admin", "finance", "warehouse", "pic"]) {
+        const policy = state.rolePolicies[role];
+        if (!policy) continue;
+        policy.menus ||= [];
+        if (!policy.menus.includes("raw-materials")) {
+          policy.menus.push("raw-materials");
+          changed = true;
+        }
+      }
+      state.securityMigrations ||= {};
+      state.securityMigrations.rawMaterialsMenuV1 = true;
+      changed = true;
     }
     state.securityMigrations ||= {};
     if (!state.securityMigrations.operationalRoleScopeV1) {
@@ -472,6 +487,7 @@ const defaultRoleMenusById = {
     "pricing",
     "suppliers",
     "receipts",
+    "raw-materials",
     "stock",
     "stock-outs",
     "transfers",
@@ -491,6 +507,7 @@ const defaultRoleMenusById = {
     "dashboard",
     "products",
     "locations",
+    "raw-materials",
     "stock",
     "stock-outs",
     "transfers",
@@ -501,12 +518,13 @@ const defaultRoleMenusById = {
     "attendance",
     "help",
   ],
-  finance: ["dashboard", "cashbook", "debts", "stock", "reports", "analytics", "help"],
+  finance: ["dashboard", "cashbook", "debts", "stock", "raw-materials", "reports", "analytics", "help"],
   warehouse: [
     "dashboard",
     "products",
     "locations",
     "receipts",
+    "raw-materials",
     "stock",
     "stock-outs",
     "transfers",
@@ -1499,6 +1517,9 @@ const emptyState = (organizationName, owner) => ({
   ],
   products: [],
   balances: [],
+  rawMaterials: [],
+  rawMaterialBalances: [],
+  rawMaterialMovements: [],
   transfers: [],
   sales: [],
   movements: [],
@@ -2326,6 +2347,59 @@ const commandAdjustBalance = (balances, locationId, variantId, delta) => {
   });
   return Array.from(result.values());
 };
+const rawMaterialBalanceKey = (locationId, materialId) =>
+  `${locationId}:${materialId}`;
+const RAW_MATERIAL_UNITS = new Set([
+  "Kg",
+  "Gram",
+  "Liter",
+  "Ml",
+  "Pcs",
+  "Pack",
+  "Dus",
+  "Botol",
+  "Roll",
+]);
+const RAW_MATERIAL_INTEGER_UNITS = new Set([
+  "Pcs",
+  "Pack",
+  "Dus",
+  "Botol",
+  "Roll",
+]);
+const hasMaximumThreeDecimals = (value) =>
+  Math.abs(value * 1000 - Math.round(value * 1000)) < 1e-8;
+const validateRawMaterialQuantity = (value, unit, label, { allowZero = false } = {}) => {
+  if (!Number.isFinite(value) || (allowZero ? value < 0 : value <= 0))
+    return `${label} harus ${allowZero ? "nol atau lebih" : "lebih dari nol"}.`;
+  if (RAW_MATERIAL_INTEGER_UNITS.has(unit) && !Number.isInteger(value))
+    return `${label} dalam ${unit} harus berupa bilangan bulat.`;
+  if (!hasMaximumThreeDecimals(value))
+    return `${label} maksimal memiliki 3 angka desimal.`;
+  return null;
+};
+const rawMaterialBalance = (balances, locationId, materialId) =>
+  Number(
+    (balances || []).find(
+      (item) =>
+        item.locationId === locationId && item.materialId === materialId,
+    )?.quantity || 0,
+  );
+const adjustRawMaterialBalance = (balances, locationId, materialId, delta) => {
+  const key = rawMaterialBalanceKey(locationId, materialId);
+  const result = new Map(
+    (balances || []).map((item) => [
+      rawMaterialBalanceKey(item.locationId, item.materialId),
+      { ...item },
+    ]),
+  );
+  const previous = result.get(key) || { locationId, materialId, quantity: 0 };
+  result.set(key, {
+    ...previous,
+    quantity: Math.round((Number(previous.quantity || 0) + delta) * 1000) / 1000,
+  });
+  return Array.from(result.values());
+};
 const commandMovement = (
   variantId,
   locationId,
@@ -2419,6 +2493,7 @@ const configurableMenus = new Set([
   "pricing",
   "suppliers",
   "receipts",
+  "raw-materials",
   "stock",
   "stock-outs",
   "transfers",
@@ -2443,6 +2518,7 @@ const menuPermissionRequirements = {
   pricing: "pricing.view",
   suppliers: "supplier.view",
   receipts: "stock.view",
+  "raw-materials": "stock.view",
   stock: "stock.view",
   "stock-outs": "stock.out",
   transfers: "transfer.view",
@@ -2593,6 +2669,9 @@ async function executeCommand(req, res, mutate) {
         }));
     }
     state.receipts ||= [];
+    state.rawMaterials ||= [];
+    state.rawMaterialBalances ||= [];
+    state.rawMaterialMovements ||= [];
     state.returns ||= [];
     state.suppliers ||= [];
     state.employees ||= [];
@@ -3409,6 +3488,15 @@ app.get("/api/state", requireAuth, async (req, res) => {
             )
               ? source.balances
               : [],
+            rawMaterials: hasAny("stock.view", "stock.in", "stock.out", "stock.adjust")
+              ? source.rawMaterials || []
+              : [],
+            rawMaterialBalances: hasAny("stock.view", "stock.in", "stock.out", "stock.adjust")
+              ? source.rawMaterialBalances || []
+              : [],
+            rawMaterialMovements: hasAny("stock.view", "stock.in", "stock.out", "stock.adjust", "audit.location.view")
+              ? source.rawMaterialMovements || []
+              : [],
             sales: hasAny(
               "sale.view",
               "sale.create",
@@ -3548,6 +3636,12 @@ app.get("/api/state", requireAuth, async (req, res) => {
       users: (data.users || []).filter((u) => u.id === actor.id),
       balances: (data.balances || []).filter((b) =>
         effectiveLocationIds.includes(b.locationId),
+      ),
+      rawMaterialBalances: (data.rawMaterialBalances || []).filter((balance) =>
+        effectiveLocationIds.includes(balance.locationId),
+      ),
+      rawMaterialMovements: (data.rawMaterialMovements || []).filter((movement) =>
+        effectiveLocationIds.includes(movement.locationId),
       ),
       sales: (data.sales || []).filter((s) =>
         effectiveLocationIds.includes(s.locationId),
@@ -6321,6 +6415,298 @@ app.post(
     });
   },
 );
+
+app.post("/api/commands/raw-materials", requireAuth, async (req, res) => {
+  await executeCommand(req, res, async (state, actor) => {
+    const authorization = commandAuth(actor, "stock.adjust");
+    if (!authorization.allowed) throw forbiddenCommand(authorization.reason);
+    const inputs = Array.isArray(req.body?.materials)
+      ? req.body.materials
+      : [req.body?.material || {}];
+    if (!inputs.length || inputs.length > 100)
+      throw invalidCommand("Tambahkan 1 sampai 100 bahan baku dalam satu batch.");
+    const existingSkus = new Set(
+      state.rawMaterials
+        .map((material) => String(material.sku || "").trim().toUpperCase())
+        .filter(Boolean),
+    );
+    const batchSkus = new Set();
+    const validated = inputs.map((input, index) => {
+      const row = index + 1;
+      const name = String(input?.name || "").trim();
+      const sku = String(input?.sku || "").trim().toUpperCase();
+      const category = String(input?.category || "Lainnya").trim();
+      const unit = String(input?.unit || "Pcs").trim();
+      const minStock = Number(input?.minStock || 0);
+      if (!name) throw invalidCommand(`Nama bahan pada baris ${row} wajib diisi.`);
+      if (!RAW_MATERIAL_UNITS.has(unit))
+        throw invalidCommand(`Satuan pada baris ${row} tidak valid.`);
+      const minStockError = validateRawMaterialQuantity(
+        minStock,
+        unit,
+        `Stok minimum pada baris ${row}`,
+        { allowZero: true },
+      );
+      if (minStockError) throw invalidCommand(minStockError);
+      if (sku && (existingSkus.has(sku) || batchSkus.has(sku)))
+        throw invalidCommand(`Kode bahan ${sku} pada baris ${row} sudah digunakan.`);
+      if (sku) batchSkus.add(sku);
+      return { name, sku, category, unit, minStock };
+    });
+    const createdAt = new Date().toISOString();
+    state.rawMaterials.unshift(
+      ...validated.map((input) => ({
+        id: commandId("mat"),
+        name: input.name,
+        sku: input.sku || undefined,
+        category: input.category,
+        unit: input.unit,
+        minStock: input.minStock,
+        active: true,
+        createdAt,
+      })),
+    );
+  });
+});
+
+app.patch("/api/commands/raw-materials/:id", requireAuth, async (req, res) => {
+  await executeCommand(req, res, async (state, actor) => {
+    const authorization = commandAuth(actor, "stock.adjust");
+    if (!authorization.allowed) throw forbiddenCommand(authorization.reason);
+    const material = state.rawMaterials.find((item) => item.id === req.params.id);
+    if (!material) throw invalidCommand("Bahan baku tidak ditemukan.");
+    const input = req.body?.material || {};
+    if (input.active === false) {
+      const stockBalance = (state.rawMaterialBalances || [])
+        .filter((balance) => balance.materialId === material.id)
+        .reduce(
+          (total, balance) => total + Math.abs(Number(balance.quantity || 0)),
+          0,
+        );
+      if (stockBalance > 0)
+        throw invalidCommand(
+          `Bahan ${material.name} masih memiliki saldo di lokasi. Kosongkan seluruh saldo sebelum menghapus bahan.`,
+        );
+      material.active = false;
+      return;
+    }
+    const name = String(input.name ?? material.name).trim();
+    const sku = String(input.sku ?? material.sku ?? "").trim().toUpperCase();
+    const minStock = Number(input.minStock ?? material.minStock ?? 0);
+    if (!name) throw invalidCommand("Nama bahan baku wajib diisi.");
+    const unit = String(input.unit ?? material.unit).trim() || "Pcs";
+    if (!RAW_MATERIAL_UNITS.has(unit))
+      throw invalidCommand("Satuan bahan baku tidak valid.");
+    if (
+      unit !== material.unit &&
+      ((state.rawMaterialMovements || []).some(
+        (movement) => movement.materialId === material.id,
+      ) ||
+        (state.rawMaterialBalances || []).some(
+          (balance) =>
+            balance.materialId === material.id &&
+            Number(balance.quantity || 0) !== 0,
+        ))
+    )
+      throw invalidCommand(
+        `Satuan ${material.name} tidak dapat diubah karena sudah memiliki saldo atau riwayat mutasi. Buat master bahan baru untuk satuan berbeda.`,
+      );
+    const minStockError = validateRawMaterialQuantity(
+      minStock,
+      unit,
+      "Stok minimum",
+      { allowZero: true },
+    );
+    if (minStockError) throw invalidCommand(minStockError);
+    if (
+      sku &&
+      state.rawMaterials.some(
+        (item) =>
+          item.id !== material.id &&
+          String(item.sku || "").toUpperCase() === sku,
+      )
+    )
+      throw invalidCommand("Kode bahan sudah digunakan.");
+    Object.assign(material, {
+      name,
+      sku: sku || undefined,
+      category: String(input.category ?? material.category).trim() || "Lainnya",
+      unit,
+      minStock,
+      active: input.active !== false,
+    });
+  });
+});
+
+app.post("/api/commands/raw-material-movements", requireAuth, async (req, res) => {
+  await executeCommand(req, res, async (state, actor) => {
+    const {
+      type,
+      materialId,
+      locationId,
+      destinationLocationId,
+      note,
+    } = req.body || {};
+    if (!state.locations.some((item) => item.id === locationId && item.active !== false))
+      throw invalidCommand("Lokasi bahan baku tidak ditemukan.");
+    if (!["stock_in", "stock_out", "transfer", "adjustment"].includes(type))
+      throw invalidCommand("Jenis mutasi bahan baku tidak valid.");
+    const action =
+      type === "stock_in" ? "stock.in" : type === "adjustment" ? "stock.adjust" : type === "transfer" ? "transfer.create" : "stock.out";
+    const authorization = commandAuth(actor, action, locationId);
+    if (!authorization.allowed) throw forbiddenCommand(authorization.reason);
+    const documentCode = `BB-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${crypto.randomBytes(2).toString("hex").toUpperCase()}`;
+    const createdAt = new Date().toISOString();
+    const pushMovement = (
+      targetMaterialId,
+      movementType,
+      targetLocationId,
+      signedQuantity,
+      destination,
+      targetUnitCost,
+    ) =>
+      state.rawMaterialMovements.unshift({
+        id: commandId("rmm"),
+        documentCode,
+        materialId: targetMaterialId,
+        locationId: targetLocationId,
+        destinationLocationId: destination,
+        type: movementType,
+        quantity: signedQuantity,
+        unitCost: targetUnitCost || undefined,
+        note: String(note || ""),
+        createdAt,
+        createdBy: actor.id,
+        createdByName: actor.name,
+      });
+
+    if (type === "transfer") {
+      if (!destinationLocationId || destinationLocationId === locationId)
+        throw invalidCommand("Pilih lokasi tujuan yang berbeda.");
+      if (!state.locations.some((item) => item.id === destinationLocationId && item.active !== false))
+        throw invalidCommand("Lokasi tujuan tidak ditemukan.");
+    }
+
+    const inputs = Array.isArray(req.body?.items)
+      ? req.body.items
+      : [{
+          materialId,
+          quantity: req.body?.quantity,
+          actualQuantity: req.body?.actualQuantity,
+          unitCost: req.body?.unitCost,
+        }];
+    if (!inputs.length || inputs.length > 100)
+      throw invalidCommand("Pilih 1 sampai 100 bahan untuk dicatat.");
+
+    const seen = new Set();
+    const validated = inputs.map((input, index) => {
+      const row = index + 1;
+      const targetMaterial = state.rawMaterials.find(
+        (item) => item.id === input?.materialId && item.active !== false,
+      );
+      if (!targetMaterial)
+        throw invalidCommand(`Bahan pada baris ${row} tidak ditemukan atau tidak aktif.`);
+      if (seen.has(targetMaterial.id))
+        throw invalidCommand(`${targetMaterial.name} dipilih lebih dari satu kali.`);
+      if (!RAW_MATERIAL_UNITS.has(targetMaterial.unit))
+        throw invalidCommand(`Satuan ${targetMaterial.name} tidak dikenali. Perbarui master bahan terlebih dahulu.`);
+      seen.add(targetMaterial.id);
+
+      const available = rawMaterialBalance(
+        state.rawMaterialBalances,
+        locationId,
+        targetMaterial.id,
+      );
+      const unitCost = Number(input?.unitCost || 0);
+      if (!Number.isFinite(unitCost) || unitCost < 0 || !Number.isInteger(unitCost))
+        throw invalidCommand(`Harga per ${targetMaterial.unit} untuk ${targetMaterial.name} harus Rupiah bulat, minimal 0.`);
+
+      if (type === "adjustment") {
+        const actualQuantity = Number(input?.actualQuantity);
+        const actualQuantityError = validateRawMaterialQuantity(
+          actualQuantity,
+          targetMaterial.unit,
+          `Stok fisik ${targetMaterial.name}`,
+          { allowZero: true },
+        );
+        if (actualQuantityError) throw invalidCommand(actualQuantityError);
+        const delta = Math.round((actualQuantity - available) * 1000) / 1000;
+        if (delta === 0)
+          throw invalidCommand(`Stok fisik ${targetMaterial.name} sama dengan stok sistem.`);
+        return { material: targetMaterial, actualQuantity, delta, unitCost };
+      }
+
+      const quantity = Number(input?.quantity);
+      const quantityError = validateRawMaterialQuantity(
+        quantity,
+        targetMaterial.unit,
+        `Jumlah ${targetMaterial.name}`,
+      );
+      if (quantityError) throw invalidCommand(quantityError);
+      if (["stock_out", "transfer"].includes(type) && available < quantity)
+        throw invalidCommand(
+          `Stok ${targetMaterial.name} tidak cukup. Tersedia ${available} ${targetMaterial.unit}.`,
+        );
+      return { material: targetMaterial, quantity, unitCost };
+    });
+
+    let nextBalances = state.rawMaterialBalances;
+    for (const item of validated) {
+      if (type === "stock_in") {
+        nextBalances = adjustRawMaterialBalance(
+          nextBalances,
+          locationId,
+          item.material.id,
+          item.quantity,
+        );
+        pushMovement(item.material.id, "stock_in", locationId, item.quantity, undefined, item.unitCost);
+        continue;
+      }
+      if (type === "adjustment") {
+        nextBalances = adjustRawMaterialBalance(
+          nextBalances,
+          locationId,
+          item.material.id,
+          item.delta,
+        );
+        pushMovement(item.material.id, "adjustment", locationId, item.delta);
+        continue;
+      }
+
+      nextBalances = adjustRawMaterialBalance(
+        nextBalances,
+        locationId,
+        item.material.id,
+        -item.quantity,
+      );
+      if (type === "stock_out") {
+        pushMovement(item.material.id, "stock_out", locationId, -item.quantity);
+        continue;
+      }
+      nextBalances = adjustRawMaterialBalance(
+        nextBalances,
+        destinationLocationId,
+        item.material.id,
+        item.quantity,
+      );
+      pushMovement(
+        item.material.id,
+        "transfer_out",
+        locationId,
+        -item.quantity,
+        destinationLocationId,
+      );
+      pushMovement(
+        item.material.id,
+        "transfer_in",
+        destinationLocationId,
+        item.quantity,
+        locationId,
+      );
+    }
+    state.rawMaterialBalances = nextBalances;
+  });
+});
 
 app.post("/api/commands/receipts", requireAuth, async (req, res) => {
   await executeCommand(req, res, async (state, actor) => {

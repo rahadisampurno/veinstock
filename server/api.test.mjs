@@ -75,6 +75,196 @@ describe('multi-tenant API', () => {
     expect(rememberedPayload.exp - rememberedPayload.iat).toBe(90 * 24 * 60 * 60);
   });
 
+  it('tracks raw materials per location without exposing them as POS products', async () => {
+    const suffix = `${Date.now()}-raw-materials`;
+    const owner = await post('/api/register', {
+      organizationName: 'Gudang Bahan',
+      name: 'Owner',
+      email: `owner-${suffix}@test.local`,
+      password: 'Password123!',
+    });
+    const token = owner.body.token;
+    expect((await post('/api/commands/locations', {
+      location: { id: 'loc-branch', name: 'Cabang 1', type: 'outlet', active: true },
+    }, token)).status).toBe(201);
+    expect((await post('/api/commands/raw-materials', {
+      materials: [
+        { name: 'Mie Kremes', sku: 'BB-MIE-001', category: 'Bahan Utama', unit: 'Kg', minStock: 5 },
+        { name: 'Bumbu Balado', sku: 'BB-BLD-002', category: 'Bumbu', unit: 'Gram', minStock: 500 },
+        { name: 'Plastik Kemasan', sku: 'BB-PLS-003', category: 'Kemasan', unit: 'Pcs', minStock: 10 },
+      ],
+    }, token)).status).toBe(201);
+
+    let state = await request('/api/state', { headers: { authorization: `Bearer ${token}` } });
+    const material = state.body.data.rawMaterials.find(item => item.sku === 'BB-MIE-001');
+    const seasoning = state.body.data.rawMaterials.find(item => item.sku === 'BB-BLD-002');
+    const packaging = state.body.data.rawMaterials.find(item => item.sku === 'BB-PLS-003');
+    expect(material).toBeTruthy();
+    expect(seasoning).toBeTruthy();
+    expect(packaging).toBeTruthy();
+    expect(state.body.data.products.some(item => item.id === material.id)).toBe(false);
+
+    const duplicateBatch = await post('/api/commands/raw-materials', {
+      materials: [
+        { name: 'Plastik A', sku: 'BB-DUPLIKAT', category: 'Kemasan', unit: 'Pcs', minStock: 10 },
+        { name: 'Plastik B', sku: 'BB-DUPLIKAT', category: 'Kemasan', unit: 'Pcs', minStock: 10 },
+      ],
+    }, token);
+    expect(duplicateBatch.status).toBe(400);
+    state = await request('/api/state', { headers: { authorization: `Bearer ${token}` } });
+    expect(state.body.data.rawMaterials.some(item => item.sku === 'BB-DUPLIKAT')).toBe(false);
+
+    const invalidUnitBatch = await post('/api/commands/raw-materials', {
+      materials: [
+        { name: 'Valid sementara', sku: 'BB-UNIT-OK', category: 'Lainnya', unit: 'Kg', minStock: 0 },
+        { name: 'Unit salah', sku: 'BB-UNIT-BAD', category: 'Lainnya', unit: 'Karung', minStock: 0 },
+      ],
+    }, token);
+    expect(invalidUnitBatch.status).toBe(400);
+    state = await request('/api/state', { headers: { authorization: `Bearer ${token}` } });
+    expect(state.body.data.rawMaterials.some(item => item.sku === 'BB-UNIT-OK')).toBe(false);
+
+    const invalidCountableQuantity = await post('/api/commands/raw-material-movements', {
+      type: 'stock_in',
+      locationId: 'loc-owner',
+      items: [{ materialId: packaging.id, quantity: 1.5, unitCost: 500 }],
+    }, token);
+    expect(invalidCountableQuantity.status).toBe(400);
+    expect((await post('/api/commands/raw-material-movements', {
+      type: 'stock_in',
+      locationId: 'loc-owner',
+      items: [{ materialId: packaging.id, quantity: 2, unitCost: 500 }],
+    }, token)).status).toBe(201);
+
+    expect((await post('/api/commands/raw-material-movements', {
+      type: 'stock_in', materialId: material.id, locationId: 'loc-owner', quantity: 12.5, note: 'Saldo awal',
+    }, token)).status).toBe(201);
+    expect((await post('/api/commands/raw-material-movements', {
+      type: 'stock_in', materialId: seasoning.id, locationId: 'loc-owner', quantity: 1000, note: 'Saldo awal',
+    }, token)).status).toBe(201);
+
+    expect((await patch(`/api/commands/raw-materials/${material.id}`, {
+      material: {
+        name: 'Mie Kremes Premium',
+        sku: 'BB-MIE-001',
+        category: 'Bahan Utama',
+        unit: 'Kg',
+        minStock: 4.5,
+      },
+    }, token)).status).toBe(201);
+    state = await request('/api/state', { headers: { authorization: `Bearer ${token}` } });
+    expect(state.body.data.rawMaterials.find(item => item.id === material.id)).toMatchObject({
+      name: 'Mie Kremes Premium',
+      unit: 'Kg',
+      minStock: 4.5,
+    });
+
+    const rejectedUnitChange = await patch(`/api/commands/raw-materials/${material.id}`, {
+      material: { ...material, unit: 'Pcs' },
+    }, token);
+    expect(rejectedUnitChange.status).toBe(400);
+
+    expect((await post('/api/commands/raw-materials', {
+      materials: [
+        { name: 'Bahan Akan Dihapus', sku: 'BB-DELETE-001', category: 'Lainnya', unit: 'Kg', minStock: 0 },
+      ],
+    }, token)).status).toBe(201);
+    state = await request('/api/state', { headers: { authorization: `Bearer ${token}` } });
+    const unusedMaterial = state.body.data.rawMaterials.find(item => item.sku === 'BB-DELETE-001');
+    expect((await patch(`/api/commands/raw-materials/${unusedMaterial.id}`, {
+      material: { active: false },
+    }, token)).status).toBe(201);
+    state = await request('/api/state', { headers: { authorization: `Bearer ${token}` } });
+    expect(state.body.data.rawMaterials.find(item => item.id === unusedMaterial.id).active).toBe(false);
+
+    const rejectedDeleteWithStock = await patch(`/api/commands/raw-materials/${material.id}`, {
+      material: { active: false },
+    }, token);
+    expect(rejectedDeleteWithStock.status).toBe(400);
+    expect(rejectedDeleteWithStock.body.message).toMatch(/masih memiliki saldo/i);
+    state = await request('/api/state', { headers: { authorization: `Bearer ${token}` } });
+    expect(state.body.data.rawMaterials.find(item => item.id === material.id).active).toBe(true);
+
+    const rejectedTransfer = await post('/api/commands/raw-material-movements', {
+      type: 'transfer',
+      locationId: 'loc-owner',
+      destinationLocationId: 'loc-branch',
+      items: [
+        { materialId: material.id, quantity: 2.5 },
+        { materialId: seasoning.id, quantity: 2000 },
+      ],
+      note: 'Harus ditolak seluruhnya',
+    }, token);
+    expect(rejectedTransfer.status).toBe(400);
+
+    expect((await post('/api/commands/raw-material-movements', {
+      type: 'transfer',
+      locationId: 'loc-owner',
+      destinationLocationId: 'loc-branch',
+      items: [
+        { materialId: material.id, quantity: 2.5 },
+        { materialId: seasoning.id, quantity: 250 },
+      ],
+      note: 'Kirim ke cabang',
+    }, token)).status).toBe(201);
+
+    state = await request('/api/state', { headers: { authorization: `Bearer ${token}` } });
+    const balances = state.body.data.rawMaterialBalances;
+    expect(balances.find(item => item.locationId === 'loc-owner' && item.materialId === material.id).quantity).toBe(10);
+    expect(balances.find(item => item.locationId === 'loc-branch' && item.materialId === material.id).quantity).toBe(2.5);
+    expect(balances.find(item => item.locationId === 'loc-owner' && item.materialId === seasoning.id).quantity).toBe(750);
+    expect(balances.find(item => item.locationId === 'loc-branch' && item.materialId === seasoning.id).quantity).toBe(250);
+    expect(state.body.data.rawMaterialMovements.filter(item => item.materialId === material.id)).toHaveLength(3);
+    expect(state.body.data.rawMaterialMovements.filter(item => item.materialId === seasoning.id)).toHaveLength(3);
+
+    expect((await post('/api/commands/raw-material-movements', {
+      type: 'stock_in',
+      locationId: 'loc-owner',
+      items: [
+        { materialId: material.id, quantity: 1, unitCost: 12000 },
+        { materialId: seasoning.id, quantity: 100, unitCost: 25 },
+      ],
+      note: 'Penerimaan sekaligus',
+    }, token)).status).toBe(201);
+
+    const rejectedStockOut = await post('/api/commands/raw-material-movements', {
+      type: 'stock_out',
+      locationId: 'loc-owner',
+      items: [
+        { materialId: material.id, quantity: 1 },
+        { materialId: seasoning.id, quantity: 99999 },
+      ],
+      note: 'Harus atomik',
+    }, token);
+    expect(rejectedStockOut.status).toBe(400);
+
+    expect((await post('/api/commands/raw-material-movements', {
+      type: 'stock_out',
+      locationId: 'loc-owner',
+      items: [
+        { materialId: material.id, quantity: 1 },
+        { materialId: seasoning.id, quantity: 50 },
+      ],
+      note: 'Pemakaian produksi',
+    }, token)).status).toBe(201);
+
+    expect((await post('/api/commands/raw-material-movements', {
+      type: 'adjustment',
+      locationId: 'loc-owner',
+      items: [
+        { materialId: material.id, actualQuantity: 9 },
+        { materialId: seasoning.id, actualQuantity: 700 },
+      ],
+      note: 'Opname bersama',
+    }, token)).status).toBe(201);
+
+    state = await request('/api/state', { headers: { authorization: `Bearer ${token}` } });
+    expect(state.body.data.rawMaterialBalances.find(item => item.locationId === 'loc-owner' && item.materialId === material.id).quantity).toBe(9);
+    expect(state.body.data.rawMaterialBalances.find(item => item.locationId === 'loc-owner' && item.materialId === seasoning.id).quantity).toBe(700);
+    expect(state.body.data.rawMaterialMovements.filter(item => item.materialId === material.id)).toHaveLength(6);
+    expect(state.body.data.rawMaterialMovements.filter(item => item.materialId === seasoning.id)).toHaveLength(6);
+  });
+
   it('allows same-origin camera and geolocation features required by stock evidence and attendance', async () => {
     const response = await fetch(`${base}/api/health`);
     expect(response.headers.get('permissions-policy')).toBe('camera=(self), microphone=(), geolocation=(self)');

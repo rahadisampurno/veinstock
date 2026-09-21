@@ -7,6 +7,7 @@ export type Page =
   | "locations"
   | "receipts"
   | "stock"
+  | "raw-materials"
   | "stock-outs"
   | "transfers"
   | "sales"
@@ -35,6 +36,7 @@ export const menuPermissionRequirement: Partial<Record<Page, ActionType>> = {
   suppliers: "supplier.view",
   receipts: "stock.view",
   stock: "stock.view",
+  "raw-materials": "stock.view",
   "stock-outs": "stock.out",
   transfers: "transfer.view",
   opname: "stock.view",

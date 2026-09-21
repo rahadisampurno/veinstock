@@ -158,6 +158,7 @@ import type {
   HppRecipe,
   MarketplaceConfig,
   Product,
+  Role,
   Sale,
   SaleItem,
   SessionUser,
@@ -200,6 +201,7 @@ const roleMenuOptions: RoleMenuOption[] = [
   { id: "pricing", label: "HPP & Marketplace", group: "Master Data" },
   { id: "suppliers", label: "Supplier", group: "Master Data" },
   { id: "receipts", label: "Stok Masuk", group: "Inventaris" },
+  { id: "raw-materials", label: "Bahan Baku", group: "Inventaris" },
   { id: "stock", label: "Stok per Lokasi", group: "Inventaris" },
   { id: "stock-outs", label: "Stok Keluar", group: "Inventaris" },
   { id: "transfers", label: "Transfer Stok", group: "Inventaris" },
@@ -693,6 +695,7 @@ const SidebarGlyph = ({
       );
       break;
     case "stock":
+    case "raw-materials":
       art = (
         <>
           <path {...props} d="m4 8 8-4 8 4-8 4zM4 12l8 4 8-4M4 16l8 4 8-4" />
@@ -1934,6 +1937,7 @@ function App({
       "products",
       "locations",
       "receipts",
+      "raw-materials",
       "stock",
       "stock-outs",
       "transfers",
@@ -2578,6 +2582,7 @@ function App({
     products: "Produk & Varian",
     locations: "Lokasi Usaha",
     receipts: "Stok Masuk",
+    "raw-materials": "Stok Bahan Baku",
     stock: "Stok per Lokasi",
     "stock-outs": "Stok Keluar Operasional",
     transfers: "Transfer Stok",
@@ -2991,6 +2996,20 @@ function App({
               outletId={user.outletId}
             />
           )}
+          {page === "raw-materials" && (
+            <RawMaterialsPage
+              data={data}
+              runCommand={runCommand}
+              notify={notify}
+              role={user.role}
+              outletId={user.outletId}
+              canCreate={can("stock.adjust")}
+              canStockIn={can("stock.in")}
+              canStockOut={can("stock.out")}
+              canTransfer={can("transfer.create")}
+              canAdjust={can("stock.adjust")}
+            />
+          )}
           {page === "transfers" && (
             <Transfers
               data={data}
@@ -3305,7 +3324,12 @@ function App({
             />
           )}
           {page === "analytics" && (
-            <AnalyticsPage data={data} canExport={can("report.export")} />
+            <AnalyticsPage
+              data={data}
+              canExport={can("report.export")}
+              role={user.role}
+              outletId={user.outletId}
+            />
           )}
           {page === "role-access" && scope.role === "owner" && (
             <RoleAccessPage
@@ -4710,6 +4734,58 @@ function Dashboard({
   const low = balances.filter(
     (b: any) => b.quantity < minimumFor(variants[b.variantId], b.locationId),
   );
+  const rawMaterials = (data.rawMaterials || []).filter(
+    (material: any) => material.active !== false,
+  );
+  const rawBalances = (data.rawMaterialBalances || []).filter(
+    (balance: any) => !isPic || balance.locationId === outletId,
+  );
+  const latestRawCosts: Record<string, number> = {};
+  [...(data.rawMaterialMovements || [])]
+    .sort(
+      (left: any, right: any) =>
+        new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime(),
+    )
+    .forEach((movement: any) => {
+      const unitCost = Number(movement.unitCost || 0);
+      if (unitCost > 0 && latestRawCosts[movement.materialId] === undefined)
+        latestRawCosts[movement.materialId] = unitCost;
+    });
+  const rawStockValue = rawBalances.reduce(
+    (sum: number, balance: any) =>
+      sum +
+      Number(balance.quantity || 0) *
+        Number(latestRawCosts[balance.materialId] || 0),
+    0,
+  );
+  const rawUsageDocuments = new Set(
+    (data.rawMaterialMovements || [])
+      .filter(
+        (movement: any) =>
+          movement.type === "stock_out" &&
+          (!isPic || movement.locationId === outletId) &&
+          jakartaDateKey(movement.createdAt) >= dateFrom &&
+          jakartaDateKey(movement.createdAt) <= dateTo,
+      )
+      .map((movement: any) => movement.documentCode || movement.id),
+  ).size;
+  const rawAlerts = myLocations
+    .flatMap((location: any) =>
+      rawMaterials.map((material: any) => {
+        const balance = Number(
+          rawBalances.find(
+            (item: any) =>
+              item.locationId === location.id &&
+              item.materialId === material.id,
+          )?.quantity || 0,
+        );
+        return { material, location, balance };
+      }),
+    )
+    .filter(
+      ({ material, balance }: any) =>
+        balance <= Number(material.minStock || 0),
+    );
   return (
     <>
       <section className="welcome">
@@ -4866,6 +4942,33 @@ function Dashboard({
             outletId={outletId}
           />
         </Card>
+      </section>
+      <section className="raw-dashboard-overview raw-dashboard-overview-bottom">
+        <div className="raw-dashboard-heading">
+          <div>
+            <small>INVENTARIS NON-POS</small>
+            <h3>Bahan baku</h3>
+            <p>Ringkasan ini terpisah dari stok produk jual dan tidak memengaruhi angka POS.</p>
+          </div>
+          <button className="secondary" onClick={() => setPage("raw-materials")}>Buka bahan baku</button>
+        </div>
+        <div className="raw-dashboard-kpis">
+          <article><span>Master aktif</span><b>{rawMaterials.length}</b><small>jenis bahan</small></article>
+          <article><span>Perlu perhatian</span><b>{rawAlerts.length}</b><small>kombinasi bahan &amp; lokasi</small></article>
+          <article><span>Pemakaian periode</span><b>{rawUsageDocuments}</b><small>dokumen pemakaian</small></article>
+          <article><span>Estimasi nilai stok</span><b>{money(rawStockValue)}</b><small>berdasarkan harga masuk terakhir</small></article>
+        </div>
+        {rawAlerts.length > 0 && (
+          <div className="raw-dashboard-alerts">
+            {rawAlerts.slice(0, 5).map(({ material, location, balance }: any) => (
+              <div key={`${location.id}-${material.id}`}>
+                <span><b>{material.name}</b><small>{location.name}</small></span>
+                <strong>{qty(balance, material.unit)} / min. {qty(material.minStock, material.unit)}</strong>
+              </div>
+            ))}
+            {rawAlerts.length > 5 && <p>+{rawAlerts.length - 5} perhatian lainnya tersedia di menu Bahan Baku.</p>}
+          </div>
+        )}
       </section>
     </>
   );
@@ -9132,6 +9235,1488 @@ function LoansPage({
     </PageBlock>
   );
 }
+const emptyRawMaterialDraft = () => ({
+  rowId: newId("material-row"),
+  name: "",
+  sku: "",
+  category: "Bahan Utama",
+  unit: "Kg",
+  minStock: "0",
+});
+const RAW_MATERIAL_UNITS = [
+  "Kg",
+  "Gram",
+  "Liter",
+  "Ml",
+  "Pcs",
+  "Pack",
+  "Dus",
+  "Botol",
+  "Roll",
+] as const;
+const RAW_MATERIAL_INTEGER_UNITS = new Set([
+  "Pcs",
+  "Pack",
+  "Dus",
+  "Botol",
+  "Roll",
+]);
+const parseRawMaterialNumber = (value: string | number) => {
+  const normalized = String(value).trim().replace(",", ".");
+  if (!normalized || !/^-?\d+(?:\.\d+)?$/.test(normalized)) return Number.NaN;
+  return Number(normalized);
+};
+const emptyRawTransferItem = (materialId = "") => ({
+  rowId: newId("transfer-row"),
+  materialId,
+  quantity: "",
+  actualQuantity: "",
+  unitCost: "",
+});
+const preferredRawMaterialLocationId = (
+  locations: Array<{ id: string; type?: string; isCentralWarehouse?: boolean }>,
+  role: string,
+  outletId?: string,
+) => {
+  const assignedLocation =
+    outletId && ["pic", "warehouse", "cashier"].includes(role)
+      ? locations.find((location) => location.id === outletId)
+      : undefined;
+  return (
+    assignedLocation?.id ||
+    locations.find(
+      (location) =>
+        location.type === "warehouse" && location.isCentralWarehouse === true,
+    )?.id ||
+    locations.find((location) => location.type === "warehouse")?.id ||
+    locations[0]?.id ||
+    ""
+  );
+};
+
+function RawMaterialsPage({
+  data,
+  runCommand,
+  notify,
+  role,
+  outletId,
+  canCreate,
+  canStockIn,
+  canStockOut,
+  canTransfer,
+  canAdjust,
+}: any) {
+  const locations = data.locations.filter(
+    (location: any) =>
+      location.active !== false &&
+      (!["pic", "warehouse", "cashier"].includes(role) ||
+        !outletId ||
+        location.id === outletId),
+  );
+  const allActiveLocations = data.locations.filter(
+    (location: any) => location.active !== false,
+  );
+  const defaultSourceLocationId = preferredRawMaterialLocationId(
+    locations,
+    role,
+    outletId,
+  );
+  const materials = (data.rawMaterials || []).filter(
+    (material: any) => material.active !== false,
+  );
+  const movements = data.rawMaterialMovements || [];
+  const balances = data.rawMaterialBalances || [];
+  const [tab, setTab] = useState<"stock" | "history">("stock");
+  const [search, setSearch] = useState("");
+  const [locationId, setLocationId] = useState(
+    defaultSourceLocationId,
+  );
+  const [dialog, setDialog] = useState<
+    "material" | "edit-material" | "movement" | null
+  >(null);
+  const [saving, setSaving] = useState(false);
+  const [materialDrafts, setMaterialDrafts] = useState(() => [
+    emptyRawMaterialDraft(),
+  ]);
+  const [materialDraftErrors, setMaterialDraftErrors] = useState<
+    Record<string, { name?: string; sku?: string; minStock?: string }>
+  >({});
+  const [materialFormError, setMaterialFormError] = useState("");
+  const [editMaterialDraft, setEditMaterialDraft] = useState({
+    id: "",
+    name: "",
+    sku: "",
+    category: "Bahan Utama",
+    unit: "Kg",
+    minStock: "0",
+    unitLocked: false,
+    hasStock: false,
+  });
+  const [editMaterialErrors, setEditMaterialErrors] = useState<{
+    name?: string;
+    sku?: string;
+    minStock?: string;
+  }>({});
+  const [editMaterialError, setEditMaterialError] = useState("");
+  const [deleteMaterialConfirmOpen, setDeleteMaterialConfirmOpen] = useState(false);
+  const [movementDraft, setMovementDraft] = useState({
+    type: "stock_in",
+    materialId: "",
+    locationId: defaultSourceLocationId,
+    destinationLocationId: "",
+    quantity: "",
+    actualQuantity: "",
+    unitCost: "",
+    note: "",
+  });
+  const [transferItems, setTransferItems] = useState(() =>
+    [] as ReturnType<typeof emptyRawTransferItem>[],
+  );
+  const [transferStep, setTransferStep] = useState<1 | 2>(1);
+  const [transferSearch, setTransferSearch] = useState("");
+  const [expandedMovementDocuments, setExpandedMovementDocuments] = useState<
+    Set<string>
+  >(() => new Set());
+  const [historyDateFrom, setHistoryDateFrom] = useState("");
+  const [historyDateTo, setHistoryDateTo] = useState("");
+  const [movementPage, setMovementPage] = useState(1);
+  const [movementItemErrors, setMovementItemErrors] = useState<
+    Record<string, { quantity?: string; actualQuantity?: string; unitCost?: string }>
+  >({});
+  const [movementFormError, setMovementFormError] = useState("");
+  useEffect(() => {
+    if (!locations.some((location: any) => location.id === locationId))
+      setLocationId(defaultSourceLocationId);
+  }, [locations, locationId, defaultSourceLocationId]);
+  useEffect(() => {
+    setMovementPage(1);
+  }, [search, locationId, historyDateFrom, historyDateTo]);
+  const balanceAt = (materialId: string, targetLocationId: string) =>
+    Number(
+      balances.find(
+        (balance: any) =>
+          balance.materialId === materialId &&
+          balance.locationId === targetLocationId,
+      )?.quantity || 0,
+    );
+  const filteredMaterials = materials.filter((material: any) =>
+    `${material.name} ${material.sku || ""} ${material.category}`
+      .toLowerCase()
+      .includes(search.toLowerCase()),
+  );
+  const lowStockCount = materials.filter(
+    (material: any) => balanceAt(material.id, locationId) <= Number(material.minStock || 0),
+  ).length;
+  const stockedCount = materials.filter(
+    (material: any) => balanceAt(material.id, locationId) > 0,
+  ).length;
+  const defaultMovementType = canStockIn
+    ? "stock_in"
+    : canStockOut
+      ? "stock_out"
+      : canTransfer
+        ? "transfer"
+        : "adjustment";
+  const openMovement = (type = defaultMovementType, materialId = "") => {
+    setMovementDraft({
+      type,
+      materialId,
+      locationId: defaultSourceLocationId,
+      destinationLocationId: "",
+      quantity: "",
+      actualQuantity: "",
+      unitCost: "",
+      note: "",
+    });
+    setTransferItems(
+      materialId ? [emptyRawTransferItem(materialId)] : [],
+    );
+    setTransferStep(1);
+    setTransferSearch("");
+    setMovementItemErrors({});
+    setMovementFormError("");
+    setDialog("movement");
+  };
+  const openEditMaterial = (material: any) => {
+    const hasStock = balances.some(
+      (balance: any) =>
+        balance.materialId === material.id &&
+        Number(balance.quantity || 0) !== 0,
+    );
+    const unitLocked =
+      movements.some(
+        (movement: any) => movement.materialId === material.id,
+      ) ||
+      hasStock;
+    setEditMaterialDraft({
+      id: material.id,
+      name: material.name,
+      sku: material.sku || "",
+      category: material.category || "Lainnya",
+      unit: material.unit,
+      minStock: String(material.minStock ?? 0).replace(".", ","),
+      unitLocked,
+      hasStock,
+    });
+    setEditMaterialErrors({});
+    setEditMaterialError("");
+    setDeleteMaterialConfirmOpen(false);
+    setDialog("edit-material");
+  };
+  const updateEditMaterial = (field: string, value: string) => {
+    setEditMaterialDraft((current) => ({ ...current, [field]: value }));
+    setEditMaterialError("");
+    if (["name", "sku", "minStock"].includes(field))
+      setEditMaterialErrors((current) => ({ ...current, [field]: undefined }));
+  };
+  const saveEditMaterial = async (event: FormEvent) => {
+    event.preventDefault();
+    const errors: { name?: string; sku?: string; minStock?: string } = {};
+    const minimum = parseRawMaterialNumber(editMaterialDraft.minStock);
+    if (!editMaterialDraft.name.trim()) errors.name = "Nama bahan wajib diisi.";
+    if (
+      editMaterialDraft.sku.trim() &&
+      (data.rawMaterials || []).some(
+        (material: any) =>
+          material.id !== editMaterialDraft.id &&
+          String(material.sku || "").trim().toUpperCase() ===
+            editMaterialDraft.sku.trim().toUpperCase(),
+      )
+    )
+      errors.sku = "Kode bahan sudah digunakan bahan lain.";
+    if (
+      editMaterialDraft.minStock.trim() === "" ||
+      !Number.isFinite(minimum) ||
+      minimum < 0
+    )
+      errors.minStock = `Stok minimum dalam ${editMaterialDraft.unit} harus minimal 0.`;
+    else if (
+      RAW_MATERIAL_INTEGER_UNITS.has(editMaterialDraft.unit) &&
+      !Number.isInteger(minimum)
+    )
+      errors.minStock = `${editMaterialDraft.unit} harus berupa bilangan bulat.`;
+    else if (Math.abs(minimum * 1000 - Math.round(minimum * 1000)) > 1e-8)
+      errors.minStock = "Maksimal 3 angka desimal.";
+    if (Object.keys(errors).length) {
+      setEditMaterialErrors(errors);
+      setEditMaterialError("Periksa data yang ditandai sebelum menyimpan.");
+      return;
+    }
+    setSaving(true);
+    setEditMaterialErrors({});
+    setEditMaterialError("");
+    try {
+      await runCommand(
+        `/api/commands/raw-materials/${editMaterialDraft.id}`,
+        {
+          material: {
+            name: editMaterialDraft.name.trim(),
+            sku: editMaterialDraft.sku.trim(),
+            category: editMaterialDraft.category,
+            unit: editMaterialDraft.unit,
+            minStock: minimum,
+          },
+        },
+        "PATCH",
+      );
+      setDialog(null);
+      notify(`${editMaterialDraft.name.trim()} berhasil diperbarui.`);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Bahan baku gagal diperbarui.";
+      setEditMaterialError(`${message} Isian tetap tersimpan.`);
+      notify(message);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const deleteEditMaterial = async () => {
+    setSaving(true);
+    setEditMaterialError("");
+    try {
+      await runCommand(
+        `/api/commands/raw-materials/${editMaterialDraft.id}`,
+        { material: { active: false } },
+        "PATCH",
+      );
+      setDialog(null);
+      setDeleteMaterialConfirmOpen(false);
+      notify(`${editMaterialDraft.name} berhasil dihapus dari master aktif.`);
+    } catch (error) {
+      setEditMaterialError(
+        error instanceof Error ? error.message : "Bahan baku gagal dihapus.",
+      );
+      setDeleteMaterialConfirmOpen(false);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const saveMaterial = async (event: FormEvent) => {
+    event.preventDefault();
+    const errors: Record<
+      string,
+      { name?: string; sku?: string; minStock?: string }
+    > = {};
+    const seenSkus = new Set<string>();
+    for (const material of materialDrafts) {
+      const rowErrors: { name?: string; sku?: string; minStock?: string } = {};
+      const sku = material.sku.trim().toUpperCase();
+      const minimum = parseRawMaterialNumber(material.minStock);
+      if (!material.name.trim()) rowErrors.name = "Nama bahan wajib diisi.";
+      if (sku && seenSkus.has(sku)) rowErrors.sku = "Kode bahan duplikat dalam daftar ini.";
+      if (sku) seenSkus.add(sku);
+      if (material.minStock.trim() === "" || !Number.isFinite(minimum) || minimum < 0)
+        rowErrors.minStock = `Stok minimum dalam ${material.unit} harus minimal 0.`;
+      else if (RAW_MATERIAL_INTEGER_UNITS.has(material.unit) && !Number.isInteger(minimum))
+        rowErrors.minStock = `${material.unit} harus berupa bilangan bulat.`;
+      else if (Math.abs(minimum * 1000 - Math.round(minimum * 1000)) > 1e-8)
+        rowErrors.minStock = "Maksimal 3 angka desimal.";
+      if (Object.keys(rowErrors).length) errors[material.rowId] = rowErrors;
+    }
+    if (Object.keys(errors).length) {
+      setMaterialDraftErrors(errors);
+      setMaterialFormError("Periksa baris yang ditandai. Semua isian lainnya tetap tersimpan.");
+      notify("Ada data bahan yang perlu diperbaiki.");
+      return;
+    }
+    setMaterialDraftErrors({});
+    setMaterialFormError("");
+    setSaving(true);
+    try {
+      await runCommand("/api/commands/raw-materials", {
+        materials: materialDrafts.map((material) => ({
+          name: material.name,
+          sku: material.sku,
+          category: material.category,
+          unit: material.unit,
+          minStock: parseRawMaterialNumber(material.minStock || 0),
+        })),
+      });
+      setDialog(null);
+      setMaterialDrafts([emptyRawMaterialDraft()]);
+      notify(`${materialDrafts.length} bahan baku berhasil ditambahkan.`);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Bahan baku gagal disimpan.";
+      setMaterialFormError(`${message} Isian tetap tersimpan; perbaiki lalu coba lagi.`);
+      notify(message);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const updateMaterialDraft = (
+    rowId: string,
+    field: string,
+    value: string,
+  ) => {
+    setMaterialFormError("");
+    setMaterialDraftErrors((current) => {
+      if (!current[rowId]?.[field as "name" | "sku" | "minStock"])
+        return current;
+      const nextRow = {
+        ...current[rowId],
+        [field]: undefined,
+      };
+      const next = { ...current };
+      if (Object.values(nextRow).some(Boolean)) next[rowId] = nextRow;
+      else delete next[rowId];
+      return next;
+    });
+    setMaterialDrafts((current) =>
+      current.map((row) =>
+        row.rowId === rowId ? { ...row, [field]: value } : row,
+      ),
+    );
+  };
+  const transferPickerMaterials = materials.filter((material: any) =>
+    `${material.name} ${material.sku || ""} ${material.category}`
+      .toLowerCase()
+      .includes(transferSearch.trim().toLowerCase()),
+  );
+  const selectableTransferMaterials = transferPickerMaterials.filter(
+    (material: any) =>
+      !["stock_out", "transfer"].includes(movementDraft.type) ||
+      balanceAt(material.id, movementDraft.locationId) > 0,
+  );
+  const toggleTransferMaterial = (materialId: string) => {
+    setTransferItems((current) => {
+      const selected = current.some(
+        (item) => item.materialId === materialId,
+      );
+      if (selected)
+        return current.filter((item) => item.materialId !== materialId);
+      if (current.length >= 100) return current;
+      return [...current, emptyRawTransferItem(materialId)];
+    });
+  };
+  const clearMovementItemError = (
+    rowId: string,
+    field: "quantity" | "actualQuantity" | "unitCost",
+  ) => {
+    setMovementFormError("");
+    setMovementItemErrors((current) => {
+      if (!current[rowId]?.[field]) return current;
+      const nextRow = { ...current[rowId], [field]: undefined };
+      const next = { ...current };
+      if (Object.values(nextRow).some(Boolean)) next[rowId] = nextRow;
+      else delete next[rowId];
+      return next;
+    });
+  };
+  const saveMovement = async (event: FormEvent) => {
+    event.preventDefault();
+    const errors: Record<
+      string,
+      { quantity?: string; actualQuantity?: string; unitCost?: string }
+    > = {};
+    for (const item of transferItems) {
+      const material = materials.find(
+        (candidate: any) => candidate.id === item.materialId,
+      );
+      if (!material) continue;
+      const integerOnly = RAW_MATERIAL_INTEGER_UNITS.has(material.unit);
+      const available = balanceAt(material.id, movementDraft.locationId);
+      const rowErrors: {
+        quantity?: string;
+        actualQuantity?: string;
+        unitCost?: string;
+      } = {};
+      if (movementDraft.type === "adjustment") {
+        const actual = parseRawMaterialNumber(item.actualQuantity);
+        if (item.actualQuantity.trim() === "" || !Number.isFinite(actual) || actual < 0)
+          rowErrors.actualQuantity = `Isi stok fisik dalam ${material.unit}, minimal 0.`;
+        else if (integerOnly && !Number.isInteger(actual))
+          rowErrors.actualQuantity = `${material.unit} harus berupa bilangan bulat.`;
+        else if (Math.abs(actual * 1000 - Math.round(actual * 1000)) > 1e-8)
+          rowErrors.actualQuantity = "Maksimal 3 angka desimal.";
+        else if (actual === available)
+          rowErrors.actualQuantity = "Nilainya sama dengan stok sistem; tidak ada perubahan.";
+      } else {
+        const quantity = parseRawMaterialNumber(item.quantity);
+        if (item.quantity.trim() === "" || !Number.isFinite(quantity) || quantity <= 0)
+          rowErrors.quantity = `Isi jumlah dalam ${material.unit}, lebih dari 0.`;
+        else if (integerOnly && !Number.isInteger(quantity))
+          rowErrors.quantity = `${material.unit} harus berupa bilangan bulat.`;
+        else if (Math.abs(quantity * 1000 - Math.round(quantity * 1000)) > 1e-8)
+          rowErrors.quantity = "Maksimal 3 angka desimal.";
+        else if (
+          ["stock_out", "transfer"].includes(movementDraft.type) &&
+          quantity > available
+        )
+          rowErrors.quantity = `Maksimal ${qty(available, material.unit)}.`;
+      }
+      if (movementDraft.type === "stock_in" && item.unitCost.trim() !== "") {
+        const unitCost = parseRawMaterialNumber(item.unitCost);
+        if (!Number.isFinite(unitCost) || unitCost < 0 || !Number.isInteger(unitCost))
+          rowErrors.unitCost = `Harga per ${material.unit} harus Rupiah bulat, minimal 0.`;
+      }
+      if (Object.keys(rowErrors).length) errors[item.rowId] = rowErrors;
+    }
+    const formError =
+      movementDraft.type === "transfer" && !movementDraft.destinationLocationId
+        ? "Pilih lokasi tujuan transfer."
+        : "";
+    if (Object.keys(errors).length || formError) {
+      setMovementItemErrors(errors);
+      const invalidNames = transferItems
+        .filter((item) => errors[item.rowId])
+        .map((item) => materials.find((material: any) => material.id === item.materialId)?.name)
+        .filter(Boolean);
+      const invalidSummary = invalidNames.length
+        ? `${invalidNames.length} dari ${transferItems.length} bahan perlu diperbaiki: ${invalidNames.slice(0, 3).join(", ")}${invalidNames.length > 3 ? `, dan ${invalidNames.length - 3} lainnya` : ""}.`
+        : "";
+      setMovementFormError(formError || invalidSummary);
+      setTransferStep(2);
+      notify(formError || invalidSummary);
+      window.setTimeout(() => {
+        document
+          .querySelector<HTMLElement>(".raw-transfer-item.has-error")
+          ?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }, 0);
+      return;
+    }
+    setMovementItemErrors({});
+    setMovementFormError("");
+    setSaving(true);
+    try {
+      await runCommand("/api/commands/raw-material-movements", {
+        ...movementDraft,
+        items: transferItems.map((item) => ({
+          materialId: item.materialId,
+          quantity: parseRawMaterialNumber(item.quantity),
+          actualQuantity: parseRawMaterialNumber(item.actualQuantity),
+          unitCost: parseRawMaterialNumber(item.unitCost || 0),
+        })),
+        quantity: Number(movementDraft.quantity || 1),
+        actualQuantity:
+          movementDraft.type === "adjustment"
+            ? Number(movementDraft.actualQuantity)
+            : undefined,
+        unitCost: Number(movementDraft.unitCost || 0),
+      });
+      setDialog(null);
+      notify(`${transferItems.length} bahan baku berhasil dicatat.`);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Mutasi bahan baku gagal disimpan.";
+      setMovementFormError(`${message} Isian Anda tetap tersimpan; perbaiki lalu coba lagi.`);
+      notify(message);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const movementLabels: Record<string, string> = {
+    stock_in: "Stok masuk",
+    stock_out: "Pemakaian / keluar",
+    transfer_out: "Transfer keluar",
+    transfer_in: "Transfer masuk",
+    adjustment: "Penyesuaian opname",
+  };
+  const movementGroupMap = new Map<string, any[]>();
+  movements
+    .filter(
+      (movement: any) => !locationId || movement.locationId === locationId,
+    )
+    .forEach((movement: any) => {
+      const key = movement.documentCode || movement.id;
+      const current = movementGroupMap.get(key) || [];
+      current.push(movement);
+      movementGroupMap.set(key, current);
+    });
+  const movementGroups = Array.from(movementGroupMap.entries())
+    .map(([documentCode, items]) => ({
+      documentCode,
+      items: items.sort(
+        (left: any, right: any) =>
+          new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime(),
+      ),
+      createdAt: items.reduce(
+        (latest: string, item: any) =>
+          !latest || new Date(item.createdAt) > new Date(latest)
+            ? item.createdAt
+            : latest,
+        "",
+      ),
+    }))
+    .sort(
+      (left, right) =>
+        new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime(),
+    )
+    .filter((group) => {
+      const created = new Date(group.createdAt);
+      const createdDate = `${created.getFullYear()}-${String(created.getMonth() + 1).padStart(2, "0")}-${String(created.getDate()).padStart(2, "0")}`;
+      if (historyDateFrom && createdDate < historyDateFrom) return false;
+      if (historyDateTo && createdDate > historyDateTo) return false;
+      const query = search.trim().toLowerCase();
+      if (!query) return true;
+      return group.items.some((movement: any) => {
+        const material = materials.find(
+          (item: any) => item.id === movement.materialId,
+        );
+        return `${material?.name || ""} ${material?.sku || ""} ${group.documentCode} ${movement.note || ""} ${movementLabels[movement.type] || movement.type}`
+          .toLowerCase()
+          .includes(query);
+      });
+    });
+  const movementPageSize = 10;
+  const currentMovementPage = Math.min(
+    movementPage,
+    Math.max(1, Math.ceil(movementGroups.length / movementPageSize)),
+  );
+  const pagedMovementGroups = movementGroups.slice(
+    (currentMovementPage - 1) * movementPageSize,
+    currentMovementPage * movementPageSize,
+  );
+  return (
+    <div className="raw-material-page">
+      <section className="raw-material-hero">
+        <div>
+          <span className="eyebrow">INVENTARIS NON-POS</span>
+          <h2>Bahan baku & perlengkapan operasional</h2>
+          <p>
+            Pantau tepung, bumbu, minyak, kemasan, dan kebutuhan produksi tanpa
+            menampilkannya sebagai barang jual di kasir.
+          </p>
+        </div>
+        <div className="raw-material-actions">
+          {canCreate && (
+            <button className="secondary" onClick={() => {
+              setMaterialDraftErrors({});
+              setMaterialFormError("");
+              setDialog("material");
+            }}>
+              <Plus size={17} /> Tambah bahan
+            </button>
+          )}
+          {(canStockIn || canStockOut || canTransfer || canAdjust) && (
+            <button className="primary" onClick={() => openMovement()}>
+              <ArrowRightLeft size={17} /> Catat mutasi
+            </button>
+          )}
+        </div>
+      </section>
+      <section className="raw-material-summary">
+        <article><small>Master aktif</small><strong>{materials.length}</strong><span>jenis bahan</span></article>
+        <article><small>Tersedia</small><strong>{stockedCount}</strong><span>item memiliki saldo</span></article>
+        <article className={lowStockCount ? "warning" : ""}><small>Perlu perhatian</small><strong>{lowStockCount}</strong><span>menyentuh stok minimum</span></article>
+        <article><small>Lokasi tercatat</small><strong>{allActiveLocations.length}</strong><span>gudang & cabang</span></article>
+      </section>
+      <section className="panel raw-material-panel">
+        <div className="raw-material-toolbar">
+          <div className="tabs compact-tabs">
+            <button className={tab === "stock" ? "active" : ""} onClick={() => setTab("stock")}>Stok per lokasi</button>
+            <button className={tab === "history" ? "active" : ""} onClick={() => setTab("history")}>Riwayat mutasi</button>
+          </div>
+          <label className="raw-location-filter">
+            <MapPin size={16} />
+            <select value={locationId} onChange={(event) => setLocationId(event.target.value)}>
+              {locations.map((location: any) => <option key={location.id} value={location.id}>{location.name}</option>)}
+            </select>
+          </label>
+          <label className="list-search"><Search size={17} /><input placeholder={tab === "history" ? "Cari dokumen, bahan, jenis, atau catatan..." : "Cari bahan..."} value={search} onChange={(event) => setSearch(event.target.value)} /></label>
+        </div>
+        {tab === "history" && (
+          <div className="raw-history-filters">
+            <span className="raw-history-filter-title"><CalendarDays size={17} /> Filter tanggal</span>
+            <label className="raw-history-date-field">
+              <span>Dari</span>
+              <input
+                type="date"
+                value={historyDateFrom}
+                max={historyDateTo || undefined}
+                onChange={(event) => setHistoryDateFrom(event.target.value)}
+              />
+            </label>
+            <label className="raw-history-date-field">
+              <span>Sampai</span>
+              <input
+                type="date"
+                value={historyDateTo}
+                min={historyDateFrom || undefined}
+                onChange={(event) => setHistoryDateTo(event.target.value)}
+              />
+            </label>
+            <button
+              type="button"
+              className="secondary raw-history-reset"
+              disabled={!historyDateFrom && !historyDateTo && !search}
+              onClick={() => {
+                setHistoryDateFrom("");
+                setHistoryDateTo("");
+                setSearch("");
+              }}
+            >
+              <RotateCcw size={15} /> Reset filter
+            </button>
+            <span className="raw-history-result-count">{movementGroups.length} proses ditemukan</span>
+          </div>
+        )}
+        {tab === "stock" ? (
+          <div className="table-wrap raw-material-table"><table><thead><tr><th>Bahan baku</th><th>Kategori</th><th>Stok saat ini</th><th>Minimum</th><th>Status</th><th></th></tr></thead><tbody>
+            {filteredMaterials.map((material: any) => {
+              const current = balanceAt(material.id, locationId);
+              const low = current <= Number(material.minStock || 0);
+              return <tr key={material.id}><td><div className="raw-material-name"><span>{material.name.slice(0, 2).toUpperCase()}</span><div><b>{material.name}</b><small>{material.sku || "Tanpa kode"}</small></div></div></td><td>{material.category}</td><td><strong>{qty(current, material.unit)}</strong></td><td>{qty(material.minStock, material.unit)}</td><td><span className={`status ${low ? "wait" : "ok"}`}>{current === 0 ? "Kosong" : low ? "Menipis" : "Aman"}</span></td><td><div className="raw-material-row-actions">{canAdjust && <button className="table-action secondary-action" onClick={() => openEditMaterial(material)}><Settings size={15} /> Edit</button>}{(canStockIn || canStockOut || canTransfer || canAdjust) && <button className="table-action" onClick={() => openMovement(defaultMovementType, material.id)}>Catat</button>}</div></td></tr>;
+            })}
+            {!filteredMaterials.length && <Empty text="Belum ada bahan baku. Tambahkan master bahan untuk mulai memantau stok." />}
+          </tbody></table></div>
+        ) : (
+          <>
+          <div className="raw-movement-groups">
+            {pagedMovementGroups.map((group) => {
+              const first = group.items[0];
+              const expanded = expandedMovementDocuments.has(group.documentCode);
+              const types = Array.from(
+                new Set(
+                  group.items.map(
+                    (movement: any) =>
+                      movementLabels[movement.type] || movement.type,
+                  ),
+                ),
+              );
+              const note = group.items.find((movement: any) => movement.note)?.note;
+              const destinations = Array.from(
+                new Set(
+                  group.items
+                    .map((movement: any) => movement.destinationLocationId)
+                    .filter(Boolean),
+                ),
+              )
+                .map(
+                  (destinationId) =>
+                    allActiveLocations.find(
+                      (location: any) => location.id === destinationId,
+                    )?.name,
+                )
+                .filter(Boolean);
+              return (
+                <article className={`raw-movement-group${expanded ? " expanded" : ""}`} key={group.documentCode}>
+                  <button
+                    type="button"
+                    className="raw-movement-group-summary"
+                    aria-expanded={expanded}
+                    onClick={() =>
+                      setExpandedMovementDocuments((current) => {
+                        const next = new Set(current);
+                        if (next.has(group.documentCode)) next.delete(group.documentCode);
+                        else next.add(group.documentCode);
+                        return next;
+                      })
+                    }
+                  >
+                    <span className="raw-movement-group-date">
+                      <b>{new Date(group.createdAt).toLocaleDateString("id-ID", { day: "2-digit", month: "short", year: "numeric" })}</b>
+                      <small>{new Date(group.createdAt).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" })}</small>
+                    </span>
+                    <span className="raw-movement-group-document">
+                      <code>{group.documentCode}</code>
+                      <small>{first.createdByName || "Pengguna"}</small>
+                    </span>
+                    <span className="raw-movement-group-kind">
+                      <b>{types.join(" + ")}</b>
+                      {destinations.length > 0 && <small>Tujuan: {destinations.join(", ")}</small>}
+                    </span>
+                    <span className="raw-movement-group-count">
+                      <b>{group.items.length}</b>
+                      <small>bahan</small>
+                    </span>
+                    <span className="raw-movement-group-toggle">
+                      {expanded ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
+                    </span>
+                  </button>
+                  {expanded && (
+                    <div className="raw-movement-group-detail">
+                      {note && <div className="raw-movement-group-note"><b>Catatan</b><span>{note}</span></div>}
+                      <div className="table-wrap raw-material-table">
+                        <table>
+                          <thead><tr><th>Bahan baku</th><th>Kode</th><th>Perubahan</th><th>Satuan</th></tr></thead>
+                          <tbody>
+                            {group.items.map((movement: any) => {
+                              const material = materials.find(
+                                (item: any) => item.id === movement.materialId,
+                              );
+                              return (
+                                <tr key={movement.id}>
+                                  <td><b>{material?.name || "Bahan diarsipkan"}</b></td>
+                                  <td>{material?.sku || "—"}</td>
+                                  <td><strong className={movement.quantity >= 0 ? "raw-qty-in" : "raw-qty-out"}>{movement.quantity >= 0 ? "+" : ""}{Number(movement.quantity).toLocaleString("id-ID", { maximumFractionDigits: 3 })}</strong></td>
+                                  <td>{material?.unit || "—"}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </article>
+              );
+            })}
+            {!movementGroups.length && <div className="raw-movement-empty"><Empty text="Belum ada riwayat mutasi pada lokasi ini." /></div>}
+          </div>
+          <TablePagination
+            page={currentMovementPage}
+            total={movementGroups.length}
+            size={movementPageSize}
+            setPage={setMovementPage}
+          />
+          </>
+        )}
+      </section>
+      {dialog === "edit-material" && (
+        <div className="modal-backdrop">
+          <div className="modal raw-material-modal raw-material-edit-modal">
+            <header>
+              <div>
+                <small>MASTER INVENTARIS</small>
+                <h2>Update bahan baku</h2>
+                <p>Perbarui informasi master tanpa mengubah saldo dan riwayat stok.</p>
+              </div>
+              <button type="button" className="icon-btn" aria-label="Tutup formulir" onClick={() => setDialog(null)}><X /></button>
+            </header>
+            <form onSubmit={saveEditMaterial} noValidate>
+              <div className="form-grid raw-material-edit-form">
+                {editMaterialError && (
+                  <div className="raw-movement-form-error full" role="alert">
+                    <AlertTriangle size={18} /><span>{editMaterialError}</span>
+                  </div>
+                )}
+                <label className="field full">
+                  <span>Nama bahan</span>
+                  <input
+                    autoFocus
+                    value={editMaterialDraft.name}
+                    aria-invalid={!!editMaterialErrors.name}
+                    onChange={(event) => updateEditMaterial("name", event.target.value)}
+                  />
+                  {editMaterialErrors.name && <small className="field-validation-error" role="alert">{editMaterialErrors.name}</small>}
+                </label>
+                <label className="field">
+                  <span>Kode bahan</span>
+                  <input
+                    value={editMaterialDraft.sku}
+                    aria-invalid={!!editMaterialErrors.sku}
+                    onChange={(event) => updateEditMaterial("sku", event.target.value)}
+                    placeholder="Contoh: BB-MIE-001"
+                  />
+                  {editMaterialErrors.sku && <small className="field-validation-error" role="alert">{editMaterialErrors.sku}</small>}
+                </label>
+                <label className="field">
+                  <span>Kategori</span>
+                  <select value={editMaterialDraft.category} onChange={(event) => updateEditMaterial("category", event.target.value)}>
+                    <option>Bahan Utama</option><option>Bumbu</option><option>Minyak & Cairan</option><option>Kemasan</option><option>Perlengkapan</option><option>Lainnya</option>
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Satuan</span>
+                  <select
+                    value={editMaterialDraft.unit}
+                    disabled={editMaterialDraft.unitLocked}
+                    onChange={(event) => updateEditMaterial("unit", event.target.value)}
+                  >
+                    {RAW_MATERIAL_UNITS.map((unit) => <option key={unit}>{unit}</option>)}
+                  </select>
+                  <small className="raw-unit-hint">
+                    {editMaterialDraft.unitLocked
+                      ? "Dikunci karena bahan sudah memiliki saldo atau riwayat."
+                      : "Belum pernah digunakan; satuan masih dapat diubah."}
+                  </small>
+                </label>
+                <label className="field">
+                  <span>Stok minimum ({editMaterialDraft.unit})</span>
+                  <input
+                    type="text"
+                    inputMode={RAW_MATERIAL_INTEGER_UNITS.has(editMaterialDraft.unit) ? "numeric" : "decimal"}
+                    value={editMaterialDraft.minStock}
+                    aria-invalid={!!editMaterialErrors.minStock}
+                    onChange={(event) => updateEditMaterial("minStock", event.target.value)}
+                  />
+                  {editMaterialErrors.minStock && <small className="field-validation-error" role="alert">{editMaterialErrors.minStock}</small>}
+                </label>
+              </div>
+              {deleteMaterialConfirmOpen && (
+                <div className="raw-material-delete-confirm" role="alert">
+                  <AlertTriangle size={21} />
+                  <div>
+                    <b>Hapus {editMaterialDraft.name}?</b>
+                    <p>Bahan akan hilang dari master aktif. Riwayat mutasi tetap disimpan dan tidak ikut terhapus.</p>
+                  </div>
+                </div>
+              )}
+              {editMaterialDraft.hasStock && (
+                <p className="raw-material-delete-hint">Bahan belum dapat dihapus karena masih memiliki saldo di salah satu lokasi. Kosongkan saldonya terlebih dahulu.</p>
+              )}
+              <footer className="modal-actions raw-material-edit-actions">
+                {deleteMaterialConfirmOpen ? (
+                  <>
+                    <span className="raw-material-edit-action-spacer" />
+                    <button type="button" className="secondary" onClick={() => setDeleteMaterialConfirmOpen(false)} disabled={saving}>Kembali</button>
+                    <button type="button" className="danger" onClick={deleteEditMaterial} disabled={saving}>
+                      <Trash2 size={16} /> {saving ? "Menghapus..." : "Ya, hapus bahan"}
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      className="danger-button raw-material-delete-button"
+                      onClick={() => setDeleteMaterialConfirmOpen(true)}
+                      disabled={saving || editMaterialDraft.hasStock}
+                    >
+                      <Trash2 size={16} /> Hapus bahan
+                    </button>
+                    <span className="raw-material-edit-action-spacer" />
+                    <button type="button" className="secondary" onClick={() => setDialog(null)}>Batal</button>
+                    <button className="primary" disabled={saving}>{saving ? "Menyimpan..." : "Simpan perubahan"}</button>
+                  </>
+                )}
+              </footer>
+            </form>
+          </div>
+        </div>
+      )}
+      {dialog === "material" && (
+        <div className="modal-backdrop">
+          <div className="modal raw-material-modal raw-material-bulk-modal">
+            <header>
+              <div>
+                <small>MASTER INVENTARIS</small>
+                <h2>Tambah banyak bahan baku</h2>
+                <p>
+                  Isi beberapa baris sekaligus. Semua bahan disimpan dalam satu
+                  transaksi dan tidak masuk ke sistem POS.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="icon-btn"
+                aria-label="Tutup formulir"
+                onClick={() => setDialog(null)}
+              >
+                <X />
+              </button>
+            </header>
+            <form onSubmit={saveMaterial} noValidate>
+              <div className="raw-material-bulk-list">
+                {materialFormError && (
+                  <div className="raw-movement-form-error" role="alert">
+                    <AlertTriangle size={18} />
+                    <span>{materialFormError}</span>
+                  </div>
+                )}
+                {materialDrafts.map((material, index) => (
+                  <section className={`raw-material-bulk-row${materialDraftErrors[material.rowId] ? " has-error" : ""}`} key={material.rowId}>
+                    <div className="raw-material-bulk-row-header">
+                      <b>Bahan {index + 1}</b>
+                      {materialDrafts.length > 1 && (
+                        <button
+                          type="button"
+                          className="icon-btn danger"
+                          aria-label={`Hapus bahan ${index + 1}`}
+                          onClick={() =>
+                            setMaterialDrafts((current) =>
+                              current.filter((row) => row.rowId !== material.rowId),
+                            )
+                          }
+                        >
+                          <Trash2 size={17} />
+                        </button>
+                      )}
+                    </div>
+                    <div className="raw-material-bulk-fields">
+                      <label className="field raw-material-name-field">
+                        <span>Nama bahan</span>
+                        <input
+                          required
+                          autoFocus={index === 0}
+                          aria-invalid={!!materialDraftErrors[material.rowId]?.name}
+                          value={material.name}
+                          onChange={(event) =>
+                            updateMaterialDraft(material.rowId, "name", event.target.value)
+                          }
+                          placeholder="Contoh: Mie Kremes"
+                        />
+                        {materialDraftErrors[material.rowId]?.name && (
+                          <small className="field-validation-error" role="alert">
+                            {materialDraftErrors[material.rowId].name}
+                          </small>
+                        )}
+                      </label>
+                      <label className="field">
+                        <span>Kode bahan</span>
+                        <input
+                          aria-invalid={!!materialDraftErrors[material.rowId]?.sku}
+                          value={material.sku}
+                          onChange={(event) =>
+                            updateMaterialDraft(material.rowId, "sku", event.target.value)
+                          }
+                          placeholder="BB-MIE-001"
+                        />
+                        {materialDraftErrors[material.rowId]?.sku && (
+                          <small className="field-validation-error" role="alert">
+                            {materialDraftErrors[material.rowId].sku}
+                          </small>
+                        )}
+                      </label>
+                      <label className="field">
+                        <span>Kategori</span>
+                        <select
+                          value={material.category}
+                          onChange={(event) =>
+                            updateMaterialDraft(material.rowId, "category", event.target.value)
+                          }
+                        >
+                          <option>Bahan Utama</option>
+                          <option>Bumbu</option>
+                          <option>Minyak & Cairan</option>
+                          <option>Kemasan</option>
+                          <option>Perlengkapan</option>
+                          <option>Lainnya</option>
+                        </select>
+                      </label>
+                      <label className="field">
+                        <span>Satuan</span>
+                        <select
+                          value={material.unit}
+                          onChange={(event) =>
+                            updateMaterialDraft(material.rowId, "unit", event.target.value)
+                          }
+                        >
+                          {RAW_MATERIAL_UNITS.map((unit) => (
+                            <option key={unit}>{unit}</option>
+                          ))}
+                        </select>
+                        <small className="raw-unit-hint">
+                          {RAW_MATERIAL_INTEGER_UNITS.has(material.unit)
+                            ? "Satuan hitung: hanya bilangan bulat."
+                            : "Satuan ukur: maksimal 3 angka desimal."}
+                        </small>
+                      </label>
+                      <label className="field">
+                        <span>Stok minimum</span>
+                        <input
+                          type="text"
+                          inputMode={RAW_MATERIAL_INTEGER_UNITS.has(material.unit) ? "numeric" : "decimal"}
+                          aria-invalid={!!materialDraftErrors[material.rowId]?.minStock}
+                          value={material.minStock}
+                          onChange={(event) =>
+                            updateMaterialDraft(material.rowId, "minStock", event.target.value)
+                          }
+                        />
+                        {materialDraftErrors[material.rowId]?.minStock && (
+                          <small className="field-validation-error" role="alert">
+                            {materialDraftErrors[material.rowId].minStock}
+                          </small>
+                        )}
+                      </label>
+                    </div>
+                  </section>
+                ))}
+                <button
+                  type="button"
+                  className="raw-material-add-row"
+                  disabled={materialDrafts.length >= 100}
+                  onClick={() =>
+                    setMaterialDrafts((current) => [
+                      ...current,
+                      emptyRawMaterialDraft(),
+                    ])
+                  }
+                >
+                  <Plus size={17} /> Tambah baris bahan
+                </button>
+              </div>
+              <footer className="modal-actions">
+                <span className="raw-material-batch-count">
+                  {materialDrafts.length} bahan akan disimpan
+                </span>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => setDialog(null)}
+                >
+                  Batal
+                </button>
+                <button className="primary" disabled={saving}>
+                  {saving
+                    ? "Menyimpan..."
+                    : `Simpan ${materialDrafts.length} bahan`}
+                </button>
+              </footer>
+            </form>
+          </div>
+        </div>
+      )}
+      {dialog === "movement" && (
+        <div className="modal-backdrop">
+          <div
+            className="modal raw-material-modal raw-material-bulk-modal raw-transfer-bulk-modal"
+          >
+            <header>
+              <div>
+                <small>BUKU MUTASI</small>
+                <h2>Catat banyak bahan baku</h2>
+                <p>Pilih beberapa bahan, lalu isi nilainya dalam satu dokumen mutasi.</p>
+              </div>
+              <button
+                type="button"
+                className="icon-btn"
+                aria-label="Tutup formulir"
+                onClick={() => setDialog(null)}
+              >
+                <X />
+              </button>
+            </header>
+            <form onSubmit={saveMovement} noValidate>
+              <div
+                className="raw-transfer-form-body"
+              >
+                  <div className="raw-transfer-steps" aria-label="Tahapan pencatatan mutasi">
+                    <div className={`raw-transfer-step ${transferStep === 1 ? "active" : "done"}`}>
+                      <span>{transferStep === 2 ? <Check size={16} /> : "1"}</span>
+                      <div><b>Pilih bahan</b><small>Cari dan centang bahan</small></div>
+                    </div>
+                    <div className={`raw-transfer-step ${transferStep === 2 ? "active" : ""}`}>
+                      <span>2</span>
+                      <div><b>Isi mutasi</b><small>Nilai per bahan dan catatan</small></div>
+                    </div>
+                  </div>
+                <div className="raw-transfer-settings">
+                  <label className="field">
+                    <span>Jenis transaksi</span>
+                    <select
+                      value={movementDraft.type}
+                      onChange={(event) => {
+                        const type = event.target.value;
+                        setMovementDraft({ ...movementDraft, type });
+                        setTransferItems(
+                          movementDraft.materialId
+                            ? [emptyRawTransferItem(movementDraft.materialId)]
+                            : [],
+                        );
+                        setTransferStep(1);
+                        setTransferSearch("");
+                        setMovementItemErrors({});
+                        setMovementFormError("");
+                      }}
+                    >
+                      {canStockIn && <option value="stock_in">Stok masuk</option>}
+                      {canStockOut && <option value="stock_out">Pemakaian / stok keluar</option>}
+                      {canTransfer && <option value="transfer">Transfer lokasi</option>}
+                      {canAdjust && <option value="adjustment">Penyesuaian hasil opname</option>}
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span>Lokasi asal</span>
+                    <select
+                      required
+                      value={movementDraft.locationId}
+                      onChange={(event) =>
+                        {
+                          setMovementDraft({
+                            ...movementDraft,
+                            locationId: event.target.value,
+                            destinationLocationId:
+                              event.target.value === movementDraft.destinationLocationId
+                                ? ""
+                                : movementDraft.destinationLocationId,
+                          });
+                          setTransferItems([]);
+                          setTransferStep(1);
+                          setMovementItemErrors({});
+                          setMovementFormError("");
+                        }
+                      }
+                    >
+                      {locations.map((location: any) => (
+                        <option key={location.id} value={location.id}>
+                          {location.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {movementDraft.type === "transfer" && transferStep === 2 && (
+                    <label className="field">
+                      <span>Lokasi tujuan</span>
+                      <select
+                        required
+                        value={movementDraft.destinationLocationId}
+                        onChange={(event) => {
+                          setMovementFormError("");
+                          setMovementDraft({
+                            ...movementDraft,
+                            destinationLocationId: event.target.value,
+                          })
+                        }}
+                      >
+                        <option value="">Pilih tujuan</option>
+                        {allActiveLocations
+                          .filter(
+                            (location: any) =>
+                              location.id !== movementDraft.locationId,
+                          )
+                          .map((location: any) => (
+                            <option key={location.id} value={location.id}>
+                              {location.name}
+                            </option>
+                          ))}
+                      </select>
+                    </label>
+                  )}
+                </div>
+                {movementFormError && transferStep === 2 && (
+                  <div className="raw-movement-form-error" role="alert">
+                    <AlertTriangle size={18} />
+                    <span>{movementFormError}</span>
+                  </div>
+                )}
+
+                {transferStep === 1 ? (
+                    <section className="raw-transfer-picker">
+                      <div className="raw-transfer-picker-toolbar">
+                        <label className="raw-transfer-search">
+                          <Search size={18} />
+                          <input
+                            autoFocus={shouldAutoFocusTextInput()}
+                            value={transferSearch}
+                            onChange={(event) => setTransferSearch(event.target.value)}
+                            placeholder="Cari nama, kode, atau kategori bahan..."
+                          />
+                        </label>
+                        <div className="raw-transfer-select-actions">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setTransferItems((current) => {
+                                const existingIds = new Set(current.map((item) => item.materialId));
+                                const additions = selectableTransferMaterials
+                                  .filter((material: any) => !existingIds.has(material.id))
+                                  .slice(0, Math.max(0, 100 - current.length))
+                                  .map((material: any) => emptyRawTransferItem(material.id));
+                                return [...current, ...additions];
+                              })
+                            }
+                            disabled={!selectableTransferMaterials.length || transferItems.length >= 100}
+                          >
+                            Pilih semua hasil
+                          </button>
+                          <button type="button" onClick={() => setTransferItems([])} disabled={!transferItems.length}>
+                            Hapus pilihan
+                          </button>
+                        </div>
+                      </div>
+                      <div className="raw-transfer-checklist">
+                        {transferPickerMaterials.length ? transferPickerMaterials.map((material: any) => {
+                          const available = balanceAt(material.id, movementDraft.locationId);
+                          const selected = transferItems.some((item) => item.materialId === material.id);
+                          const disabled =
+                            ["stock_out", "transfer"].includes(movementDraft.type) &&
+                            available <= 0;
+                          return (
+                            <label
+                              className={`raw-transfer-check-option${selected ? " selected" : ""}${disabled ? " disabled" : ""}`}
+                              key={material.id}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={selected}
+                                disabled={disabled || (!selected && transferItems.length >= 100)}
+                                onChange={() => toggleTransferMaterial(material.id)}
+                              />
+                              <span className="raw-transfer-check-copy">
+                                <b>{material.name}</b>
+                                <small>{material.sku || "Tanpa kode"} · {material.category} · {material.unit}</small>
+                              </span>
+                              <span className={`raw-transfer-stock${disabled ? " empty" : ""}`}>
+                                <small>Stok saat ini</small>
+                                <b>{qty(available, material.unit)}</b>
+                              </span>
+                            </label>
+                          );
+                        }) : (
+                          <div className="raw-transfer-empty">
+                            <Search size={24} />
+                            <b>Bahan tidak ditemukan</b>
+                            <span>Coba ubah kata pencarian.</span>
+                          </div>
+                        )}
+                      </div>
+                    </section>
+                ) : (
+                    <div className="raw-transfer-items">
+                      <div className="raw-transfer-items-title">
+                        <div>
+                          <b>
+                            {movementDraft.type === "adjustment"
+                              ? "Stok fisik hasil opname"
+                              : movementDraft.type === "stock_in"
+                                ? "Jumlah bahan yang masuk"
+                                : movementDraft.type === "stock_out"
+                                  ? "Jumlah bahan yang keluar"
+                                  : "Jumlah bahan yang ditransfer"}
+                          </b>
+                          <small>
+                            {movementDraft.type === "adjustment"
+                              ? "Masukkan stok fisik aktual untuk setiap bahan."
+                              : "Isi nilai untuk setiap bahan yang sudah dipilih."}
+                          </small>
+                        </div>
+                        <span>{transferItems.length} bahan</span>
+                      </div>
+                      {transferItems.map((item, index) => {
+                        const selectedMaterial = materials.find(
+                          (material: any) => material.id === item.materialId,
+                        );
+                        if (!selectedMaterial) return null;
+                        const available = balanceAt(selectedMaterial.id, movementDraft.locationId);
+                        return (
+                          <div className={`raw-transfer-item${movementDraft.type === "stock_in" ? " with-cost" : ""}${movementItemErrors[item.rowId] ? " has-error" : ""}`} key={item.rowId}>
+                            <span className="raw-transfer-number">{index + 1}</span>
+                            <div className="raw-transfer-selected-material">
+                              <span>Bahan baku</span>
+                              <b>{selectedMaterial.name}</b>
+                              <small>{selectedMaterial.sku || "Tanpa kode"} · {selectedMaterial.unit}</small>
+                            </div>
+                            {movementDraft.type === "adjustment" ? (
+                              <label className="field raw-transfer-quantity">
+                                <span>Stok fisik aktual ({selectedMaterial.unit})</span>
+                                <input
+                                  required
+                                  type="text"
+                                  inputMode={RAW_MATERIAL_INTEGER_UNITS.has(selectedMaterial.unit) ? "numeric" : "decimal"}
+                                  aria-invalid={!!movementItemErrors[item.rowId]?.actualQuantity}
+                                  value={item.actualQuantity}
+                                  onChange={(event) => {
+                                    clearMovementItemError(item.rowId, "actualQuantity");
+                                    setTransferItems((current) =>
+                                      current.map((row) =>
+                                        row.rowId === item.rowId
+                                          ? { ...row, actualQuantity: event.target.value }
+                                        : row,
+                                      ),
+                                    );
+                                  }}
+                                  placeholder={`Sistem: ${available}`}
+                                />
+                                <small>Stok sistem {qty(available, selectedMaterial.unit)}</small>
+                                {!RAW_MATERIAL_INTEGER_UNITS.has(selectedMaterial.unit) && (
+                                  <small>Desimal dapat ditulis 2,5 atau 2.5.</small>
+                                )}
+                                {movementItemErrors[item.rowId]?.actualQuantity && (
+                                  <small className="field-validation-error" role="alert">
+                                    {movementItemErrors[item.rowId].actualQuantity}
+                                  </small>
+                                )}
+                              </label>
+                            ) : (
+                              <label className="field raw-transfer-quantity">
+                                <span>Jumlah ({selectedMaterial.unit})</span>
+                                <input
+                                  required
+                                  type="text"
+                                  inputMode={RAW_MATERIAL_INTEGER_UNITS.has(selectedMaterial.unit) ? "numeric" : "decimal"}
+                                  aria-invalid={!!movementItemErrors[item.rowId]?.quantity}
+                                  value={item.quantity}
+                                  onChange={(event) => {
+                                    clearMovementItemError(item.rowId, "quantity");
+                                    setTransferItems((current) =>
+                                      current.map((row) =>
+                                        row.rowId === item.rowId
+                                          ? { ...row, quantity: event.target.value }
+                                        : row,
+                                      ),
+                                    );
+                                  }}
+                                  placeholder={movementDraft.type === "stock_in" ? "Jumlah masuk" : `Maks. ${available}`}
+                                />
+                                {movementDraft.type !== "stock_in" && (
+                                  <small>Maks. {qty(available, selectedMaterial.unit)}</small>
+                                )}
+                                {movementDraft.type === "stock_in" && (
+                                  <small>
+                                    {RAW_MATERIAL_INTEGER_UNITS.has(selectedMaterial.unit)
+                                      ? `Masukkan ${selectedMaterial.unit} dalam bilangan bulat.`
+                                      : "Desimal dapat ditulis 2,5 atau 2.5."}
+                                  </small>
+                                )}
+                                {movementItemErrors[item.rowId]?.quantity && (
+                                  <small className="field-validation-error" role="alert">
+                                    {movementItemErrors[item.rowId].quantity}
+                                  </small>
+                                )}
+                              </label>
+                            )}
+                            {movementDraft.type === "stock_in" && (
+                              <label className="field raw-transfer-cost">
+                                <span>Harga per {selectedMaterial.unit} (opsional)</span>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="1"
+                                  aria-invalid={!!movementItemErrors[item.rowId]?.unitCost}
+                                  value={item.unitCost}
+                                  onChange={(event) => {
+                                    clearMovementItemError(item.rowId, "unitCost");
+                                    setTransferItems((current) =>
+                                      current.map((row) =>
+                                        row.rowId === item.rowId
+                                          ? { ...row, unitCost: event.target.value }
+                                        : row,
+                                      ),
+                                    );
+                                  }}
+                                  placeholder="Rp 0"
+                                />
+                                <small>Rupiah untuk setiap 1 {selectedMaterial.unit}</small>
+                                {movementItemErrors[item.rowId]?.unitCost && (
+                                  <small className="field-validation-error" role="alert">
+                                    {movementItemErrors[item.rowId].unitCost}
+                                  </small>
+                                )}
+                              </label>
+                            )}
+                            <button
+                              type="button"
+                              className="icon-btn danger"
+                              aria-label={`Hapus ${selectedMaterial.name} dari mutasi`}
+                              onClick={() => {
+                                setTransferItems((current) =>
+                                  current.filter((row) => row.rowId !== item.rowId),
+                                );
+                                setMovementItemErrors((current) => {
+                                  const next = { ...current };
+                                  delete next[item.rowId];
+                                  return next;
+                                });
+                                if (transferItems.length === 1) setTransferStep(1);
+                              }}
+                            >
+                              <Trash2 size={17} />
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                )}
+                {transferStep === 2 && (
+                  <label className="field full raw-transfer-note">
+                    <span>Catatan / referensi</span>
+                    <textarea
+                      value={movementDraft.note}
+                      onChange={(event) =>
+                        setMovementDraft({
+                          ...movementDraft,
+                          note: event.target.value,
+                        })
+                      }
+                      placeholder="Supplier, keperluan produksi, atau alasan koreksi"
+                    />
+                  </label>
+                )}
+              </div>
+              <footer className="modal-actions">
+                <span className="raw-material-batch-count">
+                  {transferItems.length
+                    ? `${transferItems.length} bahan dipilih`
+                    : "Belum ada bahan dipilih"}
+                </span>
+                {transferStep === 2 && (
+                  <button type="button" className="secondary" onClick={() => setTransferStep(1)}>
+                    <ChevronLeft size={17} /> Kembali
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => setDialog(null)}
+                >
+                  Batal
+                </button>
+                {transferStep === 1 ? (
+                  <button
+                    type="button"
+                    className="primary"
+                    disabled={!transferItems.length}
+                    onClick={() => setTransferStep(2)}
+                  >
+                    Lanjut isi mutasi <ArrowRight size={17} />
+                  </button>
+                ) : (
+                  <button className="primary" disabled={saving || !materials.length}>
+                    {saving
+                      ? "Menyimpan..."
+                      : `Simpan ${transferItems.length} bahan`}
+                  </button>
+                )}
+              </footer>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Stock({ data, updateMinimum, variants, role, outletId }: any) {
   const isPic =
     ["pic", "warehouse", "cashier", "admin"].includes(role) && outletId;
@@ -10845,7 +12430,10 @@ function Reports({
   const [dateTo, setDateTo] = useState(todayKey);
   const [location, setLocation] = useState("all"),
     [product, setProduct] = useState("all"),
-    [channel, setChannel] = useState("all");
+    [channel, setChannel] = useState("all"),
+    [rawMaterial, setRawMaterial] = useState("all"),
+    [rawCategory, setRawCategory] = useState("all"),
+    [rawMovementType, setRawMovementType] = useState("all");
   const periodDays =
     dateFrom && dateTo
       ? Math.floor(
@@ -11101,6 +12689,100 @@ function Reports({
       {},
     ),
   ).sort((a: any, b: any) => b[1].cost - a[1].cost);
+  const rawMaterialMap: Record<string, any> = Object.fromEntries(
+    (data.rawMaterials || []).map((material: any) => [material.id, material]),
+  );
+  const rawCategories = Array.from(
+    new Set(
+      (data.rawMaterials || [])
+        .map((material: any) => material.category)
+        .filter(Boolean),
+    ),
+  ).sort((left: any, right: any) => left.localeCompare(right));
+  const rawBaseMovements = (data.rawMaterialMovements || []).filter(
+    (movement: any) => {
+      const material = rawMaterialMap[movement.materialId];
+      return (
+        inPeriod(movement.createdAt) &&
+        (!isPic || movement.locationId === outletId) &&
+        (location === "all" || movement.locationId === location) &&
+        (rawMaterial === "all" || movement.materialId === rawMaterial) &&
+        (rawCategory === "all" || material?.category === rawCategory)
+      );
+    },
+  );
+  const rawMovements = rawBaseMovements.filter(
+    (movement: any) =>
+      rawMovementType === "all" || movement.type === rawMovementType,
+  );
+  const latestRawCosts: Record<string, number> = {};
+  [...(data.rawMaterialMovements || [])]
+    .sort(
+      (left: any, right: any) =>
+        new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime(),
+    )
+    .forEach((movement: any) => {
+      const unitCost = Number(movement.unitCost || 0);
+      if (unitCost > 0 && latestRawCosts[movement.materialId] === undefined)
+        latestRawCosts[movement.materialId] = unitCost;
+    });
+  const rawStockRows = (data.rawMaterialBalances || [])
+    .filter((balance: any) => {
+      const material = rawMaterialMap[balance.materialId];
+      return (
+        (!isPic || balance.locationId === outletId) &&
+        (location === "all" || balance.locationId === location) &&
+        (rawMaterial === "all" || balance.materialId === rawMaterial) &&
+        (rawCategory === "all" || material?.category === rawCategory)
+      );
+    })
+    .map((balance: any) => ({
+      ...balance,
+      material: rawMaterialMap[balance.materialId],
+      unitCost: Number(latestRawCosts[balance.materialId] || 0),
+    }))
+    .filter((row: any) => row.material);
+  const rawStockValue = rawStockRows.reduce(
+    (sum: number, row: any) =>
+      sum + Number(row.quantity || 0) * Number(row.unitCost || 0),
+    0,
+  );
+  const rawPurchaseValue = rawBaseMovements
+    .filter((movement: any) => movement.type === "stock_in")
+    .reduce(
+      (sum: number, movement: any) =>
+        sum +
+        Math.abs(Number(movement.quantity || 0)) *
+          Number(movement.unitCost || latestRawCosts[movement.materialId] || 0),
+      0,
+    );
+  const rawUsageValue = rawBaseMovements
+    .filter((movement: any) => movement.type === "stock_out")
+    .reduce(
+      (sum: number, movement: any) =>
+        sum +
+        Math.abs(Number(movement.quantity || 0)) *
+          Number(latestRawCosts[movement.materialId] || 0),
+      0,
+    );
+  const rawMovementDocuments = new Set(
+    rawMovements.map((movement: any) => movement.documentCode || movement.id),
+  ).size;
+  const rawTransferDocuments = new Set(
+    rawBaseMovements
+      .filter((movement: any) => movement.type === "transfer_out")
+      .map((movement: any) => movement.documentCode || movement.id),
+  ).size;
+  const rawMissingCostRows = rawStockRows.filter(
+    (row: any) => Number(row.quantity || 0) !== 0 && row.unitCost <= 0,
+  ).length;
+  const rawMovementLabels: Record<string, string> = {
+    stock_in: "Stok masuk",
+    stock_out: "Pemakaian / keluar",
+    transfer_out: "Transfer keluar",
+    transfer_in: "Transfer masuk",
+    adjustment: "Penyesuaian / opname",
+  };
   const sold: Record<string, number> = {};
   sales.forEach((s: any) =>
     s.items.forEach(
@@ -11431,6 +13113,10 @@ function Reports({
       ["Selisih opname", stockDifference],
       ["Dokumen stok keluar", stockOutDocuments],
       ["Barang stok keluar", stockOutQuantity],
+      ["Estimasi nilai stok bahan baku", rawStockValue],
+      ["Nilai bahan baku masuk", rawPurchaseValue],
+      ["Estimasi nilai pemakaian bahan baku", rawUsageValue],
+      ["Dokumen transfer bahan baku", rawTransferDocuments],
     ];
     await downloadExcel(
       `Laporan_Menengs_${dateFrom || "awal"}_${dateTo || "sekarang"}`,
@@ -11442,6 +13128,70 @@ function Reports({
             { header: "Nilai", key: "nilai", width: 24 },
           ],
           data: summaryData,
+        },
+        {
+          name: "Mutasi Bahan Baku",
+          columns: [
+            { header: "Waktu", key: "waktu", width: 22 },
+            { header: "Dokumen", key: "dokumen", width: 24 },
+            { header: "Lokasi", key: "lokasi", width: 28 },
+            { header: "Bahan", key: "bahan", width: 30 },
+            { header: "Kategori", key: "kategori", width: 22 },
+            { header: "Jenis", key: "jenis", width: 22 },
+            { header: "Jumlah", key: "jumlah", width: 14 },
+            { header: "Satuan", key: "satuan", width: 12 },
+            { header: "Harga Satuan", key: "harga", width: 18 },
+            { header: "Nilai", key: "nilai", width: 18 },
+            { header: "Catatan", key: "catatan", width: 36 },
+          ],
+          data: rawMovements.map((movement: any) => {
+            const material = rawMaterialMap[movement.materialId];
+            const unitCost = Number(
+              movement.unitCost || latestRawCosts[movement.materialId] || 0,
+            );
+            return [
+              new Date(movement.createdAt).toLocaleString("id-ID"),
+              movement.documentCode || movement.id,
+              locations[movement.locationId]?.name || "-",
+              material?.name || "Bahan nonaktif",
+              material?.category || "-",
+              rawMovementLabels[movement.type] || movement.type,
+              movement.quantity,
+              material?.unit || "-",
+              unitCost,
+              Math.abs(Number(movement.quantity || 0)) * unitCost,
+              movement.note || "-",
+            ];
+          }),
+        },
+        {
+          name: "Saldo Bahan Baku",
+          columns: [
+            { header: "Lokasi", key: "lokasi", width: 28 },
+            { header: "Bahan", key: "bahan", width: 30 },
+            { header: "Kategori", key: "kategori", width: 22 },
+            { header: "Saldo", key: "saldo", width: 14 },
+            { header: "Satuan", key: "satuan", width: 12 },
+            { header: "Minimum", key: "minimum", width: 14 },
+            { header: "Harga Terakhir", key: "harga", width: 18 },
+            { header: "Estimasi Nilai", key: "nilai", width: 20 },
+            { header: "Status", key: "status", width: 14 },
+          ],
+          data: rawStockRows.map((row: any) => [
+            locations[row.locationId]?.name || "-",
+            row.material.name,
+            row.material.category,
+            row.quantity,
+            row.material.unit,
+            row.material.minStock,
+            row.unitCost,
+            Number(row.quantity || 0) * row.unitCost,
+            Number(row.quantity || 0) === 0
+              ? "Habis"
+              : Number(row.quantity || 0) <= Number(row.material.minStock || 0)
+                ? "Menipis"
+                : "Aman",
+          ]),
         },
         {
           name: "Stok Keluar",
@@ -11709,6 +13459,10 @@ function Reports({
       await document.fonts?.ready;
       const sections = Array.from(
         element.querySelectorAll<HTMLElement>("[data-pdf-section]"),
+      ).sort(
+        (left, right) =>
+          Number(left.classList.contains("raw-material-report")) -
+          Number(right.classList.contains("raw-material-report")),
       );
       if (!sections.length) return notify("Bagian laporan tidak ditemukan");
 
@@ -11974,6 +13728,75 @@ function Reports({
           {!stockOutLines.length && (
             <p className="report-empty">Belum ada stok keluar sesuai filter.</p>
           )}
+        </section>
+
+        <section className="report-panel raw-material-report" data-pdf-section>
+          <div className="report-section-heading">
+            <div>
+              <small>INVENTARIS NON-POS</small>
+              <h3>Laporan bahan baku</h3>
+            </div>
+            <span>{rawMovementDocuments} dokumen · {reportRangeLabel}</span>
+          </div>
+          <div className="filters raw-material-report-filters">
+            <label className="report-filter-field">
+              <span>BAHAN</span>
+              <select aria-label="Bahan baku laporan" value={rawMaterial} onChange={(event) => setRawMaterial(event.target.value)}>
+                <option value="all">Semua bahan</option>
+                {(data.rawMaterials || []).filter((material: any) => material.active !== false).map((material: any) => (
+                  <option key={material.id} value={material.id}>{material.name} · {material.unit}</option>
+                ))}
+              </select>
+            </label>
+            <label className="report-filter-field">
+              <span>KATEGORI</span>
+              <select aria-label="Kategori bahan baku laporan" value={rawCategory} onChange={(event) => setRawCategory(event.target.value)}>
+                <option value="all">Semua kategori</option>
+                {rawCategories.map((category: any) => <option key={category}>{category}</option>)}
+              </select>
+            </label>
+            <label className="report-filter-field">
+              <span>JENIS MUTASI DI TABEL</span>
+              <select aria-label="Jenis mutasi bahan baku laporan" value={rawMovementType} onChange={(event) => setRawMovementType(event.target.value)}>
+                <option value="all">Semua jenis</option>
+                {Object.entries(rawMovementLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+              </select>
+            </label>
+          </div>
+          <div className="report-audit-summary raw-material-report-kpis">
+            <article><b>{money(rawStockValue)}</b><span>Estimasi nilai saldo saat ini</span></article>
+            <article><b>{money(rawPurchaseValue)}</b><span>Nilai stok masuk periode</span></article>
+            <article><b>{money(rawUsageValue)}</b><span>Estimasi nilai pemakaian</span></article>
+            <article><b>{rawTransferDocuments}</b><span>Dokumen transfer internal</span></article>
+          </div>
+          <p className={`report-definition ${rawMissingCostRows ? "report-warning" : ""}`}>
+            <b>Catatan:</b> jumlah tidak pernah dijumlahkan lintas satuan. Transfer antar lokasi tidak dihitung sebagai pembelian atau pemakaian.
+            {rawMissingCostRows ? ` ${rawMissingCostRows} saldo belum memiliki harga masuk sehingga estimasi nilainya Rp0.` : " Nilai memakai harga masuk terakhir masing-masing bahan."}
+          </p>
+          <div className="table-wrap raw-material-report-table">
+            <table>
+              <thead><tr><th>Tanggal</th><th>Dokumen</th><th>Lokasi</th><th>Bahan</th><th>Jenis</th><th>Jumlah</th><th>Nilai</th></tr></thead>
+              <tbody>
+                {rawMovements.slice(0, 50).map((movement: any) => {
+                  const material = rawMaterialMap[movement.materialId];
+                  const unitCost = Number(movement.unitCost || latestRawCosts[movement.materialId] || 0);
+                  return (
+                    <tr key={movement.id}>
+                      <td>{new Date(movement.createdAt).toLocaleDateString("id-ID")}</td>
+                      <td><code>{movement.documentCode || "-"}</code></td>
+                      <td>{locations[movement.locationId]?.name || "-"}</td>
+                      <td><b>{material?.name || "Bahan nonaktif"}</b><small>{material?.category || "-"}</small></td>
+                      <td>{rawMovementLabels[movement.type] || movement.type}</td>
+                      <td className={Number(movement.quantity || 0) < 0 ? "raw-qty-out" : "raw-qty-in"}>{qty(movement.quantity, material?.unit)}</td>
+                      <td>{unitCost > 0 ? money(Math.abs(Number(movement.quantity || 0)) * unitCost) : "—"}</td>
+                    </tr>
+                  );
+                })}
+                {!rawMovements.length && <tr><td colSpan={7}><p className="report-empty">Belum ada mutasi bahan baku sesuai filter.</p></td></tr>}
+              </tbody>
+            </table>
+          </div>
+          {rawMovements.length > 50 && <p className="report-definition">Menampilkan 50 mutasi terbaru dari {rawMovements.length} baris. Unduh Excel untuk data lengkap.</p>}
         </section>
 
         <section className="report-panel report-net-profit" data-pdf-section>
@@ -27398,14 +29221,22 @@ function HppMarketplaceCalculator({
 function AnalyticsPage({
   data,
   canExport,
+  role,
+  outletId,
 }: {
   data: AppData;
   canExport: boolean;
+  role: Role;
+  outletId?: string;
 }) {
   const [refreshing, setRefreshing] = useState<Record<string, boolean>>({});
   const todayKey = jakartaDateKey();
   const [dateFrom, setDateFrom] = useState(todayKey);
   const [dateTo, setDateTo] = useState(todayKey);
+  const rawScopeLocationId =
+    ["pic", "warehouse", "cashier", "admin"].includes(role) && outletId
+      ? outletId
+      : undefined;
   const analyticsRangeLabel =
     dateFrom === dateTo
       ? new Date(`${dateFrom}T12:00:00`).toLocaleDateString("id-ID", {
@@ -27442,6 +29273,109 @@ function AnalyticsPage({
     const filteredStockOuts = (data.stockOuts || []).filter(
       (item) => item.status !== "cancelled" && isInRange(item.createdAt),
     );
+    const rawMaterials = (data.rawMaterials || []).filter(
+      (material) => material.active !== false,
+    );
+    const rawMaterialMap = Object.fromEntries(
+      (data.rawMaterials || []).map((material) => [material.id, material]),
+    );
+    const rawMovements = (data.rawMaterialMovements || []).filter(
+      (movement) =>
+        isInRange(movement.createdAt) &&
+        (!rawScopeLocationId || movement.locationId === rawScopeLocationId),
+    );
+    const latestRawCosts: Record<string, number> = {};
+    [...(data.rawMaterialMovements || [])]
+      .sort(
+        (left, right) =>
+          new Date(right.createdAt).getTime() -
+          new Date(left.createdAt).getTime(),
+      )
+      .forEach((movement) => {
+        const unitCost = Number(movement.unitCost || 0);
+        if (unitCost > 0 && latestRawCosts[movement.materialId] === undefined)
+          latestRawCosts[movement.materialId] = unitCost;
+      });
+    const rawStockValue = (data.rawMaterialBalances || [])
+      .filter(
+        (balance) =>
+          !rawScopeLocationId || balance.locationId === rawScopeLocationId,
+      )
+      .reduce(
+      (sum, balance) =>
+        sum +
+        Number(balance.quantity || 0) *
+          Number(latestRawCosts[balance.materialId] || 0),
+        0,
+      );
+    const rawUsageAllGroups = Object.values(
+      rawMovements
+        .filter((movement) => movement.type === "stock_out")
+        .reduce(
+          (
+            result: Record<
+              string,
+              { materialId: string; quantity: number; documents: Set<string> }
+            >,
+            movement,
+          ) => {
+            const current = result[movement.materialId] || {
+              materialId: movement.materialId,
+              quantity: 0,
+              documents: new Set<string>(),
+            };
+            current.quantity += Math.abs(Number(movement.quantity || 0));
+            current.documents.add(movement.documentCode || movement.id);
+            result[movement.materialId] = current;
+            return result;
+          },
+          {},
+        ),
+    )
+      .map((item) => ({
+        ...item,
+        material: rawMaterialMap[item.materialId],
+        estimatedValue:
+          item.quantity * Number(latestRawCosts[item.materialId] || 0),
+      }))
+      .filter((item) => item.material)
+      .sort(
+        (left, right) =>
+          right.estimatedValue - left.estimatedValue ||
+          right.documents.size - left.documents.size,
+      );
+    const rawUsageGroups = rawUsageAllGroups.slice(0, 5);
+    const rawUsageValue = rawUsageAllGroups.reduce(
+      (sum, item) => sum + item.estimatedValue,
+      0,
+    );
+    const rawTransferDocuments = new Set(
+      rawMovements
+        .filter((movement) => movement.type === "transfer_out")
+        .map((movement) => movement.documentCode || movement.id),
+    ).size;
+    const rawLowAlerts = data.locations
+      .filter(
+        (location) =>
+          location.active !== false &&
+          (!rawScopeLocationId || location.id === rawScopeLocationId),
+      )
+      .flatMap((location) =>
+        rawMaterials.map((material) => ({
+          material,
+          location,
+          quantity: Number(
+            (data.rawMaterialBalances || []).find(
+              (balance) =>
+                balance.locationId === location.id &&
+                balance.materialId === material.id,
+            )?.quantity || 0,
+          ),
+        })),
+      )
+      .filter(
+        (item) => item.quantity <= Number(item.material.minStock || 0),
+      );
 
     const costMap: Record<string, number> = {};
     const variantMap: Record<string, Variant> = {};
@@ -27678,8 +29612,15 @@ function AnalyticsPage({
       stockOutByCategory,
       operationalProfit,
       channelSales,
+      rawMaterials,
+      rawMovements,
+      rawStockValue,
+      rawUsageGroups,
+      rawUsageValue,
+      rawTransferDocuments,
+      rawLowAlerts,
     };
-  }, [data, dateFrom, dateTo]);
+  }, [data, dateFrom, dateTo, rawScopeLocationId]);
 
   return (
     <PageBlock
@@ -27706,6 +29647,11 @@ function AnalyticsPage({
           ["Penjualan Reseller", stats.channelSales.reseller.total],
           ["Transaksi Reseller", stats.channelSales.reseller.count],
           ["Total Varian Produk", stats.totalProductsCount],
+          ["Master Bahan Baku Aktif", stats.rawMaterials.length],
+          ["Estimasi Nilai Stok Bahan Baku", stats.rawStockValue],
+          ["Estimasi Nilai Pemakaian Bahan Baku", stats.rawUsageValue],
+          ["Transfer Bahan Baku", stats.rawTransferDocuments],
+          ["Bahan Baku Perlu Perhatian", stats.rawLowAlerts.length],
         ];
 
         const trendData = stats.salesTrend.map((t: any) => [
@@ -27743,6 +29689,25 @@ function AnalyticsPage({
                 { header: "Stok Keluar", key: "stokkeluar", width: 25 },
               ],
               data: trendData,
+            },
+            {
+              name: "Analitik Bahan Baku",
+              columns: [
+                { header: "Bahan", key: "bahan", width: 30 },
+                { header: "Kategori", key: "kategori", width: 22 },
+                { header: "Jumlah Pemakaian", key: "jumlah", width: 20 },
+                { header: "Satuan", key: "satuan", width: 14 },
+                { header: "Dokumen", key: "dokumen", width: 14 },
+                { header: "Estimasi Nilai", key: "nilai", width: 22 },
+              ],
+              data: stats.rawUsageGroups.map((item: any) => [
+                item.material.name,
+                item.material.category,
+                item.quantity,
+                item.material.unit,
+                item.documents.size,
+                item.estimatedValue,
+              ]),
             },
             {
               name: "Kategori Stok Keluar",
@@ -28300,6 +30265,31 @@ function AnalyticsPage({
             </div>
           </article>
         </div>
+        <section className="raw-analytics-overview raw-analytics-overview-bottom">
+          <div className="raw-dashboard-heading">
+            <div>
+              <small>ANALITIK INVENTARIS NON-POS</small>
+              <h3>Pemakaian bahan baku</h3>
+              <p>Jumlah selalu ditampilkan bersama satuannya; nilai rupiah memakai harga masuk terakhir.</p>
+            </div>
+            <span>{analyticsRangeLabel}</span>
+          </div>
+          <div className="raw-dashboard-kpis">
+            <article><span>Estimasi nilai stok</span><b>{money(stats.rawStockValue)}</b><small>saldo saat ini</small></article>
+            <article><span>Estimasi pemakaian</span><b>{money(stats.rawUsageValue)}</b><small>periode terpilih</small></article>
+            <article><span>Transfer internal</span><b>{stats.rawTransferDocuments}</b><small>dokumen, tidak dihitung pemakaian</small></article>
+            <article><span>Perlu perhatian</span><b>{stats.rawLowAlerts.length}</b><small>bahan &amp; lokasi</small></article>
+          </div>
+          <div className="raw-analytics-ranking">
+            {stats.rawUsageGroups.length ? stats.rawUsageGroups.map((item: any, index: number) => (
+              <div key={item.materialId}>
+                <i>{index + 1}</i>
+                <span><b>{item.material.name}</b><small>{item.documents.size} dokumen pemakaian</small></span>
+                <strong>{qty(item.quantity, item.material.unit)}<small>{money(item.estimatedValue)}</small></strong>
+              </div>
+            )) : <p className="empty-text">Belum ada pemakaian bahan baku pada periode ini.</p>}
+          </div>
+        </section>
       </div>
     </PageBlock>
   );
