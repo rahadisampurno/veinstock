@@ -14,7 +14,7 @@ export type ActionType =
   | 'pricing.view' | 'pricing.manage'
   | 'attendance.view' | 'attendance.record' | 'attendance.manage'
   | 'payroll.view' | 'payroll.manage'
-  | 'cashbook.view' | 'cashbook.manage'
+  | 'cashbook.view' | 'cashbook.manage' | 'cashbook.delete'
   | 'debt.view' | 'debt.manage';
 
 export interface Scope {
@@ -51,7 +51,7 @@ export function resolveUserScope(user?: SessionUser | null, policies?: RolePolic
      'sale.view', 'sale.create', 'sale.void', 'shipping.view', 'shipping.manage', 'shipping.evidence.view', 'shipping.evidence.manage',
      'report.view', 'report.export', 'audit.location.view', 'audit.view', 'supplier.view', 'supplier.manage',
      'pricing.view', 'pricing.manage', 'attendance.view', 'attendance.record', 'attendance.manage', 'payroll.view', 'payroll.manage',
-     'cashbook.view', 'cashbook.manage', 'debt.view', 'debt.manage'].forEach(p => permissions.add(p as ActionType));
+     'cashbook.view', 'cashbook.manage', 'cashbook.delete', 'debt.view', 'debt.manage'].forEach(p => permissions.add(p as ActionType));
   } else if (role === 'admin') {
     ['product.view', 'product.create', 'product.update',
      'location.view', 'location.create', 'location.update',
@@ -102,6 +102,9 @@ export function authorizeAction(
   // sehingga izin ini tidak boleh didelegasikan melalui kebijakan role.
   if (action === 'sale.void' && scope.role !== 'owner') {
     return { allowed: false, reason: 'Hanya Owner yang dapat membatalkan transaksi penjualan.' };
+  }
+  if (action === 'cashbook.delete' && scope.role !== 'owner') {
+    return { allowed: false, reason: 'Hanya Owner yang dapat menghapus transaksi Buku Kas.' };
   }
 
   if (!scope.permissions.has(action)) {

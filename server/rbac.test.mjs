@@ -24,6 +24,16 @@ describe('server RBAC policy', () => {
     expect(authorizeAction({ user: user('cashier'), action: 'cashbook.view' }).allowed).toBe(false);
   });
 
+  it('reserves cashbook deletion for Owner even when a custom role policy tries to grant it', () => {
+    expect(authorizeAction({ user: user('owner'), action: 'cashbook.delete' }).allowed).toBe(true);
+    for (const role of ['admin', 'pic', 'warehouse', 'cashier', 'finance', 'employee']) {
+      const account = { ...user(role), rolePermissions: ['cashbook.view', 'cashbook.delete'] };
+      const result = authorizeAction({ user: account, action: 'cashbook.delete' });
+      expect(result.allowed).toBe(false);
+      expect(result.reason).toMatch(/hanya owner/i);
+    }
+  });
+
   it('limits Warehouse, PIC, and Cashier to their assigned location', () => {
     for (const role of ['warehouse', 'pic', 'cashier']) {
       expect(authorizeAction({ user: user(role), action: 'stock.view', locationId: 'outlet-b' }).allowed).toBe(false);

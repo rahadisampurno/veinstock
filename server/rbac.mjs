@@ -25,7 +25,7 @@ export function resolveUserScope(user) {
      'sale.view', 'sale.create', 'sale.void', 'shipping.view', 'shipping.manage', 'shipping.evidence.view', 'shipping.evidence.manage',
      'report.view', 'report.export', 'audit.location.view', 'audit.view', 'supplier.view', 'supplier.manage',
      'pricing.view', 'pricing.manage', 'attendance.view', 'attendance.record', 'attendance.manage', 'payroll.view', 'payroll.manage',
-     'cashbook.view', 'cashbook.manage', 'debt.view', 'debt.manage'].forEach(p => permissions.add(p));
+     'cashbook.view', 'cashbook.manage', 'cashbook.delete', 'debt.view', 'debt.manage'].forEach(p => permissions.add(p));
   } else if (role === 'admin') {
     ['product.view', 'product.create', 'product.update',
      'location.view', 'location.create', 'location.update',
@@ -66,10 +66,13 @@ export function resolveUserScope(user) {
 export function authorizeAction({ user, action, locationId }) {
   const scope = resolveUserScope(user);
 
-  // Void mengembalikan stok dan mengubah laporan keuangan. Kebijakan role
-  // kustom tidak boleh mendelegasikan tindakan sensitif ini selain ke Owner.
+  // Tindakan yang menghapus atau membatalkan data keuangan tidak boleh
+  // didelegasikan melalui kebijakan role kustom.
   if (action === 'sale.void' && scope.role !== 'owner') {
     return { allowed: false, reason: 'Hanya Owner yang dapat membatalkan transaksi penjualan.' };
+  }
+  if (action === 'cashbook.delete' && scope.role !== 'owner') {
+    return { allowed: false, reason: 'Hanya Owner yang dapat menghapus transaksi Buku Kas.' };
   }
 
   // 1. Check if user has permission for this action

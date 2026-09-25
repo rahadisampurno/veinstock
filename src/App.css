@@ -13906,7 +13906,7 @@ button.danger:disabled {
 }
 
 .cashbook-table table {
-  min-width: 1120px;
+  min-width: 1200px;
 }
 
 .cashbook-table .empty {
@@ -14033,6 +14033,38 @@ td.cashbook-amount-column.in {
 
 td.cashbook-amount-column.out {
   color: #c93838;
+}
+
+.cashbook-action-column {
+  width: 96px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.cashbook-delete-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cashbook-delete-summary {
+  display: grid;
+  gap: 8px;
+  margin: 24px;
+  padding: 18px;
+  border: 1px solid #f3c9c5;
+  border-radius: 14px;
+  background: #fff7f6;
+}
+
+.cashbook-delete-summary > span,
+.cashbook-delete-summary > small {
+  color: var(--muted);
+}
+
+.cashbook-delete-summary > b {
+  color: #b42318;
+  font-size: 22px;
 }
 
 .cashbook-pagination {

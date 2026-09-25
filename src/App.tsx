@@ -3258,6 +3258,7 @@ function App({
               runCommand={runCommand}
               notify={notify}
               canManage={can("cashbook.manage")}
+              canDelete={can("cashbook.delete")}
             />
           )}
           {page === "debts" && (
@@ -14898,6 +14899,7 @@ function CashbookPage({
   runCommand,
   notify,
   canManage,
+  canDelete,
 }: {
   data: AppData;
   user: SessionUser;
@@ -14908,6 +14910,7 @@ function CashbookPage({
   ) => Promise<AppData>;
   notify: (message: string, tone?: ToastTone) => void;
   canManage: boolean;
+  canDelete: boolean;
 }) {
   const activeLocations = data.locations.filter((location) => location.active);
   const defaultLocation =
@@ -14930,6 +14933,8 @@ function CashbookPage({
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
+  const [pendingDelete, setPendingDelete] = useState<CashEntry | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const rowsPerPage = 10;
   const selectEntryType = (type: "in" | "out") => {
     setEntryType(type);
@@ -15021,6 +15026,32 @@ function CashbookPage({
       );
     } finally {
       setSaving(false);
+    }
+  };
+
+  useEffect(() => {
+    setCurrentPage((page) => Math.min(page, pageCount));
+  }, [pageCount]);
+
+  const deleteEntry = async () => {
+    if (!pendingDelete || !canDelete || deleting) return;
+    setDeleting(true);
+    try {
+      await runCommand(
+        `/api/commands/cashbook/${encodeURIComponent(pendingDelete.id)}/delete`,
+        {},
+      );
+      setPendingDelete(null);
+      notify("Transaksi Buku Kas berhasil dihapus.");
+    } catch (error) {
+      notify(
+        error instanceof Error
+          ? error.message
+          : "Transaksi Buku Kas gagal dihapus.",
+        "error",
+      );
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -15265,6 +15296,7 @@ function CashbookPage({
                 <th>Keterangan</th>
                 <th>Dicatat oleh</th>
                 <th className="cashbook-amount-column">Nominal</th>
+                {canDelete && <th className="cashbook-action-column">Aksi</th>}
               </tr>
             </thead>
             <tbody>
@@ -15303,11 +15335,23 @@ function CashbookPage({
                     <td className={`cashbook-amount-column ${entry.type}`}>
                       {entry.type === "in" ? "+" : "−"}{money(entry.amount)}
                     </td>
+                    {canDelete && (
+                      <td className="cashbook-action-column">
+                        <button
+                          type="button"
+                          className="table-action danger-text cashbook-delete-button"
+                          onClick={() => setPendingDelete(entry)}
+                        >
+                          <Trash2 size={15} /> Hapus
+                        </button>
+                      </td>
+                    )}
                   </tr>
                 ))
               ) : (
                 <Empty
                   text="Belum ada transaksi kas"
+                  columns={canDelete ? 10 : 9}
                   hint={
                     canManage
                       ? "Isi formulir di atas untuk mencatat transaksi pertama."
@@ -15342,6 +15386,48 @@ function CashbookPage({
           </div>
         )}
         </section>
+        {pendingDelete && canDelete && (
+          <Modal
+            title="Hapus transaksi Buku Kas?"
+            desc="Transaksi yang dihapus tidak lagi masuk ke saldo kas dan laporan."
+            close={() => !deleting && setPendingDelete(null)}
+            className="cashbook-delete-modal"
+          >
+            <div className="cashbook-delete-summary">
+              <span>{pendingDelete.category}</span>
+              <b>
+                {pendingDelete.type === "in" ? "+" : "−"}
+                {money(pendingDelete.amount)}
+              </b>
+              <small>
+                {new Date(`${pendingDelete.transactionDate}T12:00:00`).toLocaleDateString(
+                  "id-ID",
+                  { day: "2-digit", month: "long", year: "numeric" },
+                )}
+                {pendingDelete.note ? ` · ${pendingDelete.note}` : ""}
+              </small>
+            </div>
+            <footer className="modal-actions">
+              <button
+                type="button"
+                className="secondary"
+                disabled={deleting}
+                onClick={() => setPendingDelete(null)}
+              >
+                Kembali
+              </button>
+              <button
+                type="button"
+                className="danger-button"
+                disabled={deleting}
+                onClick={deleteEntry}
+              >
+                <Trash2 size={16} />
+                {deleting ? "Menghapus…" : "Ya, hapus transaksi"}
+              </button>
+            </footer>
+          </Modal>
+        )}
       </div>
     </PageBlock>
   );
@@ -15383,6 +15469,7 @@ const Empty = ({
   text,
   hint = "Gunakan tombol di kanan atas untuk mulai.",
   standalone = false,
+  columns = 9,
 }: any) => {
   const content = (
     <div className="empty">
@@ -15394,7 +15481,7 @@ const Empty = ({
   if (standalone) return content;
   return (
     <tr>
-      <td colSpan={9}>{content}</td>
+      <td colSpan={columns}>{content}</td>
     </tr>
   );
 };

@@ -5167,6 +5167,25 @@ app.post("/api/commands/cashbook", requireAuth, async (req, res) => {
   });
 });
 
+app.post(
+  "/api/commands/cashbook/:id/delete",
+  requireAuth,
+  async (req, res) => {
+    await executeCommand(req, res, async (state, actor) => {
+      state.cashEntries ||= [];
+      const entryIndex = state.cashEntries.findIndex(
+        (item) => item.id === req.params.id,
+      );
+      const entry = state.cashEntries[entryIndex];
+      const auth = commandAuth(actor, "cashbook.delete", entry?.locationId);
+      if (!auth.allowed) throw forbiddenCommand(auth.reason);
+      if (!entry)
+        throw invalidCommand("Transaksi Buku Kas tidak ditemukan.");
+      state.cashEntries.splice(entryIndex, 1);
+    });
+  },
+);
+
 app.post("/api/commands/debts", requireAuth, async (req, res) => {
   await executeCommand(req, res, async (state, actor) => {
     const action = String(req.body?.action || "create");

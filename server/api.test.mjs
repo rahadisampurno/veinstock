@@ -434,6 +434,34 @@ describe('multi-tenant API', () => {
       amount: 1000, paymentMethod: 'Tunai', reportTreatment: 'other_income',
     };
     expect((await post('/api/commands/cashbook', { entry: cashEntry }, finance.body.token)).status).toBe(201);
+    let cashbookState = await request('/api/state', {
+      headers: { authorization: `Bearer ${owner.body.token}` },
+    });
+    const createdCashEntry = cashbookState.body.data.cashEntries.find(
+      item => item.category === cashEntry.category,
+    );
+    expect(createdCashEntry).toBeTruthy();
+    expect((await post(
+      `/api/commands/cashbook/${createdCashEntry.id}/delete`,
+      {},
+      finance.body.token,
+    )).status).toBe(403);
+    expect((await post(
+      `/api/commands/cashbook/${createdCashEntry.id}/delete`,
+      {},
+      owner.body.token,
+    )).status).toBe(201);
+    cashbookState = await request('/api/state', {
+      headers: { authorization: `Bearer ${owner.body.token}` },
+    });
+    expect(cashbookState.body.data.cashEntries).not.toContainEqual(
+      expect.objectContaining({ id: createdCashEntry.id }),
+    );
+    expect((await post(
+      `/api/commands/cashbook/${createdCashEntry.id}/delete`,
+      {},
+      owner.body.token,
+    )).status).toBe(400);
 
     const revokedPolicy = {
       menus: ['dashboard', 'cashbook', 'business', 'help'],
