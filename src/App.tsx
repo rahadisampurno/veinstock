@@ -277,7 +277,6 @@ const permissionOptions: Array<{
   { id: "transfer.cancel", label: "Batalkan transfer", group: "Transfer" },
   { id: "sale.view", label: "Lihat penjualan", group: "Penjualan" },
   { id: "sale.create", label: "Buat penjualan", group: "Penjualan" },
-  { id: "sale.void", label: "Batalkan penjualan", group: "Penjualan" },
   { id: "shipping.view", label: "Lihat pengiriman", group: "Pengiriman" },
   { id: "shipping.manage", label: "Kelola pengiriman", group: "Pengiriman" },
   {
@@ -1176,10 +1175,12 @@ function BarcodeScanControl({
   onDetected,
   label = "Scan",
   className = "",
+  subject = "produk",
 }: {
   onDetected: (value: string) => boolean | Promise<boolean>;
   label?: string;
   className?: string;
+  subject?: "produk" | "resi";
 }) {
   const [open, setOpen] = useState(false);
   const [feedback, setFeedback] = useState("");
@@ -1227,12 +1228,14 @@ function BarcodeScanControl({
     const found = await onDetectedRef.current(value);
     if (!found) {
       setFeedback(
-        "Barcode atau SKU tidak ditemukan pada data yang dapat digunakan di menu ini.",
+        subject === "resi"
+          ? "Nomor resi tidak terbaca. Pastikan barcode terlihat utuh dan coba lagi."
+          : "Barcode atau SKU tidak ditemukan pada data yang dapat digunakan di menu ini.",
       );
       return false;
     }
     beep();
-    setFeedback("Barcode berhasil dipindai.");
+    setFeedback(subject === "resi" ? "Nomor resi berhasil dipindai." : "Barcode berhasil dipindai.");
     stop();
     return true;
   };
@@ -1243,13 +1246,13 @@ function BarcodeScanControl({
     setFeedback("");
     if (!navigator.mediaDevices?.getUserMedia) {
       setFeedback(
-        "Kamera tidak tersedia. Gunakan scanner Bluetooth atau masukkan barcode/SKU.",
+        `Kamera tidak tersedia. Gunakan scanner Bluetooth atau masukkan ${subject === "resi" ? "nomor resi" : "barcode/SKU"}.`,
       );
       return;
     }
     if (!(window as any).BarcodeDetector) {
       setFeedback(
-        "Chrome di perangkat ini belum mendukung pembacaan barcode kamera. Gunakan scanner Bluetooth atau masukkan barcode/SKU.",
+        `Chrome di perangkat ini belum mendukung pembacaan barcode kamera. Gunakan scanner Bluetooth atau masukkan ${subject === "resi" ? "nomor resi" : "barcode/SKU"}.`,
       );
       return;
     }
@@ -1291,12 +1294,14 @@ function BarcodeScanControl({
         }
         const Detector = (window as any).BarcodeDetector;
         const preferred = [
-          "ean_13",
-          "ean_8",
           "code_128",
           "code_39",
+          "ean_13",
+          "ean_8",
           "upc_a",
           "upc_e",
+          "qr_code",
+          "data_matrix",
         ];
         const supported =
           typeof Detector.getSupportedFormats === "function"
@@ -1325,7 +1330,7 @@ function BarcodeScanControl({
         }, 260);
       } catch {
         setFeedback(
-          "Pemindai tidak dapat dijalankan. Gunakan scanner Bluetooth atau masukkan barcode/SKU.",
+          `Pemindai tidak dapat dijalankan. Gunakan scanner Bluetooth atau masukkan ${subject === "resi" ? "nomor resi" : "barcode/SKU"}.`,
         );
         stop();
       }
@@ -1335,7 +1340,7 @@ function BarcodeScanControl({
       cancelled = true;
       if (timer) window.clearInterval(timer);
     };
-  }, [open]);
+  }, [open, subject]);
   useEffect(() => () => stop(), []);
   return (
     <div className={`barcode-scan-control ${className}`}>
@@ -1358,15 +1363,69 @@ function BarcodeScanControl({
             ref={videoRef}
             muted
             playsInline
-            aria-label="Pratinjau kamera pemindai barcode"
+            aria-label={`Pratinjau kamera pemindai ${subject}`}
           />
           <div>
-            <span>Arahkan kamera ke barcode produk</span>
+            <span>Arahkan kamera ke barcode {subject}</span>
             <button type="button" onClick={stop}>
               <X size={16} /> Tutup
             </button>
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+function ResiScanField({
+  value,
+  onValue,
+}: {
+  value: string;
+  onValue: (value: string) => void;
+}) {
+  const [feedback, setFeedback] = useState("");
+  const apply = (rawValue: string) => {
+    const normalized = String(rawValue || "")
+      .trim()
+      .toUpperCase()
+      .replace(/\s/g, "");
+    if (!/^[A-Z0-9][A-Z0-9._-]{5,79}$/.test(normalized)) return false;
+    onValue(normalized);
+    setFeedback(`Resi ${normalized} berhasil dibaca.`);
+    return true;
+  };
+  return (
+    <div className="pos-resi-scan-field">
+      <div className="pos-resi-input-row">
+        <input
+          value={value}
+          maxLength={80}
+          onChange={(event) => {
+            onValue(event.target.value.toUpperCase().replace(/\s/g, ""));
+            setFeedback("");
+          }}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter") return;
+            event.preventDefault();
+            event.stopPropagation();
+            if (!apply(event.currentTarget.value))
+              setFeedback("Resi belum valid. Scan ulang atau periksa hasilnya.");
+          }}
+          placeholder="Scan atau ketik nomor resi"
+          aria-label="Nomor resi"
+        />
+        <BarcodeScanControl
+          subject="resi"
+          label="Scan Resi"
+          className="resi-barcode-control"
+          onDetected={apply}
+        />
+      </div>
+      {feedback && (
+        <small className="pos-resi-scan-feedback" role="status">
+          {feedback}
+        </small>
       )}
     </div>
   );
@@ -1860,6 +1919,10 @@ function App({
   );
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [modal, setModalState] = useState<string | null>(null);
+  const [shippingFocus, setShippingFocus] = useState<null | {
+    shipmentId: string;
+    trackingNumber: string;
+  }>(null);
   const [notificationIntent, setNotificationIntent] =
     useState<NotificationIntent | null>(null);
   const [toast, setToast] = useState<{
@@ -3094,6 +3157,9 @@ function App({
               canManage={can("shipping.manage")}
               canViewEvidence={can("shipping.evidence.view")}
               canManageEvidence={can("shipping.evidence.manage")}
+              focus={shippingFocus}
+              clearFocus={() => setShippingFocus(null)}
+              openSale={(saleId: string) => setModal(`sale-detail:${saleId}`)}
             />
           )}
           {page === "stock-outs" && (
@@ -3990,6 +4056,8 @@ function App({
           data={data}
           notify={notify}
           checkMarketplaceImport={checkMarketplaceImport}
+          canManagePackingEvidence={can("shipping.evidence.manage")}
+          canCancelSale={can("sale.void")}
           initialChannel={modal.slice("sale:".length) as Channel}
           fixedLocation={
             scope.scopeType === "specific" ? user.outletId : undefined
@@ -4024,11 +4092,17 @@ function App({
               sourceImport: Record<string, unknown>;
               skuMappings: Array<{ externalSku: string; variantId: string }>;
             },
+            onlineDetails?: {
+              sourcePlatform: string;
+              marketplaceOrderId?: string;
+              trackingNumber?: string;
+            },
+            packingProofFile?: File | null,
           ) => {
             if (!cart.some((item) => isPositiveNumber(item.quantity)))
               return notify("Tidak ada produk valid di keranjang");
             const previousIds = new Set(data.sales.map((sale) => sale.id));
-            const updated = normalizeData(
+            let updated = normalizeData(
               await runCommand("/api/commands/sales", {
                 locationId: loc,
                 channel,
@@ -4040,10 +4114,11 @@ function App({
                 requiresPrint,
                 note,
                 platformFee,
+                ...(onlineDetails || {}),
                 ...(importOptions || {}),
               }),
             );
-            const sale =
+            let sale =
               updated.sales.find((item) => !previousIds.has(item.id)) ||
               [...updated.sales].sort(
                 (a, b) =>
@@ -4054,10 +4129,37 @@ function App({
               throw new Error(
                 "Penjualan tersimpan, tetapi struk transaksi belum dapat ditemukan.",
               );
+            let packingEvidenceSaved = false;
+            if (packingProofFile && onlineDetails?.trackingNumber) {
+              const body = new FormData();
+              body.append("trackingNumber", onlineDetails.trackingNumber);
+              body.append("locationId", loc);
+              body.append("marketplace", onlineDetails.sourcePlatform);
+              body.append("image", packingProofFile);
+              try {
+                updated = normalizeData(
+                  await runFormCommand(
+                    "/api/commands/shipping/ready-with-evidence",
+                    body,
+                  ),
+                );
+                sale = updated.sales.find((item) => item.id === sale.id) || sale;
+                packingEvidenceSaved = true;
+              } catch (error) {
+                notify(
+                  `Penjualan sudah tersimpan dan masuk Packing, tetapi foto belum berhasil disimpan. Unggah ulang dari menu Pengiriman Pesanan. ${error instanceof Error ? error.message : ""}`.trim(),
+                  "error",
+                );
+              }
+            }
             notify(
               requiresPrint
                 ? "Transaksi menunggu struk tercetak."
-                : "Penjualan tersimpan dan stok otomatis berkurang",
+                : packingEvidenceSaved
+                  ? "Penjualan tersimpan dan paket masuk Siap Diangkut."
+                  : onlineDetails?.trackingNumber
+                    ? "Penjualan tersimpan dan paket masuk antrean Packing."
+                    : "Penjualan tersimpan dan stok otomatis berkurang",
             );
             return { sale, data: updated };
           }}
@@ -4180,6 +4282,39 @@ function App({
               await runCommand(
                 `/api/commands/sales/${saleId}/finalize-print`,
                 {},
+              ),
+            )
+          }
+          settleCod={async (saleId: string, amount: number) =>
+            normalizeData(
+              await runCommand(`/api/commands/sales/${saleId}/settle-cod`, {
+                amount,
+              }),
+            )
+          }
+          getPackingEvidenceUrl={getPackingEvidenceUrl}
+          canSettleCod={can("sale.create")}
+          canViewPackingEvidence={can("shipping.evidence.view")}
+          openShipping={(shipment: any) => {
+            setShippingFocus({
+              shipmentId: shipment.id,
+              trackingNumber: shipment.trackingNumber,
+            });
+            setModalState(null);
+            setPage("shipping");
+          }}
+          updateOnlineDetails={async (
+            saleId: string,
+            details: {
+              sourcePlatform: string;
+              marketplaceOrderId?: string;
+              trackingNumber?: string;
+            },
+          ) =>
+            normalizeData(
+              await runCommand(
+                `/api/commands/sales/${saleId}/online-details`,
+                details,
               ),
             )
           }
@@ -9329,6 +9464,9 @@ function RawMaterialsPage({
   const materials = (data.rawMaterials || []).filter(
     (material: any) => material.active !== false,
   );
+  const availableRawMaterialSuppliers = (data.suppliers || []).filter(
+    (supplier: any) => supplier.active !== false,
+  );
   const movements = data.rawMaterialMovements || [];
   const balances = data.rawMaterialBalances || [];
   const [tab, setTab] = useState<"stock" | "history">("stock");
@@ -9372,6 +9510,9 @@ function RawMaterialsPage({
     quantity: "",
     actualQuantity: "",
     unitCost: "",
+    sourceType: "supplier" as "supplier" | "production",
+    supplierId: "",
+    supplierName: "",
     note: "",
   });
   const [transferItems, setTransferItems] = useState(() =>
@@ -9433,6 +9574,9 @@ function RawMaterialsPage({
       quantity: "",
       actualQuantity: "",
       unitCost: "",
+      sourceType: "supplier",
+      supplierId: "",
+      supplierName: "",
       note: "",
     });
     setTransferItems(
@@ -9734,6 +9878,10 @@ function RawMaterialsPage({
     const formError =
       movementDraft.type === "transfer" && !movementDraft.destinationLocationId
         ? "Pilih lokasi tujuan transfer."
+        : movementDraft.type === "stock_in" &&
+            movementDraft.sourceType === "supplier" &&
+            !movementDraft.supplierName.trim()
+          ? "Pilih supplier atau masukkan nama supplier manual."
         : "";
     if (Object.keys(errors).length || formError) {
       setMovementValidationAttempted(true);
@@ -9833,7 +9981,7 @@ function RawMaterialsPage({
         const material = materials.find(
           (item: any) => item.id === movement.materialId,
         );
-        return `${material?.name || ""} ${material?.sku || ""} ${group.documentCode} ${movement.note || ""} ${movementLabels[movement.type] || movement.type}`
+        return `${material?.name || ""} ${material?.sku || ""} ${group.documentCode} ${movement.note || ""} ${movement.supplierName || ""} ${movement.sourceType === "production" ? "hasil produksi" : ""} ${movementLabels[movement.type] || movement.type}`
           .toLowerCase()
           .includes(query);
       });
@@ -9955,6 +10103,16 @@ function RawMaterialsPage({
                 ),
               );
               const note = group.items.find((movement: any) => movement.note)?.note;
+              const sourceMovement = group.items.find(
+                (movement: any) => movement.type === "stock_in" && movement.sourceType,
+              );
+              const sourceDescription = sourceMovement
+                ? sourceMovement.sourceType === "production"
+                  ? "Hasil produksi"
+                  : sourceMovement.supplierName
+                    ? `Pembelian supplier · ${sourceMovement.supplierName}`
+                    : "Pembelian supplier"
+                : "";
               const destinations = Array.from(
                 new Set(
                   group.items
@@ -9994,7 +10152,11 @@ function RawMaterialsPage({
                     </span>
                     <span className="raw-movement-group-kind">
                       <b>{types.join(" + ")}</b>
-                      {destinations.length > 0 && <small>Tujuan: {destinations.join(", ")}</small>}
+                      {sourceDescription ? (
+                        <small>Sumber: {sourceDescription}</small>
+                      ) : destinations.length > 0 ? (
+                        <small>Tujuan: {destinations.join(", ")}</small>
+                      ) : null}
                     </span>
                     <span className="raw-movement-group-count">
                       <b>{group.items.length}</b>
@@ -10006,6 +10168,7 @@ function RawMaterialsPage({
                   </button>
                   {expanded && (
                     <div className="raw-movement-group-detail">
+                      {sourceDescription && <div className="raw-movement-group-note"><b>Sumber stok</b><span>{sourceDescription}</span></div>}
                       {note && <div className="raw-movement-group-note"><b>Catatan</b><span>{note}</span></div>}
                       <div className="table-wrap raw-material-table">
                         <table>
@@ -10386,7 +10549,7 @@ function RawMaterialsPage({
                       <div><b>Isi mutasi</b><small>Nilai per bahan dan catatan</small></div>
                     </div>
                   </div>
-                <div className="raw-transfer-settings">
+                <div className={`raw-transfer-settings${movementDraft.type === "stock_in" ? " has-stock-source" : ""}`}>
                   <label className="field">
                     <span>Jenis transaksi</span>
                     <select
@@ -10413,7 +10576,11 @@ function RawMaterialsPage({
                     </select>
                   </label>
                   <label className="field">
-                    <span>Lokasi asal</span>
+                    <span>
+                      {movementDraft.type === "stock_in"
+                        ? "Lokasi penerima"
+                        : "Lokasi asal"}
+                    </span>
                     <select
                       required
                       value={movementDraft.locationId}
@@ -10442,6 +10609,88 @@ function RawMaterialsPage({
                       ))}
                     </select>
                   </label>
+                  {movementDraft.type === "stock_in" && (
+                    <>
+                      <label className="field">
+                        <span>Sumber stok</span>
+                        <select
+                          value={movementDraft.sourceType}
+                          onChange={(event) => {
+                            const sourceType = event.target.value as
+                              | "supplier"
+                              | "production";
+                            setMovementFormError("");
+                            setMovementDraft({
+                              ...movementDraft,
+                              sourceType,
+                              supplierId:
+                                sourceType === "supplier"
+                                  ? movementDraft.supplierId
+                                  : "",
+                              supplierName:
+                                sourceType === "supplier"
+                                  ? movementDraft.supplierName
+                                  : "",
+                            });
+                          }}
+                        >
+                          <option value="supplier">Pembelian supplier</option>
+                          <option value="production">Hasil produksi</option>
+                        </select>
+                      </label>
+                      {movementDraft.sourceType === "supplier" && (
+                        <label className="field raw-material-supplier-field">
+                          <span>Supplier</span>
+                          <select
+                            required
+                            value={movementDraft.supplierId}
+                            onChange={(event) => {
+                              const supplierId = event.target.value;
+                              const supplier = availableRawMaterialSuppliers.find(
+                                (item: any) => item.id === supplierId,
+                              );
+                              setMovementFormError("");
+                              setMovementDraft({
+                                ...movementDraft,
+                                supplierId,
+                                supplierName:
+                                  supplierId === "__manual__"
+                                    ? ""
+                                    : supplier?.name || "",
+                              });
+                            }}
+                          >
+                            <option value="" disabled>Pilih supplier</option>
+                            {availableRawMaterialSuppliers.map((supplier: any) => (
+                              <option key={supplier.id} value={supplier.id}>
+                                {supplier.name}
+                              </option>
+                            ))}
+                            <option value="__manual__">Input nama supplier manual</option>
+                          </select>
+                          {movementDraft.supplierId === "__manual__" && (
+                            <input
+                              required
+                              value={movementDraft.supplierName}
+                              onChange={(event) => {
+                                setMovementFormError("");
+                                setMovementDraft({
+                                  ...movementDraft,
+                                  supplierName: event.target.value,
+                                });
+                              }}
+                              placeholder="Masukkan nama supplier"
+                            />
+                          )}
+                          {!movementDraft.supplierName.trim() && (
+                            <small className="raw-unit-hint">
+                              Wajib dipilih untuk pembelian supplier.
+                            </small>
+                          )}
+                        </label>
+                      )}
+                    </>
+                  )}
                   {movementDraft.type === "transfer" && transferStep === 2 && (
                     <label className="field">
                       <span>Lokasi tujuan</span>
@@ -10471,7 +10720,7 @@ function RawMaterialsPage({
                     </label>
                   )}
                 </div>
-                {movementValidationAttempted && movementFormError && transferStep === 2 && (
+                {movementValidationAttempted && movementFormError && (
                   <div className="raw-movement-form-error" role="alert">
                     <AlertTriangle size={18} />
                     <span>{movementFormError}</span>
@@ -10747,7 +10996,12 @@ function RawMaterialsPage({
                   <button
                     type="button"
                     className="primary"
-                    disabled={!transferItems.length}
+                    disabled={
+                      !transferItems.length ||
+                      (movementDraft.type === "stock_in" &&
+                        movementDraft.sourceType === "supplier" &&
+                        !movementDraft.supplierName.trim())
+                    }
                     onClick={() => {
                       setMovementItemErrors({});
                       setMovementFormError("");
@@ -11763,6 +12017,7 @@ function Sales({
 }: any) {
   const [search, setSearch] = useState("");
   const [channel, setChannel] = useState("all");
+  const [paymentStatus, setPaymentStatus] = useState("all");
   const [filterStartDate, setFilterStartDate] = useState("");
   const [filterEndDate, setFilterEndDate] = useState("");
 
@@ -11773,7 +12028,7 @@ function Sales({
 
   useEffect(() => {
     setPage(1);
-  }, [search, channel, filterStartDate, filterEndDate]);
+  }, [search, channel, paymentStatus, filterStartDate, filterEndDate]);
 
   const isPic =
     ["pic", "warehouse", "cashier", "admin"].includes(role) && outletId;
@@ -11782,8 +12037,19 @@ function Sales({
     : data.sales;
   const rows = filteredSales.filter((s: any) => {
     const matchChannel = channel === "all" || s.channel === channel;
+    const matchPayment =
+      paymentStatus === "all" ||
+      (paymentStatus === "cod" && s.payment === "COD") ||
+      (paymentStatus === "cod_pending" &&
+        s.payment === "COD" &&
+        s.status !== "voided" &&
+        s.codStatus !== "settled") ||
+      (paymentStatus === "cod_settled" &&
+        s.payment === "COD" &&
+        s.status !== "voided" &&
+        s.codStatus === "settled");
     const matchSearch =
-      `${locations[s.locationId]?.name} ${s.channel} ${variants[s.items[0]?.variantId]?.name}`
+      `${locations[s.locationId]?.name} ${s.channel} ${variants[s.items[0]?.variantId]?.name} ${s.sourcePlatform || ""} ${s.marketplaceOrderId || ""} ${s.trackingNumber || ""}`
         .toLowerCase()
         .includes(search.toLowerCase());
 
@@ -11798,12 +12064,20 @@ function Sales({
       matchDate = matchDate && itemDate <= end;
     }
 
-    return matchChannel && matchSearch && matchDate;
+    return matchChannel && matchPayment && matchSearch && matchDate;
   });
 
   const totalSales = rows.length;
   const totalRevenue = rows.reduce(
     (acc: number, s: any) => acc + (s.status === "completed" ? s.total : 0),
+    0,
+  );
+  const pendingCod = rows.reduce(
+    (acc: number, s: any) =>
+      acc +
+      (s.status !== "voided" && s.payment === "COD" && s.codStatus !== "settled"
+        ? Number(s.netPayout ?? s.total ?? 0)
+        : 0),
     0,
   );
 
@@ -11860,22 +12134,37 @@ function Sales({
           sub="Sesuai filter"
         />
         <Stat
-          label="Total Pendapatan"
+          label="Total Omzet"
           value={money(totalRevenue)}
-          sub="Hanya transaksi selesai"
+          sub="Termasuk COD belum cair"
+        />
+        <Stat
+          label="COD Belum Cair"
+          value={money(pendingCod)}
+          sub="Belum masuk kas"
         />
       </div>
-      <div className="filters">
+      <div className="filters sales-filters">
         <select value={channel} onChange={(e) => setChannel(e.target.value)}>
           <option value="all">Semua kanal</option>
           <option value="offline">Offline</option>
           <option value="online">Online</option>
           <option value="reseller">Reseller</option>
         </select>
+        <select
+          aria-label="Filter pembayaran"
+          value={paymentStatus}
+          onChange={(event) => setPaymentStatus(event.target.value)}
+        >
+          <option value="all">Semua pembayaran</option>
+          <option value="cod">Semua COD</option>
+          <option value="cod_pending">COD belum cair</option>
+          <option value="cod_settled">COD sudah cair</option>
+        </select>
         <ListSearch
           value={search}
           setValue={setSearch}
-          placeholder="Cari lokasi atau produk"
+          placeholder="Cari produk, platform, pesanan, atau resi"
         />
         <DateRangePicker
           from={filterStartDate}
@@ -11916,6 +12205,11 @@ function Sales({
                   </div>
                   <div className="record-card-badges">
                     <span className="status info">{s.channel}</span>
+                    {s.payment === "COD" && s.status !== "voided" && (
+                      <span className={`status ${s.codStatus === "settled" ? "ok" : "warning"}`}>
+                        {s.codStatus === "settled" ? "COD sudah cair" : "COD belum cair"}
+                      </span>
+                    )}
                     <span
                       className={`status ${s.status === "voided" ? "danger" : s.status === "pending_print" ? "warning" : "ok"}`}
                     >
@@ -11945,6 +12239,7 @@ function Sales({
                     <b>{money(s.total)}</b>
                     <span>
                       {s.payment || "Metode pembayaran tidak tercatat"}
+                      {s.sourcePlatform ? ` · ${s.sourcePlatform}` : ""}
                       {Number(s.discountAmount || 0) > 0
                         ? ` · Diskon ${saleDiscountDescription(s)}`
                         : ""}
@@ -12625,6 +12920,13 @@ function Reports({
         : allItemValue > 0
           ? saleNetPayout * (selectedItemValue / allItemValue)
           : 0;
+    const codSettlementAmount = Number(sale.codSettlementAmount || 0);
+    const reportCodSettlement =
+      product === "all"
+        ? codSettlementAmount
+        : allItemValue > 0
+          ? codSettlementAmount * (selectedItemValue / allItemValue)
+          : 0;
     return {
       ...sale,
       items,
@@ -12632,6 +12934,7 @@ function Reports({
       reportDiscount,
       reportPlatformFee,
       reportNetPayout,
+      reportCodSettlement,
     };
   };
   const sales = scopedSales
@@ -12661,6 +12964,21 @@ function Reports({
   );
   const totalNetPayout = sales
     .filter((sale: any) => sale.channel === "online")
+    .reduce(
+      (sum: number, sale: any) =>
+        sum +
+        (sale.payment === "COD"
+          ? sale.codStatus === "settled"
+            ? Number(sale.reportCodSettlement || 0)
+            : 0
+          : Number(sale.reportNetPayout || 0)),
+      0,
+    );
+  const totalPendingCod = sales
+    .filter(
+      (sale: any) =>
+        sale.payment === "COD" && sale.codStatus !== "settled",
+    )
     .reduce(
       (sum: number, sale: any) => sum + Number(sale.reportNetPayout || 0),
       0,
@@ -13148,6 +13466,7 @@ function Reports({
       ["Estimasi laba kotor", grossProfit],
       ["Biaya marketplace", totalMarketplaceFees],
       ["Pencairan bersih penjualan online", totalNetPayout],
+      ["COD belum cair", totalPendingCod],
       ["Margin kotor", `${grossMargin.toFixed(1)}%`],
       ["Pendapatan kas lain", cashbookSummary.otherIncome],
       ["Beban operasional dari Buku Kas", cashbookSummary.operatingExpense],
@@ -13731,6 +14050,14 @@ function Reports({
               <small>
                 Biaya admin/layanan · pencairan {money(totalNetPayout)}
               </small>
+            </article>
+            <article className="report-kpi">
+              <span>COD belum cair</span>
+              <i className={`metric-quality ${totalPendingCod > 0 ? "estimated" : "verified"}`}>
+                {totalPendingCod > 0 ? "Belum masuk kas" : "Aman"}
+              </i>
+              <b>{money(totalPendingCod)}</b>
+              <small>Tidak dihitung sebagai pencairan yang sudah diterima</small>
             </article>
             <article className="report-kpi">
               <span>Nilai pembelian stok</span>
@@ -20659,6 +20986,8 @@ function SaleModal({
   defaultLocation,
   notify,
   checkMarketplaceImport,
+  canManagePackingEvidence,
+  canCancelSale,
   initialChannel = "offline",
 }: any) {
   const activeLocations = data.locations.filter((l: any) => l.active),
@@ -20690,6 +21019,10 @@ function SaleModal({
     [posFlavorFilter, setPosFlavorFilter] = useState("all"),
     [posLevelFilter, setPosLevelFilter] = useState("all"),
     [payment, setPayment] = useState("QRIS"),
+    [sourcePlatform, setSourcePlatform] = useState("Shopee"),
+    [marketplaceOrderId, setMarketplaceOrderId] = useState(""),
+    [trackingNumber, setTrackingNumber] = useState(""),
+    [packingProofFile, setPackingProofFile] = useState<File | null>(null),
     [onlineInputMode, setOnlineInputMode] = useState<"satuan" | "bulk">("satuan"),
     [discountType, setDiscountType] = useState<"nominal" | "percentage">(
       "nominal",
@@ -20766,6 +21099,9 @@ function SaleModal({
     setDiscountValue(0);
     setBuyerNote("");
     setManualSalePlatformFee(0);
+    setMarketplaceOrderId("");
+    setTrackingNumber("");
+    setPackingProofFile(null);
     setSkuSearch("");
     setSelectedPosProduct(null);
     resetPosVariantFilters();
@@ -21191,6 +21527,15 @@ function SaleModal({
               discountValue,
               buyerNote.trim() || undefined,
               channel === "online" ? manualSalePlatformFee : 0,
+              undefined,
+              channel === "online"
+                ? {
+                    sourcePlatform,
+                    marketplaceOrderId: marketplaceOrderId.trim() || undefined,
+                    trackingNumber: trackingNumber.trim() || undefined,
+                  }
+                : undefined,
+              channel === "online" ? packingProofFile : null,
             );
             if (shouldPrint) {
               try {
@@ -21294,7 +21639,10 @@ function SaleModal({
                   onChange={(e) => {
                     const nextChannel = e.target.value as Channel;
                     setChannel(nextChannel);
-                    if (nextChannel !== "online") setManualSalePlatformFee(0);
+                    if (nextChannel !== "online") {
+                      setManualSalePlatformFee(0);
+                      if (payment === "COD") setPayment("QRIS");
+                    }
                   }}
                 >
                   <option value="offline">Offline</option>
@@ -21807,21 +22155,74 @@ function SaleModal({
                   </small>
                 </Field>
                 {channel === "online" && (
-                  <Field label="Biaya marketplace (opsional)">
-                    <RupiahInput
-                      label="Biaya admin atau layanan marketplace"
-                      value={manualSalePlatformFee}
-                      onValue={(value) =>
-                        setManualSalePlatformFee(
-                          Math.min(value, payableAmount),
-                        )
-                      }
-                    />
-                    <small className="pos-note-hint">
-                      Default Rp0. Biaya tidak mengubah tagihan pembeli, tetapi
-                      mengurangi pencairan dan laba pada laporan.
-                    </small>
-                  </Field>
+                  <>
+                    <section className="pos-online-order-fields">
+                      <h4>Detail pesanan online</h4>
+                      <p>Hubungkan transaksi dengan marketplace dan bukti packing.</p>
+                      <div className="form-grid">
+                        <Field label="Sumber pesanan">
+                          <select
+                            value={sourcePlatform}
+                            onChange={(event) => setSourcePlatform(event.target.value)}
+                          >
+                            <option>Shopee</option>
+                            <option>TikTok</option>
+                            <option>WhatsApp</option>
+                            <option>Instagram</option>
+                            <option>Lainnya</option>
+                          </select>
+                        </Field>
+                        <Field label="Nomor pesanan (opsional)">
+                          <input
+                            value={marketplaceOrderId}
+                            maxLength={100}
+                            onChange={(event) => setMarketplaceOrderId(event.target.value)}
+                            placeholder="Contoh: 240924ABC123"
+                          />
+                        </Field>
+                        <Field label="Nomor resi (opsional)">
+                          <ResiScanField
+                            value={trackingNumber}
+                            onValue={(value) => {
+                              if (value !== trackingNumber)
+                                setPackingProofFile(null);
+                              setTrackingNumber(value);
+                            }}
+                          />
+                          <small className="pos-note-hint">Nomor resi menghubungkan transaksi dengan bukti foto packing di menu Pengiriman.</small>
+                        </Field>
+                        {trackingNumber && canManagePackingEvidence && (
+                          <Field label="Foto bukti packing (opsional)">
+                            <EvidencePhotoPicker
+                              file={packingProofFile}
+                              setFile={setPackingProofFile}
+                              subject="packing"
+                            />
+                            <small className="pos-note-hint">
+                              {packingProofFile
+                                ? "Foto siap disimpan. Paket akan langsung masuk ke Siap Diangkut."
+                                : "Tanpa foto, paket tetap masuk ke tab Packing dengan status Menunggu bukti packing."}
+                            </small>
+                          </Field>
+                        )}
+                      </div>
+                    </section>
+                    <Field label="Biaya marketplace (opsional)">
+                      <RupiahInput
+                        label="Biaya admin atau layanan marketplace"
+                        value={manualSalePlatformFee}
+                        onValue={(value) =>
+                          setManualSalePlatformFee(
+                            Math.min(value, payableAmount),
+                          )
+                        }
+                      />
+                      <small className="pos-note-hint">
+                        Default Rp0. Biaya tidak mengubah tagihan pembeli, tetapi
+                        mengurangi pencairan dan laba pada laporan.
+                      </small>
+                    </Field>
+                  </>
                 )}
                 <div
                   className="pos-cart-summary"
@@ -21902,10 +22303,16 @@ function SaleModal({
                       <option>QRIS</option>
                       <option>Tunai</option>
                       <option>Transfer</option>
+                      <option>COD</option>
                     </select>
                   )}
                 </Field>
-                <div></div>
+                {channel === "online" && payment === "COD" ? (
+                  <div className="pos-cod-help">
+                    <b>COD · dana belum diterima</b>
+                    <small>Setelah marketplace atau kurir mencairkan dana, buka detail transaksi lalu pilih “Catat dana sudah cair”.</small>
+                  </div>
+                ) : <div></div>}
               </div>
               {printError && (
                 <p className="form-error" role="alert">
@@ -21922,14 +22329,16 @@ function SaleModal({
             <footer className="modal-actions sale-print-actions">
               {pendingSale ? (
                 <>
-                  <button
-                    type="button"
-                    className="danger-button"
-                    onClick={() => void cancelPendingSale()}
-                    disabled={saving}
-                  >
-                    Batalkan transaksi
-                  </button>
+                  {canCancelSale && (
+                    <button
+                      type="button"
+                      className="danger-button"
+                      onClick={() => void cancelPendingSale()}
+                      disabled={saving}
+                    >
+                      Batalkan transaksi
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="secondary"
@@ -21982,7 +22391,11 @@ function SaleModal({
                       ? "Memproses..."
                       : printReceipt
                         ? "Simpan & Cetak"
-                        : "Simpan Penjualan"}
+                        : channel === "online" && trackingNumber
+                          ? packingProofFile
+                            ? "Simpan & Siap Diangkut"
+                            : "Simpan & Masuk Packing"
+                          : "Simpan Penjualan"}
                   </button>
                 </>
               )}
@@ -22388,6 +22801,12 @@ function SaleDetail({
   close,
   notify,
   finalizePrint,
+  settleCod,
+  getPackingEvidenceUrl,
+  canSettleCod,
+  updateOnlineDetails,
+  canViewPackingEvidence,
+  openShipping,
 }: any) {
   const [printerSettings, setPrinterSettings] = useState<PrinterSettings>(() =>
     loadPrinterSettings(),
@@ -22395,7 +22814,24 @@ function SaleDetail({
   const [printing, setPrinting] = useState(false);
   const [awaitingSystemConfirmation, setAwaitingSystemConfirmation] =
     useState(false);
+  const [settlingCod, setSettlingCod] = useState(false);
+  const [codAmount, setCodAmount] = useState(() =>
+    Number(item?.netPayout ?? item?.total ?? 0),
+  );
+  const [openingEvidence, setOpeningEvidence] = useState(false);
+  const [editingOnlineDetails, setEditingOnlineDetails] = useState(false);
+  const [savingOnlineDetails, setSavingOnlineDetails] = useState(false);
+  const [onlinePlatform, setOnlinePlatform] = useState(item?.sourcePlatform || "Shopee");
+  const [onlineOrderId, setOnlineOrderId] = useState(item?.marketplaceOrderId || "");
+  const [onlineTrackingNumber, setOnlineTrackingNumber] = useState(item?.trackingNumber || "");
   if (!item) return null;
+  const linkedShipment = item.trackingNumber
+    ? (data.shipments || []).find(
+        (shipment: any) =>
+          shipment.sourceSaleId === item.id ||
+          shipment.trackingNumber === item.trackingNumber,
+      )
+    : undefined;
   const grossTotal = Number(
     item.grossTotal ??
       (item.items.reduce(
@@ -22456,6 +22892,99 @@ function SaleDetail({
             {item.channel} &middot; {item.payment}
           </b>
         </p>
+        {item.channel === "online" && (
+          <>
+            {editingOnlineDetails ? (
+              <section className="sale-online-details-editor">
+                <div className="form-grid">
+                  <Field label="Sumber pesanan">
+                    <select disabled={Boolean(item.sourceImportId)} value={onlinePlatform} onChange={(event) => setOnlinePlatform(event.target.value)}>
+                      <option>Shopee</option>
+                      <option>TikTok</option>
+                      <option>WhatsApp</option>
+                      <option>Instagram</option>
+                      <option>Lainnya</option>
+                    </select>
+                  </Field>
+                  <Field label="Nomor pesanan (opsional)">
+                    <input value={onlineOrderId} maxLength={100} onChange={(event) => setOnlineOrderId(event.target.value)} />
+                  </Field>
+                  <Field label="Nomor resi (opsional)">
+                    <ResiScanField
+                      value={onlineTrackingNumber}
+                      onValue={setOnlineTrackingNumber}
+                    />
+                  </Field>
+                </div>
+                <div className="sale-online-details-actions">
+                  <button type="button" className="secondary" disabled={savingOnlineDetails} onClick={() => setEditingOnlineDetails(false)}>Batal</button>
+                  <button
+                    type="button"
+                    className="primary"
+                    disabled={savingOnlineDetails || !onlinePlatform}
+                    onClick={async () => {
+                      setSavingOnlineDetails(true);
+                      try {
+                        await updateOnlineDetails(item.id, {
+                          sourcePlatform: onlinePlatform,
+                          marketplaceOrderId: onlineOrderId,
+                          trackingNumber: onlineTrackingNumber,
+                        });
+                        notify("Detail pesanan online berhasil diperbarui.");
+                        close();
+                      } catch (error) {
+                        notify(error instanceof Error ? error.message : "Detail pesanan tidak dapat disimpan.", "error");
+                        setSavingOnlineDetails(false);
+                      }
+                    }}
+                  >
+                    {savingOnlineDetails ? "Menyimpan…" : "Simpan detail"}
+                  </button>
+                </div>
+              </section>
+            ) : (
+              <>
+                <p>
+                  <span>Sumber pesanan</span>
+                  <b>{item.sourcePlatform || "Belum dicatat"}</b>
+                </p>
+                <p>
+                  <span>Nomor pesanan</span>
+                  <b>{item.marketplaceOrderId || "Belum dicatat"}</b>
+                </p>
+                <p>
+                  <span>Nomor resi</span>
+                  <b>{item.trackingNumber || "Belum dicatat"}</b>
+                </p>
+                {canSettleCod && item.status !== "voided" && (
+                  <button type="button" className="table-action" onClick={() => setEditingOnlineDetails(true)}>
+                    Ubah detail pesanan online
+                  </button>
+                )}
+              </>
+            )}
+            {item.trackingNumber && (
+              <>
+                <p>
+                  <span>Status pengiriman</span>
+                  <b>{shippingStatusLabel(linkedShipment?.status)}</b>
+                </p>
+                <p>
+                  <span>Bukti packing</span>
+                  <b>
+                    {linkedShipment?.packingEvidence?.available
+                      ? "Foto tersedia"
+                      : linkedShipment?.status === "pending_packing"
+                        ? "Menunggu bukti packing"
+                        : linkedShipment
+                          ? "Bukti sudah kedaluwarsa"
+                          : "Belum diproses di menu Pengiriman"}
+                  </b>
+                </p>
+              </>
+            )}
+          </>
+        )}
         {item.note && (
           <p className="sale-detail-note">
             <span>Catatan pesanan</span>
@@ -22524,6 +23053,27 @@ function SaleDetail({
                 : "Selesai"}
           </b>
         </p>
+        {item.payment === "COD" && item.status !== "voided" && (
+          <section className="sale-cod-settlement">
+            <div>
+              <span>STATUS PENCAIRAN COD</span>
+              <b>{item.codStatus === "settled" ? "Dana sudah cair" : "Dana belum diterima"}</b>
+              {item.codSettledAt && (
+                <small>{jakartaDateTime(item.codSettledAt)} · {money(item.codSettlementAmount || 0)}</small>
+              )}
+            </div>
+            {item.codStatus !== "settled" && canSettleCod && (
+              <Field label="Dana bersih yang diterima">
+                <RupiahInput
+                  label="Nominal pencairan COD"
+                  value={codAmount}
+                  onValue={(value) => setCodAmount(Math.min(value, Number(item.total || 0)))}
+                />
+                <small className="pos-note-hint">Isi setelah dana benar-benar masuk dari marketplace atau kurir.</small>
+              </Field>
+            )}
+          </section>
+        )}
       </div>
       {item.status !== "voided" && (
         <PrinterConnectionPanel
@@ -22536,6 +23086,15 @@ function SaleDetail({
         <button type="button" className="secondary" onClick={close}>
           Tutup
         </button>
+        {linkedShipment && (
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => openShipping?.(linkedShipment)}
+          >
+            <Truck size={17} /> Lihat status pengiriman
+          </button>
+        )}
         {item.status !== "voided" && (
           <button
             type="button"
@@ -22553,6 +23112,51 @@ function SaleDetail({
               : item.status === "pending_print"
                 ? "Cetak & selesaikan"
                 : "Cetak ulang struk"}
+          </button>
+        )}
+        {linkedShipment?.packingEvidence?.available && canViewPackingEvidence && (
+          <button
+            type="button"
+            className="secondary"
+            disabled={openingEvidence}
+            onClick={async () => {
+              const previewWindow = window.open("", "_blank");
+              setOpeningEvidence(true);
+              try {
+                const url = await getPackingEvidenceUrl(linkedShipment.id);
+                if (!previewWindow)
+                  throw new Error("Browser memblokir jendela bukti packing. Izinkan pop-up lalu coba lagi.");
+                previewWindow.opener = null;
+                previewWindow.location.href = url;
+              } catch (error) {
+                previewWindow?.close();
+                notify(error instanceof Error ? error.message : "Bukti packing tidak dapat dibuka.", "error");
+              } finally {
+                setOpeningEvidence(false);
+              }
+            }}
+          >
+            <Camera size={17} /> {openingEvidence ? "Membuka…" : "Lihat bukti packing"}
+          </button>
+        )}
+        {item.payment === "COD" && item.codStatus !== "settled" && item.status !== "voided" && canSettleCod && (
+          <button
+            type="button"
+            className="primary"
+            disabled={settlingCod}
+            onClick={async () => {
+              setSettlingCod(true);
+              try {
+                await settleCod(item.id, codAmount);
+                notify("Dana COD sudah dicatat sebagai cair.");
+                close();
+              } catch (error) {
+                notify(error instanceof Error ? error.message : "Pencairan COD tidak dapat disimpan.", "error");
+                setSettlingCod(false);
+              }
+            }}
+          >
+            <Check size={17} /> {settlingCod ? "Menyimpan…" : "Catat dana sudah cair"}
           </button>
         )}
         {item.status === "pending_print" && awaitingSystemConfirmation && (
@@ -22974,6 +23578,14 @@ function TransferDetail({
 }
 const newShippingBatchCode = () =>
   `KRM-${jakartaDateKey().replace(/-/g, "")}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+const shippingStatusLabel = (status?: string) =>
+  ({
+    pending_packing: "Menunggu bukti packing",
+    ready: "Siap diangkut",
+    handover_scanned: "Dalam proses serah terima",
+    handed_over: "Sudah diserahkan ke kurir",
+    cancelled: "Pengiriman dibatalkan",
+  })[status || ""] || "Belum diproses";
 
 function ShippingPage({
   data,
@@ -22986,6 +23598,9 @@ function ShippingPage({
   canManage,
   canViewEvidence,
   canManageEvidence,
+  focus,
+  clearFocus,
+  openSale,
 }: any) {
   const shipments = data.shipments || [],
     handovers = data.shipmentHandovers || [];
@@ -23045,21 +23660,68 @@ function ShippingPage({
   const [batchCode, setBatchCode] = useState(
     () => draftBatches[0]?.batchCode || newShippingBatchCode(),
   );
+  const [focusedShipmentId, setFocusedShipmentId] = useState("");
   const scoped = shipments.filter(
     (item: any) => !locationId || item.locationId === locationId,
   );
-  const ready = scoped.filter((item: any) => item.status === "ready"),
+  const pendingPacking = scoped.filter(
+      (item: any) => item.status === "pending_packing",
+    ),
+    allPendingPacking = shipments.filter(
+      (item: any) => item.status === "pending_packing",
+    ),
+    ready = scoped.filter((item: any) => item.status === "ready"),
     allReady = shipments.filter((item: any) => item.status === "ready"),
+    allHandoverScanned = shipments.filter(
+      (item: any) => item.status === "handover_scanned",
+    ),
     scanned = shipments.filter(
       (item: any) =>
         item.status === "handover_scanned" &&
         item.handoverBatchCode === batchCode,
     ),
     completed = shipments.filter((item: any) => item.status === "handed_over"),
+    completedBatches = handovers.filter(
+      (item: any) => item.status === "completed",
+    ),
     activeBatch = draftBatches.find(
       (item: any) => item.batchCode === batchCode,
     ),
     batchLocked = Boolean(activeBatch && scanned.length);
+  useEffect(() => {
+    if (!focus?.shipmentId) return;
+    const shipment = shipments.find((item: any) => item.id === focus.shipmentId);
+    if (!shipment) {
+      notify("Status pengiriman untuk transaksi ini tidak ditemukan.", "error");
+      clearFocus?.();
+      return;
+    }
+    setFocusedShipmentId(shipment.id);
+    setLocationId(shipment.locationId);
+    if (shipment.status === "pending_packing") setTab("packing");
+    else if (shipment.status === "ready") setTab("ready");
+    else if (shipment.status === "handover_scanned") {
+      setTab("handover");
+      if (shipment.handoverBatchCode)
+        setBatchCode(shipment.handoverBatchCode);
+    } else setTab("history");
+    const scrollTimer = window.setTimeout(() => {
+      document
+        .querySelector(`[data-shipment-id="${shipment.id}"]`)
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 180);
+    const clearTimer = window.setTimeout(() => {
+      setFocusedShipmentId("");
+      clearFocus?.();
+    }, 4_000);
+    return () => {
+      window.clearTimeout(scrollTimer);
+      window.clearTimeout(clearTimer);
+    };
+    // Fokus adalah intent sekali pakai. Memasukkan snapshot shipments/callback
+    // ke dependency akan mengulang navigasi dan timer pada setiap polling data.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus?.shipmentId]);
   useEffect(() => {
     if (!canManage && (tab === "packing" || tab === "handover"))
       setTab("ready");
@@ -23080,6 +23742,7 @@ function ShippingPage({
     ],
     marketplaces = [
       "Shopee",
+      "TikTok",
       "TikTok Shop",
       "Tokopedia",
       "Lazada",
@@ -23104,6 +23767,13 @@ function ShippingPage({
     trackingNumber = packingCandidate,
   ) => {
     if (!trackingNumber || packingSaveInFlightRef.current) return;
+    if (!photo) {
+      notify(
+        "Ambil atau unggah foto bukti packing terlebih dahulu agar paket dapat masuk ke Siap Diangkut.",
+        "error",
+      );
+      return;
+    }
     packingSaveInFlightRef.current = true;
     setSavingPacking(true);
     try {
@@ -23111,16 +23781,12 @@ function ShippingPage({
       body.append("trackingNumber", trackingNumber);
       body.append("locationId", locationId);
       body.append("marketplace", marketplace);
-      if (photo) body.append("image", photo);
+      body.append("image", photo);
       await runFormCommand(
         "/api/commands/shipping/ready-with-evidence",
         body,
       );
-      notify(
-        photo
-          ? `${trackingNumber} tersimpan dengan bukti packing selama 30 hari.`
-          : `${trackingNumber} tersimpan tanpa foto dan siap diangkut.`,
-      );
+      notify(`${trackingNumber} tersimpan dengan bukti packing dan siap diangkut.`);
       setPackingCandidate("");
       setPackingProofFile(null);
     } catch (error) {
@@ -23143,7 +23809,16 @@ function ShippingPage({
   };
   const selectPackingProof = (file: File | null) => {
     setPackingProofFile(file);
-    if (file && packingCandidate) void savePackingCandidate(file, packingCandidate);
+  };
+  const openPendingPacking = (shipment: any) => {
+    if (packingCandidate && packingCandidate !== shipment.trackingNumber) {
+      notify("Selesaikan atau batalkan resi yang sedang diproses terlebih dahulu.", "error");
+      return;
+    }
+    setLocationId(shipment.locationId);
+    setMarketplace(shipment.marketplace || "Lainnya");
+    setPackingProofFile(null);
+    setPackingCandidate(shipment.trackingNumber);
   };
   const openPackingEvidence = async (shipment: any) => {
     if (!canViewEvidence || loadingEvidenceId) return;
@@ -23352,6 +24027,11 @@ function ShippingPage({
     >
       <div className="shipping-stats">
         <article>
+          <span>Menunggu bukti packing</span>
+          <b>{allPendingPacking.length}</b>
+          <small>paket perlu foto</small>
+        </article>
+        <article>
           <span>Siap diangkut</span>
           <b>{allReady.length}</b>
           <small>paket menunggu kurir</small>
@@ -23380,10 +24060,10 @@ function ShippingPage({
         aria-label="Tahapan pengiriman pesanan"
       >
         {[
-          ["packing", "Packing"],
-          ["ready", "Siap Diangkut"],
-          ["handover", "Serah Terima"],
-          ["history", "Riwayat"],
+          ["packing", `Packing (${allPendingPacking.length})`],
+          ["ready", `Siap Diangkut (${allReady.length})`],
+          ["handover", `Serah Terima (${allHandoverScanned.length})`],
+          ["history", `Riwayat (${completedBatches.length})`],
         ]
           .filter(
             ([id]) =>
@@ -23493,83 +24173,74 @@ function ShippingPage({
               <small>CHECKPOINT 1</small>
               <h3>Scan setelah packing selesai</h3>
               <p>
-                Scan satu resi, lampirkan bukti packing bila diperlukan, lalu
-                lanjutkan ke resi berikutnya.
+                Ambil bukti foto untuk setiap resi. Paket baru masuk ke Siap
+                Diangkut setelah fotonya berhasil disimpan.
               </p>
             </div>
-            <span>{ready.length} siap</span>
+            <span>{pendingPacking.length} menunggu foto</span>
           </div>
+          {pendingPacking.length > 0 && (
+            <section className="pending-packing-list" aria-label="Paket menunggu bukti packing">
+              <header>
+                <div>
+                  <small>ANTREAN DARI POS ONLINE</small>
+                  <h4>Menunggu bukti packing</h4>
+                </div>
+                <span>{pendingPacking.length} paket</span>
+              </header>
+              {pendingPacking.map((shipment: any) => (
+                <article
+                  key={shipment.id}
+                  data-shipment-id={shipment.id}
+                  className={`${shipment.sourceSaleId ? "shipment-linked-sale" : ""} ${focusedShipmentId === shipment.id ? "shipment-focused" : ""}`.trim()}
+                  role={shipment.sourceSaleId ? "button" : undefined}
+                  tabIndex={shipment.sourceSaleId ? 0 : undefined}
+                  onClick={() =>
+                    shipment.sourceSaleId && openSale?.(shipment.sourceSaleId)
+                  }
+                  onKeyDown={(event) => {
+                    if (
+                      shipment.sourceSaleId &&
+                      (event.key === "Enter" || event.key === " ")
+                    ) {
+                      event.preventDefault();
+                      openSale?.(shipment.sourceSaleId);
+                    }
+                  }}
+                >
+                  <div>
+                    <b>{shipment.trackingNumber}</b>
+                    <small>{shipment.marketplace} · {shipment.carrier}</small>
+                    {shipment.sourceSaleId && (
+                      <small className="shipment-sale-link">Klik untuk melihat transaksi</small>
+                    )}
+                  </div>
+                  <span className="pending-packing-badge">Belum upload bukti</span>
+                  <button
+                    type="button"
+                    className="primary"
+                    disabled={!canManageEvidence || savingPacking}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      openPendingPacking(shipment);
+                    }}
+                  >
+                    <Camera size={16} /> Upload bukti
+                  </button>
+                </article>
+              ))}
+              {!canManageEvidence && (
+                <small className="pending-packing-permission">
+                  Minta akun dengan izin bukti pengiriman untuk mengunggah foto.
+                </small>
+              )}
+            </section>
+          )}
           <ContinuousResiScanner
             onDetected={queueReady}
             onDetectedMany={recordReadyMany}
             paused={Boolean(packingCandidate)}
-            inlinePhotoCapture={Boolean(
-              packingCandidate && canManageEvidence,
-            )}
-            photoReady={Boolean(packingProofFile)}
-            onPhotoCaptured={selectPackingProof}
           />
-          {packingCandidate && (
-            <section className="packing-evidence-step" aria-live="polite">
-              <header>
-                <div>
-                  <small>RESI TERBACA</small>
-                  <h4>{packingCandidate}</h4>
-                  <p>
-                    Foto akan dioptimalkan dan dihapus otomatis 30 hari setelah
-                    diambil.
-                  </p>
-                </div>
-                <span>
-                  {savingPacking
-                    ? "Menyimpan otomatis…"
-                    : packingProofFile
-                      ? "Siap dicoba lagi"
-                      : "Foto langsung aktif"}
-                </span>
-              </header>
-              {canManageEvidence ? (
-                <Field label="Foto bukti packing (opsional)">
-                  <EvidencePhotoPicker
-                    file={packingProofFile}
-                    setFile={selectPackingProof}
-                    subject="packing"
-                  />
-                </Field>
-              ) : (
-                <div className="packing-evidence-permission">
-                  Akun ini dapat mencatat resi, tetapi tidak memiliki izin
-                  mengambil bukti foto packing.
-                </div>
-              )}
-              <footer>
-                <button
-                  type="button"
-                  className="secondary"
-                  disabled={savingPacking}
-                  onClick={() => {
-                    setPackingCandidate("");
-                    setPackingProofFile(null);
-                  }}
-                >
-                  Batal
-                </button>
-                <button
-                  type="button"
-                  className="primary"
-                  disabled={savingPacking}
-                  onClick={() => void savePackingCandidate()}
-                >
-                  <Check />
-                  {savingPacking
-                    ? "Menyimpan & menyiapkan scanner…"
-                    : packingProofFile
-                      ? "Coba simpan lagi"
-                      : "Simpan tanpa foto"}
-                </button>
-              </footer>
-            </section>
-          )}
           <RecentShipmentList
             items={scoped
               .filter((item: any) => item.status === "ready")
@@ -23580,6 +24251,8 @@ function ShippingPage({
             canViewEvidence={canViewEvidence}
             loadingEvidenceId={loadingEvidenceId}
             onViewEvidence={openPackingEvidence}
+            onOpenSale={openSale}
+            focusedShipmentId={focusedShipmentId}
           />
         </section>
       )}
@@ -23608,6 +24281,8 @@ function ShippingPage({
             canViewEvidence={canViewEvidence}
             loadingEvidenceId={loadingEvidenceId}
             onViewEvidence={openPackingEvidence}
+            onOpenSale={openSale}
+            focusedShipmentId={focusedShipmentId}
           />
         </section>
       )}
@@ -23659,6 +24334,8 @@ function ShippingPage({
             canViewEvidence={canViewEvidence}
             loadingEvidenceId={loadingEvidenceId}
             onViewEvidence={openPackingEvidence}
+            onOpenSale={openSale}
+            focusedShipmentId={focusedShipmentId}
           />
           <footer className="shipping-finalize">
             <span>
@@ -23689,8 +24366,7 @@ function ShippingPage({
             </div>
             <span>
               {
-                handovers.filter((item: any) => item.status === "completed")
-                  .length
+                completedBatches.length
               }{" "}
               batch
             </span>
@@ -23703,6 +24379,8 @@ function ShippingPage({
             canViewEvidence={canViewEvidence}
             loadingEvidenceId={loadingEvidenceId}
             onViewEvidence={openPackingEvidence}
+            onOpenSale={openSale}
+            focusedShipmentId={focusedShipmentId}
           />
         </section>
       )}
@@ -23752,6 +24430,67 @@ function ShippingPage({
                 disabled={correcting || correctionReason.trim().length < 3}
               >
                 {correcting ? "Menyimpan…" : "Simpan koreksi"}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+      {packingCandidate && (
+        <Modal
+          title="Upload bukti packing"
+          desc="Ambil foto paket yang sudah selesai dipacking. Setelah disimpan, paket akan masuk ke Siap Diangkut."
+          className="packing-upload-modal"
+          close={() => {
+            if (savingPacking) return;
+            setPackingCandidate("");
+            setPackingProofFile(null);
+          }}
+        >
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              void savePackingCandidate();
+            }}
+          >
+            <div className="packing-upload-resi">
+              <span>NOMOR RESI</span>
+              <b>{packingCandidate}</b>
+              <small>{marketplace} · Foto tersimpan maksimal 30 hari</small>
+            </div>
+            {canManageEvidence ? (
+              <Field label="Foto bukti packing (wajib)">
+                <EvidencePhotoPicker
+                  file={packingProofFile}
+                  setFile={selectPackingProof}
+                  subject="packing"
+                />
+              </Field>
+            ) : (
+              <div className="packing-evidence-permission">
+                Akun ini tidak memiliki izin mengambil bukti foto packing.
+              </div>
+            )}
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="secondary"
+                disabled={savingPacking}
+                onClick={() => {
+                  setPackingCandidate("");
+                  setPackingProofFile(null);
+                }}
+              >
+                Batal
+              </button>
+              <button
+                type="submit"
+                className="primary"
+                disabled={
+                  savingPacking || !packingProofFile || !canManageEvidence
+                }
+              >
+                <Check />
+                {savingPacking ? "Menyimpan…" : "Simpan & Siap Diangkut"}
               </button>
             </div>
           </form>
@@ -23811,7 +24550,10 @@ function PackingEvidenceAction({
       className="packing-evidence-view"
       disabled={loading}
       title={`Tersedia sampai ${jakartaDateTime(evidence.expiresAt)}`}
-      onClick={() => onView?.(shipment)}
+      onClick={(event) => {
+        event.stopPropagation();
+        onView?.(shipment);
+      }}
     >
       <Eye /> {loading ? "Membuka…" : "Lihat bukti"}
     </button>
@@ -23827,11 +24569,29 @@ function RecentShipmentList({
   canViewEvidence,
   loadingEvidenceId,
   onViewEvidence,
+  onOpenSale,
+  focusedShipmentId,
 }: any) {
   return items.length ? (
     <div className="shipment-list">
       {items.map((item: any) => (
-        <article key={item.id}>
+        <article
+          key={item.id}
+          data-shipment-id={item.id}
+          className={`${item.sourceSaleId ? "shipment-linked-sale" : ""} ${focusedShipmentId === item.id ? "shipment-focused" : ""}`.trim()}
+          role={item.sourceSaleId ? "button" : undefined}
+          tabIndex={item.sourceSaleId ? 0 : undefined}
+          onClick={() => item.sourceSaleId && onOpenSale?.(item.sourceSaleId)}
+          onKeyDown={(event) => {
+            if (
+              item.sourceSaleId &&
+              (event.key === "Enter" || event.key === " ")
+            ) {
+              event.preventDefault();
+              onOpenSale?.(item.sourceSaleId);
+            }
+          }}
+        >
           <span className={`shipment-state ${item.status}`}>
             <Check />
           </span>
@@ -23840,6 +24600,9 @@ function RecentShipmentList({
             <small>
               {item.marketplace} · {item.carrier}
             </small>
+            {item.sourceSaleId && (
+              <small className="shipment-sale-link">Klik untuk melihat transaksi</small>
+            )}
           </div>
           <time>
             {jakartaDateTime(item.handedOverAt || item.packedAt)} ·{" "}
@@ -23857,7 +24620,10 @@ function RecentShipmentList({
             <button
               type="button"
               className="shipment-correction"
-              onClick={() => onAction(item)}
+              onClick={(event) => {
+                event.stopPropagation();
+                onAction(item);
+              }}
             >
               {actionLabel}
             </button>
@@ -23881,6 +24647,8 @@ function ShipmentBatchHistory({
   canViewEvidence,
   loadingEvidenceId,
   onViewEvidence,
+  onOpenSale,
+  focusedShipmentId,
 }: any) {
   const [query, setQuery] = useState(""),
     [locationFilter, setLocationFilter] = useState("all"),
@@ -23986,7 +24754,13 @@ function ShipmentBatchHistory({
       </div>
       {visibleBatches.length ? (
         visibleBatches.map((batch: any) => (
-          <details className="shipment-batch-folder" key={batch.id}>
+          <details
+            className="shipment-batch-folder"
+            key={batch.id}
+            open={batch.packages.some(
+              (item: any) => item.id === focusedShipmentId,
+            ) || undefined}
+          >
             <summary>
               <span className="batch-folder-icon">
                 <Archive />
@@ -24054,7 +24828,25 @@ function ShipmentBatchHistory({
               {batch.packages.length ? (
                 <div className="shipment-list">
                   {batch.packages.map((item: any) => (
-                    <article key={item.id}>
+                    <article
+                      key={item.id}
+                      data-shipment-id={item.id}
+                      className={`${item.sourceSaleId ? "shipment-linked-sale" : ""} ${focusedShipmentId === item.id ? "shipment-focused" : ""}`.trim()}
+                      role={item.sourceSaleId ? "button" : undefined}
+                      tabIndex={item.sourceSaleId ? 0 : undefined}
+                      onClick={() =>
+                        item.sourceSaleId && onOpenSale?.(item.sourceSaleId)
+                      }
+                      onKeyDown={(event) => {
+                        if (
+                          item.sourceSaleId &&
+                          (event.key === "Enter" || event.key === " ")
+                        ) {
+                          event.preventDefault();
+                          onOpenSale?.(item.sourceSaleId);
+                        }
+                      }}
+                    >
                       <span className="shipment-state handed_over">
                         <Check />
                       </span>
@@ -24063,6 +24855,9 @@ function ShipmentBatchHistory({
                         <small>
                           {item.marketplace} · {item.carrier}
                         </small>
+                        {item.sourceSaleId && (
+                          <small className="shipment-sale-link">Klik untuk melihat transaksi</small>
+                        )}
                       </div>
                       <time>
                         Packing{" "}
@@ -24113,6 +24908,8 @@ function GroupedShipmentList({
   canViewEvidence,
   loadingEvidenceId,
   onViewEvidence,
+  onOpenSale,
+  focusedShipmentId,
 }: any) {
   const [query, setQuery] = useState(""),
     [carrier, setCarrier] = useState("all"),
@@ -24251,7 +25048,10 @@ function GroupedShipmentList({
             <details
               className="shipment-date-folder"
               key={dateKey}
-              open={dateKey === today}
+              open={
+                dateKey === today ||
+                dateItems.some((item: any) => item.id === focusedShipmentId)
+              }
             >
               <summary>
                 <span>
@@ -24264,7 +25064,12 @@ function GroupedShipmentList({
                   <details
                     className="shipment-route-folder"
                     key={`${dateKey}-${group.locationId}-${group.carrier}`}
-                    open={dateKey === today}
+                    open={
+                      dateKey === today ||
+                      group.items.some(
+                        (item: any) => item.id === focusedShipmentId,
+                      )
+                    }
                   >
                     <summary>
                       <span>
@@ -24286,6 +25091,8 @@ function GroupedShipmentList({
                       canViewEvidence={canViewEvidence}
                       loadingEvidenceId={loadingEvidenceId}
                       onViewEvidence={onViewEvidence}
+                      onOpenSale={onOpenSale}
+                      focusedShipmentId={focusedShipmentId}
                     />
                   </details>
                 ))}
@@ -24417,6 +25224,18 @@ function EvidencePhotoPicker({
   subject?: string;
 }) {
   const [error, setError] = useState("");
+  const pickerRef = useRef<HTMLDivElement>(null);
+  const returnFromPickerRef = useRef(false);
+  const savedScrollRef = useRef<{
+    windowX: number;
+    windowY: number;
+    containers: Array<{
+      element: HTMLElement;
+      left: number;
+      top: number;
+    }>;
+  } | null>(null);
+  const restoreTimersRef = useRef<number[]>([]);
   const previewUrl = useMemo(() => (file ? URL.createObjectURL(file) : ""), [file]);
   useEffect(
     () => () => {
@@ -24424,6 +25243,73 @@ function EvidencePhotoPicker({
     },
     [previewUrl],
   );
+  const restoreScrollAfterPicker = useCallback(() => {
+    if (!returnFromPickerRef.current || !savedScrollRef.current) return;
+    const saved = savedScrollRef.current;
+    const restore = () => {
+      const panel = pickerRef.current?.closest<HTMLElement>(
+        ".pos-order-panel",
+      );
+      // Input file native dapat mencoba menggulir ancestor yang sebenarnya
+      // hanya berfungsi sebagai frame panel. Pastikan frame tidak ikut bergeser;
+      // hanya .pos-order-scroll atau form modal yang boleh menyimpan posisi.
+      if (panel) panel.scrollTop = 0;
+      saved.containers.forEach(({ element, left, top }) => {
+        if (!element.isConnected) return;
+        if (element.classList.contains("pos-order-panel")) return;
+        element.scrollLeft = left;
+        element.scrollTop = top;
+      });
+      window.scrollTo(saved.windowX, saved.windowY);
+    };
+    restoreTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+    restoreTimersRef.current = [
+      window.setTimeout(restore, 0),
+      window.setTimeout(() => {
+        restore();
+        returnFromPickerRef.current = false;
+      }, 350),
+    ];
+  }, []);
+  const rememberScrollBeforePicker = () => {
+    const containers: Array<{
+      element: HTMLElement;
+      left: number;
+      top: number;
+    }> = [];
+    let parent = pickerRef.current?.parentElement || null;
+    while (parent) {
+      if (
+        !parent.classList.contains("pos-order-panel") &&
+        (parent.scrollHeight > parent.clientHeight ||
+          parent.scrollWidth > parent.clientWidth)
+      )
+        containers.push({
+          element: parent,
+          left: parent.scrollLeft,
+          top: parent.scrollTop,
+        });
+      parent = parent.parentElement;
+    }
+    savedScrollRef.current = {
+      windowX: window.scrollX,
+      windowY: window.scrollY,
+      containers,
+    };
+    returnFromPickerRef.current = true;
+  };
+  useEffect(() => {
+    const handleReturn = () => {
+      if (document.visibilityState === "visible") restoreScrollAfterPicker();
+    };
+    window.addEventListener("focus", handleReturn);
+    document.addEventListener("visibilitychange", handleReturn);
+    return () => {
+      window.removeEventListener("focus", handleReturn);
+      document.removeEventListener("visibilitychange", handleReturn);
+      restoreTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+    };
+  }, [restoreScrollAfterPicker]);
   const choose = (event: React.ChangeEvent<HTMLInputElement>) => {
     const selected = event.target.files?.[0] || null;
     if (selected && selected.size > 5 * 1024 * 1024)
@@ -24433,9 +25319,13 @@ function EvidencePhotoPicker({
       setFile(selected);
     }
     event.target.value = "";
+    restoreScrollAfterPicker();
   };
   return (
-    <div className={`evidence-photo-picker ${file ? "selected" : ""}`}>
+    <div
+      ref={pickerRef}
+      className={`evidence-photo-picker ${file ? "selected" : ""}`}
+    >
       {previewUrl && (
         <img
           className="evidence-photo-preview"
@@ -24451,13 +25341,19 @@ function EvidencePhotoPicker({
             type="file"
             accept="image/*"
             capture="environment"
+            onClick={rememberScrollBeforePicker}
             onChange={choose}
           />
         </label>
         <label>
           <PackagePlus size={18} />
           <span>Pilih dari galeri</span>
-          <input type="file" accept="image/*" onChange={choose} />
+          <input
+            type="file"
+            accept="image/*"
+            onClick={rememberScrollBeforePicker}
+            onChange={choose}
+          />
         </label>
       </div>
       <small>

@@ -190,14 +190,19 @@ export async function syncStateToSQL(conn, orgId, data, previousData = null) {
       sale.note ?? null,
       sale.cashierId || LEGACY_CASHIER_ID,
       sale.createdAt ?? new Date().toISOString(),
+      sale.marketplaceOrderId ?? null,
+      sale.trackingNumber ?? null,
+      sale.codStatus ?? null,
+      sale.codSettledAt ?? null,
+      sale.codSettlementAmount ?? null,
     ];
   });
   await executeBatchedValues(
     conn,
     saleRows,
-    18,
+    23,
     (values) =>
-      `INSERT INTO sales (id, organization_id, location_id, gross_total, discount_amount, discount_type, discount_value, total, platform_fee, net_payout, source_platform, source_import_id, channel, method, status, note, cashier_id, created_at) VALUES ${values} ON DUPLICATE KEY UPDATE gross_total=VALUES(gross_total), discount_amount=VALUES(discount_amount), discount_type=VALUES(discount_type), discount_value=VALUES(discount_value), total=VALUES(total), platform_fee=VALUES(platform_fee), net_payout=VALUES(net_payout), source_platform=VALUES(source_platform), source_import_id=VALUES(source_import_id), channel=VALUES(channel), method=VALUES(method), status=VALUES(status), note=VALUES(note), cashier_id=VALUES(cashier_id)`,
+      `INSERT INTO sales (id, organization_id, location_id, gross_total, discount_amount, discount_type, discount_value, total, platform_fee, net_payout, source_platform, source_import_id, channel, method, status, note, cashier_id, created_at, marketplace_order_id, tracking_number, cod_status, cod_settled_at, cod_settlement_amount) VALUES ${values} ON DUPLICATE KEY UPDATE gross_total=VALUES(gross_total), discount_amount=VALUES(discount_amount), discount_type=VALUES(discount_type), discount_value=VALUES(discount_value), total=VALUES(total), platform_fee=VALUES(platform_fee), net_payout=VALUES(net_payout), source_platform=VALUES(source_platform), source_import_id=VALUES(source_import_id), channel=VALUES(channel), method=VALUES(method), status=VALUES(status), note=VALUES(note), cashier_id=VALUES(cashier_id), marketplace_order_id=VALUES(marketplace_order_id), tracking_number=VALUES(tracking_number), cod_status=VALUES(cod_status), cod_settled_at=VALUES(cod_settled_at), cod_settlement_amount=VALUES(cod_settlement_amount)`,
   );
   for (
     let offset = 0;
@@ -414,7 +419,7 @@ export async function getStateFromSQL(conn, orgId) {
   );
 
   const [sales] = await conn.execute(
-    "SELECT id, location_id as locationId, gross_total as grossTotal, discount_amount as discountAmount, discount_type as discountType, discount_value as discountValue, total, platform_fee as platformFee, net_payout as netPayout, source_platform as sourcePlatform, source_import_id as sourceImportId, channel, method, status, note, cashier_id as cashierId, created_at as createdAt FROM sales WHERE organization_id = ?",
+    "SELECT id, location_id as locationId, gross_total as grossTotal, discount_amount as discountAmount, discount_type as discountType, discount_value as discountValue, total, platform_fee as platformFee, net_payout as netPayout, source_platform as sourcePlatform, marketplace_order_id as marketplaceOrderId, tracking_number as trackingNumber, cod_status as codStatus, cod_settled_at as codSettledAt, cod_settlement_amount as codSettlementAmount, source_import_id as sourceImportId, channel, method, status, note, cashier_id as cashierId, created_at as createdAt FROM sales WHERE organization_id = ?",
     [orgId],
   );
   const saleIds = sales.map((s) => s.id);
@@ -433,6 +438,8 @@ export async function getStateFromSQL(conn, orgId) {
     s.netPayout = Number(
       s.netPayout ?? Math.max(0, Number(s.total || 0) - s.platformFee),
     );
+    if (s.codSettlementAmount != null)
+      s.codSettlementAmount = Number(s.codSettlementAmount);
     s.payment = s.method;
     const seenItems = new Set();
     s.items = saleItems

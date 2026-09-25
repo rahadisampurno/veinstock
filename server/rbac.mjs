@@ -32,7 +32,7 @@ export function resolveUserScope(user) {
      'user.view', 'user.create', 'user.assign_location',
      'stock.view', 'stock.initial_balance', 'stock.in', 'stock.out', 'stock.adjust', 'stock.opname',
      'transfer.view', 'transfer.create', 'transfer.send', 'transfer.receive', 'transfer.cancel',
-     'sale.view', 'sale.create', 'sale.void', 'shipping.view', 'shipping.manage', 'shipping.evidence.view', 'shipping.evidence.manage',
+     'sale.view', 'sale.create', 'shipping.view', 'shipping.manage', 'shipping.evidence.view', 'shipping.evidence.manage',
      'report.view', 'report.export', 'audit.location.view', 'audit.view', 'supplier.view', 'supplier.manage', 'pricing.view', 'pricing.manage', 'attendance.view', 'attendance.record',
      'cashbook.view', 'cashbook.manage', 'debt.view', 'debt.manage'].forEach(p => permissions.add(p));
   } else if (role === 'finance') {
@@ -42,7 +42,7 @@ export function resolveUserScope(user) {
      'transfer.view', 'transfer.create', 'transfer.send', 'shipping.view', 'shipping.manage', 'shipping.evidence.view', 'shipping.evidence.manage', 'audit.location.view', 'attendance.view', 'attendance.record'].forEach(p => permissions.add(p));
   } else if (role === 'pic') {
     ['product.view', 'location.view', 'stock.view', 'stock.out', 'stock.opname',
-     'transfer.view', 'transfer.receive', 'transfer.create', 'transfer.send', 'sale.view', 'sale.create', 'sale.void', 'shipping.view', 'shipping.manage', 'shipping.evidence.view', 'shipping.evidence.manage', 'audit.location.view', 'attendance.view', 'attendance.record'].forEach(p => permissions.add(p));
+     'transfer.view', 'transfer.receive', 'transfer.create', 'transfer.send', 'sale.view', 'sale.create', 'shipping.view', 'shipping.manage', 'shipping.evidence.view', 'shipping.evidence.manage', 'audit.location.view', 'attendance.view', 'attendance.record'].forEach(p => permissions.add(p));
   } else if (role === 'cashier') {
     ['product.view', 'location.view', 'stock.view', 'sale.create', 'sale.view', 'attendance.view', 'attendance.record'].forEach(p => permissions.add(p));
   } else if (role === 'employee') {
@@ -65,6 +65,12 @@ export function resolveUserScope(user) {
 
 export function authorizeAction({ user, action, locationId }) {
   const scope = resolveUserScope(user);
+
+  // Void mengembalikan stok dan mengubah laporan keuangan. Kebijakan role
+  // kustom tidak boleh mendelegasikan tindakan sensitif ini selain ke Owner.
+  if (action === 'sale.void' && scope.role !== 'owner') {
+    return { allowed: false, reason: 'Hanya Owner yang dapat membatalkan transaksi penjualan.' };
+  }
 
   // 1. Check if user has permission for this action
   if (!scope.permissions.has(action)) {

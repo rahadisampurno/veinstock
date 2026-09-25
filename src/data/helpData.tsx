@@ -322,11 +322,12 @@ export const sections = [
         title: "Membatalkan transaksi yang salah.",
         content: (
           <div className="article-body">
-            <p>Jika Anda (atau kasir) salah mencatat harga atau barang pada nota penjualan, Anda bisa membatalkannya.</p>
+            <p>Jika harga atau barang pada nota penjualan salah dicatat, hanya akun <strong>Owner</strong> yang dapat membatalkannya. Pembatasan ini menjaga perubahan stok dan laporan keuangan tetap terkontrol.</p>
             <ol>
+              <li>Masuk menggunakan akun Owner.</li>
               <li>Cari transaksi yang salah di daftar Penjualan.</li>
-              <li>Klik ikon <strong>Batal</strong> (silang/X merah).</li>
-              <li>Berikan alasan pembatalan jika diperlukan.</li>
+              <li>Klik <strong>Batalkan</strong>.</li>
+              <li>Isi alasan pembatalan, lalu konfirmasi.</li>
             </ol>
           </div>
         )
@@ -360,7 +361,7 @@ export const sections = [
         title: "Memahami hak akses Kasir dan PIC Outlet.",
         content: (
           <div className="article-body">
-            <p><strong>Kasir</strong> hanya dapat mencatat dan melihat penjualan di lokasi tugasnya; kasir tidak dapat membatalkan nota. <strong>PIC Outlet</strong> memiliki akses operasional pada outlet yang ditugaskan, termasuk menerima transfer dan menangani pembatalan bila diberi wewenang. Owner dan Admin tetap bertanggung jawab mengawasi riwayat transaksi.</p>
+            <p><strong>Kasir</strong> hanya dapat mencatat dan melihat penjualan di lokasi tugasnya. <strong>PIC Outlet</strong> memiliki akses operasional pada outlet yang ditugaskan, termasuk menerima transfer. Pembatalan transaksi penjualan tetap hanya dapat dilakukan oleh <strong>Owner</strong>.</p>
           </div>
         )
       }

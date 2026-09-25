@@ -444,6 +444,15 @@ async function backfillRolePolicyDependencies(pool) {
       state.securityMigrations.operationalRoleScopeV1 = true;
       changed = true;
     }
+    if (!state.securityMigrations.saleVoidOwnerOnlyV1) {
+      for (const policy of Object.values(state.rolePolicies)) {
+        policy.permissions = (policy.permissions || []).filter(
+          (permission) => permission !== "sale.void",
+        );
+      }
+      state.securityMigrations.saleVoidOwnerOnlyV1 = true;
+      changed = true;
+    }
     for (const policy of Object.values(state?.rolePolicies || {})) {
       policy.permissions ||= [];
       if (
@@ -1084,6 +1093,11 @@ async function db() {
       platform_fee BIGINT NOT NULL DEFAULT 0,
       net_payout BIGINT NULL,
       source_platform VARCHAR(40) NULL,
+      marketplace_order_id VARCHAR(100) NULL,
+      tracking_number VARCHAR(80) NULL,
+      cod_status VARCHAR(20) NULL,
+      cod_settled_at VARCHAR(100) NULL,
+      cod_settlement_amount BIGINT NULL,
       source_import_id VARCHAR(80) NULL,
       channel VARCHAR(20) NOT NULL DEFAULT 'offline',
       method VARCHAR(50) NOT NULL,
@@ -1147,7 +1161,12 @@ async function db() {
       "ALTER TABLE sales ADD COLUMN platform_fee BIGINT NOT NULL DEFAULT 0 AFTER total",
       "ALTER TABLE sales ADD COLUMN net_payout BIGINT NULL AFTER platform_fee",
       "ALTER TABLE sales ADD COLUMN source_platform VARCHAR(40) NULL AFTER net_payout",
-      "ALTER TABLE sales ADD COLUMN source_import_id VARCHAR(80) NULL AFTER source_platform",
+      "ALTER TABLE sales ADD COLUMN marketplace_order_id VARCHAR(100) NULL AFTER source_platform",
+      "ALTER TABLE sales ADD COLUMN tracking_number VARCHAR(80) NULL AFTER marketplace_order_id",
+      "ALTER TABLE sales ADD COLUMN cod_status VARCHAR(20) NULL AFTER tracking_number",
+      "ALTER TABLE sales ADD COLUMN cod_settled_at VARCHAR(100) NULL AFTER cod_status",
+      "ALTER TABLE sales ADD COLUMN cod_settlement_amount BIGINT NULL AFTER cod_settled_at",
+      "ALTER TABLE sales ADD COLUMN source_import_id VARCHAR(80) NULL AFTER cod_settlement_amount",
     ]) {
       try {
         await pool.execute(statement);
@@ -2515,7 +2534,6 @@ const configurablePermissions = new Set([
   "transfer.cancel",
   "sale.view",
   "sale.create",
-  "sale.void",
   "shipping.view",
   "shipping.manage",
   "shipping.evidence.view",
@@ -3997,6 +4015,53 @@ const ensureActiveShippingLocation = (state, actor, locationId) => {
     throw invalidCommand("Lokasi packing tidak aktif atau tidak ditemukan.");
 };
 
+const recordPendingShipments = (
+  state,
+  actor,
+  { trackingNumbers, locationId, marketplace, sourceSaleId },
+  { skipAuthorization = false } = {},
+) => {
+  if (!skipAuthorization)
+    ensureActiveShippingLocation(state, actor, locationId);
+  const createdAt = new Date().toISOString();
+  trackingNumbers.forEach((trackingNumber) => {
+    const existing = state.shipments.find(
+      (item) => item.trackingNumber === trackingNumber,
+    );
+    if (existing && existing.status !== "cancelled")
+      throw invalidCommand(
+        `Resi ${trackingNumber} sudah tercatat pada proses pengiriman.`,
+      );
+    const shipment = existing || {
+      id: commandId("shp"),
+      trackingNumber,
+    };
+    Object.assign(shipment, {
+      locationId,
+      marketplace,
+      carrier: detectShippingCarrier(trackingNumber) || "Belum ditentukan",
+      status: "pending_packing",
+      createdAt,
+      createdBy: actor.id,
+      sourceSaleId,
+    });
+    delete shipment.packedAt;
+    delete shipment.packedBy;
+    delete shipment.handoverBatchCode;
+    delete shipment.handedOverAt;
+    delete shipment.handedOverBy;
+    delete shipment.cancelledAt;
+    delete shipment.cancelledBy;
+    delete shipment.cancelReason;
+    if (existing?.packingEvidence?.provider) {
+      state.packingEvidenceDisposals ||= [];
+      state.packingEvidenceDisposals.push(existing.packingEvidence);
+      delete shipment.packingEvidence;
+    }
+    if (!existing) state.shipments.unshift(shipment);
+  });
+};
+
 const recordReadyShipments = (
   state,
   actor,
@@ -4025,7 +4090,18 @@ const recordReadyShipments = (
     const existing = state.shipments.find(
       (item) => item.trackingNumber === trackingNumber,
     );
-    if (existing && existing.status !== "cancelled")
+    if (
+      existing?.status === "pending_packing" &&
+      !packingEvidence
+    )
+      throw invalidCommand(
+        `Upload bukti packing untuk resi ${trackingNumber} sebelum menandainya siap diangkut.`,
+      );
+    if (
+      existing &&
+      existing.status !== "cancelled" &&
+      existing.status !== "pending_packing"
+    )
       throw invalidCommand(
         existing.status === "handed_over"
           ? `Resi ${trackingNumber} sudah diserahkan ke ekspedisi.`
@@ -4163,11 +4239,19 @@ app.post(
       const existing = (loaded.data.shipments || []).find(
         (item) => item.trackingNumber === trackingNumber,
       );
-      if (existing && existing.status !== "cancelled")
+      if (
+        existing &&
+        existing.status !== "cancelled" &&
+        existing.status !== "pending_packing"
+      )
         throw invalidCommand(
           existing.status === "handed_over"
             ? `Resi ${trackingNumber} sudah diserahkan ke ekspedisi.`
-            : `Resi ${trackingNumber} sudah tercatat pada proses pengiriman.`,
+          : `Resi ${trackingNumber} sudah tercatat pada proses pengiriman.`,
+        );
+      if (existing?.status === "pending_packing" && existing.locationId !== locationId)
+        throw invalidCommand(
+          `Resi ${trackingNumber} berasal dari lokasi packing yang berbeda.`,
         );
 
       let packingEvidence;
@@ -5919,6 +6003,9 @@ app.post("/api/commands/sales", requireAuth, async (req, res) => {
       note,
       platformFee = 0,
       netPayout,
+      sourcePlatform,
+      marketplaceOrderId,
+      trackingNumber,
       sourceImport,
       skuMappings = [],
     } = req.body || {};
@@ -5936,6 +6023,54 @@ app.post("/api/commands/sales", requireAuth, async (req, res) => {
       throw invalidCommand("Kanal penjualan tidak valid.");
     if (!Array.isArray(items) || !items.length)
       throw invalidCommand("Pilih minimal satu varian untuk penjualan.");
+
+    const paymentInput = String(payment || "Tunai").trim();
+    const normalizedPayment = paymentInput.toLowerCase() === "cod" ? "COD" : paymentInput;
+    const normalizedSourcePlatform = String(sourcePlatform || "").trim();
+    const normalizedMarketplaceOrderId = String(marketplaceOrderId || "").trim();
+    const normalizedTrackingNumber = String(trackingNumber || "")
+      .trim()
+      .toUpperCase();
+    if (!normalizedPayment)
+      throw invalidCommand("Metode pembayaran wajib dipilih.");
+    if (
+      normalizedPayment.length > 50 ||
+      normalizedSourcePlatform.length > 40 ||
+      normalizedMarketplaceOrderId.length > 100 ||
+      normalizedTrackingNumber.length > 80
+    )
+      throw invalidCommand("Detail pesanan online melebihi batas karakter.");
+    if (normalizedPayment === "COD" && channel !== "online")
+      throw invalidCommand("Pembayaran COD hanya tersedia untuk penjualan online.");
+    if (
+      normalizedTrackingNumber &&
+      !/^[A-Z0-9][A-Z0-9._-]{5,79}$/.test(normalizedTrackingNumber)
+    )
+      throw invalidCommand("Nomor resi belum valid. Gunakan minimal 6 karakter tanpa spasi.");
+    if (
+      normalizedTrackingNumber &&
+      (state.shipments || []).some(
+        (shipment) =>
+          shipment.trackingNumber === normalizedTrackingNumber &&
+          shipment.status !== "cancelled",
+      )
+    )
+      throw invalidCommand(
+        "Nomor resi ini sudah tercatat pada menu Pengiriman Pesanan.",
+      );
+    if (
+      channel === "online" &&
+      normalizedMarketplaceOrderId &&
+      state.sales.some(
+        (sale) =>
+          sale.status !== "voided" &&
+          String(sale.sourcePlatform || "").toLowerCase() ===
+            normalizedSourcePlatform.toLowerCase() &&
+          String(sale.marketplaceOrderId || "").toLowerCase() ===
+            normalizedMarketplaceOrderId.toLowerCase(),
+      )
+    )
+      throw invalidCommand("Nomor pesanan ini sudah pernah dicatat pada platform yang sama.");
 
     const isMarketplaceImport = sourceImport != null;
     let importContext = null;
@@ -6212,9 +6347,12 @@ app.post("/api/commands/sales", requireAuth, async (req, res) => {
       total,
       platformFee: normalizedPlatformFee,
       netPayout: normalizedNetPayout,
-      sourcePlatform: importContext?.platform,
+      sourcePlatform: importContext?.platform || normalizedSourcePlatform || undefined,
+      marketplaceOrderId: normalizedMarketplaceOrderId || undefined,
+      trackingNumber: normalizedTrackingNumber || undefined,
+      codStatus: normalizedPayment === "COD" ? "pending" : undefined,
       sourceImportId: importId,
-      payment: String(payment || "Tunai"),
+      payment: normalizedPayment,
       note:
         String(note || "")
           .trim()
@@ -6224,6 +6362,20 @@ app.post("/api/commands/sales", requireAuth, async (req, res) => {
       items: saleItems,
       status: requiresPrint === true ? "pending_print" : "completed",
     });
+    if (channel === "online" && normalizedTrackingNumber) {
+      state.shipments ||= [];
+      recordPendingShipments(
+        state,
+        actor,
+        {
+          trackingNumbers: [normalizedTrackingNumber],
+          locationId,
+          marketplace: normalizedSourcePlatform || "Lainnya",
+          sourceSaleId: saleId,
+        },
+        { skipAuthorization: true },
+      );
+    }
     if (importContext) {
       const normalizedMappings = Array.isArray(skuMappings) ? skuMappings : [];
       if (normalizedMappings.length > 5_000)
@@ -6314,12 +6466,23 @@ app.post(
   async (req, res) => {
     await executeCommand(req, res, async (state, actor) => {
       const sale = state.sales.find((item) => item.id === req.params.id);
-      const authorization = commandAuth(actor, "sale.create", sale?.locationId);
+      const authorization = commandAuth(actor, "sale.void", sale?.locationId);
       if (!authorization.allowed) throw forbiddenCommand(authorization.reason);
       if (!sale) throw invalidCommand("Penjualan tidak ditemukan.");
       if (sale.status !== "pending_print")
         throw invalidCommand(
-          "Hanya transaksi yang menunggu cetak yang dapat dibatalkan dari kasir.",
+          "Hanya transaksi yang menunggu cetak yang dapat dibatalkan.",
+        );
+      const linkedShipment = (state.shipments || []).find(
+        (item) =>
+          item.sourceSaleId === sale.id && item.status !== "cancelled",
+      );
+      if (
+        linkedShipment &&
+        ["handover_scanned", "handed_over"].includes(linkedShipment.status)
+      )
+        throw invalidCommand(
+          "Transaksi tidak dapat dibatalkan karena paket sudah masuk proses serah terima.",
         );
       let balances = state.balances;
       for (const line of sale.items || []) {
@@ -6345,6 +6508,149 @@ app.post(
         status: "voided",
         cancelReason: "Struk tidak berhasil dicetak",
         cancelledAt: new Date().toISOString(),
+      });
+      if (linkedShipment) {
+        Object.assign(linkedShipment, {
+          status: "cancelled",
+          cancelReason: "Penjualan dibatalkan karena struk tidak berhasil dicetak",
+          cancelledAt: sale.cancelledAt,
+          cancelledBy: actor.id,
+        });
+      }
+    });
+  },
+);
+
+app.post(
+  "/api/commands/sales/:id/settle-cod",
+  requireAuth,
+  async (req, res) => {
+    await executeCommand(req, res, async (state, actor) => {
+      const sale = state.sales.find((item) => item.id === req.params.id);
+      const authorization = commandAuth(actor, "sale.create", sale?.locationId);
+      if (!authorization.allowed) throw forbiddenCommand(authorization.reason);
+      if (!sale) throw invalidCommand("Penjualan tidak ditemukan.");
+      if (sale.status === "voided")
+        throw invalidCommand("Transaksi yang dibatalkan tidak dapat dicairkan.");
+      if (sale.status !== "completed")
+        throw invalidCommand("Selesaikan transaksi terlebih dahulu sebelum mencatat pencairan COD.");
+      if (sale.payment !== "COD")
+        throw invalidCommand("Transaksi ini bukan pembayaran COD.");
+      if (sale.codStatus === "settled")
+        throw invalidCommand("Dana COD transaksi ini sudah pernah dicairkan.");
+      const amount = Math.round(Number(req.body?.amount));
+      const maximumAmount = Number(sale.total || 0);
+      if (!Number.isSafeInteger(amount) || amount < 0 || amount > maximumAmount)
+        throw invalidCommand("Nominal pencairan COD harus antara Rp0 dan total tagihan.");
+      Object.assign(sale, {
+        codStatus: "settled",
+        codSettledAt: new Date().toISOString(),
+        codSettlementAmount: amount,
+      });
+    });
+  },
+);
+
+app.post(
+  "/api/commands/sales/:id/online-details",
+  requireAuth,
+  async (req, res) => {
+    await executeCommand(req, res, async (state, actor) => {
+      const sale = state.sales.find((item) => item.id === req.params.id);
+      const authorization = commandAuth(actor, "sale.create", sale?.locationId);
+      if (!authorization.allowed) throw forbiddenCommand(authorization.reason);
+      if (!sale || sale.status === "voided")
+        throw invalidCommand("Penjualan tidak ditemukan atau sudah dibatalkan.");
+      if (sale.channel !== "online")
+        throw invalidCommand("Detail pesanan hanya tersedia untuk penjualan online.");
+      const sourcePlatform = String(req.body?.sourcePlatform || "").trim();
+      const marketplaceOrderId = String(req.body?.marketplaceOrderId || "").trim();
+      const trackingNumber = String(req.body?.trackingNumber || "")
+        .trim()
+        .toUpperCase();
+      if (!sourcePlatform)
+        throw invalidCommand("Pilih sumber pesanan online.");
+      if (
+        sale.sourceImportId &&
+        String(sale.sourcePlatform || "").toLowerCase() !==
+          sourcePlatform.toLowerCase()
+      )
+        throw invalidCommand("Platform transaksi hasil impor tidak dapat diubah.");
+      if (
+        sourcePlatform.length > 40 ||
+        marketplaceOrderId.length > 100 ||
+        trackingNumber.length > 80
+      )
+        throw invalidCommand("Detail pesanan online melebihi batas karakter.");
+      if (
+        trackingNumber &&
+        !/^[A-Z0-9][A-Z0-9._-]{5,79}$/.test(trackingNumber)
+      )
+        throw invalidCommand("Nomor resi belum valid. Gunakan minimal 6 karakter tanpa spasi.");
+      if (
+        marketplaceOrderId &&
+        state.sales.some(
+          (item) =>
+            item.id !== sale.id &&
+            item.status !== "voided" &&
+            String(item.sourcePlatform || "").toLowerCase() === sourcePlatform.toLowerCase() &&
+            String(item.marketplaceOrderId || "").toLowerCase() === marketplaceOrderId.toLowerCase(),
+        )
+      )
+        throw invalidCommand("Nomor pesanan ini sudah pernah dicatat pada platform yang sama.");
+      const linkedShipment = (state.shipments || []).find(
+        (item) =>
+          item.sourceSaleId === sale.id && item.status !== "cancelled",
+      );
+      if (
+        linkedShipment &&
+        trackingNumber !== linkedShipment.trackingNumber &&
+        linkedShipment.status !== "pending_packing"
+      )
+        throw invalidCommand(
+          "Nomor resi tidak dapat diubah setelah paket siap diangkut.",
+        );
+      if (
+        trackingNumber &&
+        (state.shipments || []).some(
+          (item) =>
+            item.id !== linkedShipment?.id &&
+            item.status !== "cancelled" &&
+            item.trackingNumber === trackingNumber,
+        )
+      )
+        throw invalidCommand(
+          "Nomor resi ini sudah tercatat pada menu Pengiriman Pesanan.",
+        );
+      if (linkedShipment && trackingNumber) {
+        Object.assign(linkedShipment, {
+          trackingNumber,
+          marketplace: sourcePlatform,
+          carrier: detectShippingCarrier(trackingNumber) || "Belum ditentukan",
+        });
+      } else if (!linkedShipment && trackingNumber) {
+        state.shipments ||= [];
+        recordPendingShipments(
+          state,
+          actor,
+          {
+            trackingNumbers: [trackingNumber],
+            locationId: sale.locationId,
+            marketplace: sourcePlatform,
+            sourceSaleId: sale.id,
+          },
+          { skipAuthorization: true },
+        );
+      } else if (linkedShipment && !trackingNumber) {
+        linkedShipment.status = "cancelled";
+        linkedShipment.cancelReason = "Nomor resi dihapus dari transaksi penjualan";
+        linkedShipment.cancelledAt = new Date().toISOString();
+        linkedShipment.cancelledBy = actor.id;
+      }
+      Object.assign(sale, {
+        sourcePlatform,
+        marketplaceOrderId: marketplaceOrderId || undefined,
+        trackingNumber: trackingNumber || undefined,
       });
     });
   },
@@ -6630,6 +6936,9 @@ app.post("/api/commands/raw-material-movements", requireAuth, async (req, res) =
       materialId,
       locationId,
       destinationLocationId,
+      sourceType: requestedSourceType,
+      supplierId: requestedSupplierId,
+      supplierName: rawSupplierName,
       note,
     } = req.body || {};
     if (!state.locations.some((item) => item.id === locationId && item.active !== false))
@@ -6642,6 +6951,34 @@ app.post("/api/commands/raw-material-movements", requireAuth, async (req, res) =
     if (!authorization.allowed) throw forbiddenCommand(authorization.reason);
     const documentCode = `BB-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${crypto.randomBytes(2).toString("hex").toUpperCase()}`;
     const createdAt = new Date().toISOString();
+    const sourceType = String(requestedSourceType || "").trim();
+    const supplierId = String(
+      requestedSupplierId === "__manual__" ? "" : requestedSupplierId || "",
+    ).trim();
+    const requestedSupplierName = String(rawSupplierName || "").trim();
+    let supplierName = requestedSupplierName;
+    if (type === "stock_in" && sourceType) {
+      if (!["supplier", "production"].includes(sourceType))
+        throw invalidCommand("Sumber stok bahan baku tidak valid.");
+      if (sourceType === "supplier") {
+        const supplier = supplierId
+          ? state.suppliers.find(
+              (item) => item.id === supplierId && item.active !== false,
+            )
+          : null;
+        if (supplierId && !supplier)
+          throw invalidCommand("Supplier tidak aktif atau tidak ditemukan.");
+        supplierName = String(supplier?.name || requestedSupplierName).trim();
+        if (!supplierName)
+          throw invalidCommand(
+            "Pilih supplier atau masukkan nama supplier manual.",
+          );
+        if (supplierName.length > 120)
+          throw invalidCommand("Nama supplier maksimal 120 karakter.");
+      } else {
+        supplierName = "";
+      }
+    }
     const pushMovement = (
       targetMaterialId,
       movementType,
@@ -6659,6 +6996,18 @@ app.post("/api/commands/raw-material-movements", requireAuth, async (req, res) =
         type: movementType,
         quantity: signedQuantity,
         unitCost: targetUnitCost || undefined,
+        sourceType:
+          movementType === "stock_in" && sourceType
+            ? sourceType
+            : undefined,
+        supplierId:
+          movementType === "stock_in" && sourceType === "supplier"
+            ? supplierId || undefined
+            : undefined,
+        supplierName:
+          movementType === "stock_in" && sourceType === "supplier"
+            ? supplierName
+            : undefined,
         note: String(note || ""),
         createdAt,
         createdBy: actor.id,
@@ -7320,6 +7669,21 @@ app.post("/api/commands/cancel", requireAuth, async (req, res) => {
         throw invalidCommand(
           "Penjualan tidak ditemukan atau sudah dibatalkan.",
         );
+      if (sale.payment === "COD" && sale.codStatus === "settled")
+        throw invalidCommand(
+          "COD yang sudah cair tidak dapat langsung dibatalkan. Catat pengembalian dana terlebih dahulu.",
+        );
+      const linkedShipment = (state.shipments || []).find(
+        (item) =>
+          item.sourceSaleId === sale.id && item.status !== "cancelled",
+      );
+      if (
+        linkedShipment &&
+        ["handover_scanned", "handed_over"].includes(linkedShipment.status)
+      )
+        throw invalidCommand(
+          "Penjualan tidak dapat dibatalkan karena paket sudah masuk proses serah terima.",
+        );
       for (const line of sale.items || []) {
         balances = commandAdjustBalance(
           balances,
@@ -7343,6 +7707,14 @@ app.post("/api/commands/cancel", requireAuth, async (req, res) => {
         cancelReason: note,
         cancelledAt: now,
       });
+      if (linkedShipment) {
+        Object.assign(linkedShipment, {
+          status: "cancelled",
+          cancelReason: `Penjualan dibatalkan · ${note}`,
+          cancelledAt: now,
+          cancelledBy: actor.id,
+        });
+      }
     } else if (kind === "transfer") {
       const lines = state.transfers.filter(
         (item) =>

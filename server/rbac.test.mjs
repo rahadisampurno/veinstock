@@ -49,6 +49,16 @@ describe('server RBAC policy', () => {
     }
   });
 
+  it('reserves sale cancellation for Owner even when a custom role policy tries to grant it', () => {
+    expect(authorizeAction({ user: user('owner'), action: 'sale.void', locationId: 'outlet-b' }).allowed).toBe(true);
+    for (const role of ['admin', 'pic', 'warehouse', 'cashier', 'finance', 'employee']) {
+      const account = { ...user(role), rolePermissions: ['sale.view', 'sale.void'] };
+      const result = authorizeAction({ user: account, action: 'sale.void', locationId: 'outlet-a' });
+      expect(result.allowed).toBe(false);
+      expect(result.reason).toMatch(/hanya owner/i);
+    }
+  });
+
   it('uses organization role permissions when a custom policy is attached', () => {
     const user = { role: 'cashier', outletId: 'outlet-a', organizationId: 'org-a', rolePermissions: ['stock.view', 'stock.opname'] };
     expect(authorizeAction({ user, action: 'stock.opname', locationId: 'outlet-a' }).allowed).toBe(true);

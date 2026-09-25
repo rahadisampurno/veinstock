@@ -119,6 +119,10 @@ export const normalizeData = (data: AppData): AppData => {
       discountValue,
       platformFee: Number(sale.platformFee || 0),
       netPayout: Number(sale.netPayout ?? Math.max(0, Number(sale.total || 0) - Number(sale.platformFee || 0))),
+      codSettlementAmount:
+        sale.codSettlementAmount == null
+          ? undefined
+          : Number(sale.codSettlementAmount),
       total: Number(sale.total || 0),
     };
   });

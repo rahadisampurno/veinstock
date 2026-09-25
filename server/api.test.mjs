@@ -272,8 +272,27 @@ describe('multi-tenant API', () => {
     expect(state.body.data.rawMaterialMovements.filter(item => item.materialId === material.id)).toHaveLength(3);
     expect(state.body.data.rawMaterialMovements.filter(item => item.materialId === seasoning.id)).toHaveLength(3);
 
+    const rawSupplier = {
+      id: `supplier-raw-${suffix}`,
+      name: 'CV Bahan Segar',
+      active: true,
+    };
+    expect((await post('/api/commands/suppliers', {
+      supplier: rawSupplier,
+    }, token)).status).toBe(201);
+    const missingRawSupplier = await post('/api/commands/raw-material-movements', {
+      type: 'stock_in',
+      sourceType: 'supplier',
+      locationId: 'loc-owner',
+      items: [{ materialId: material.id, quantity: 1, unitCost: 12000 }],
+    }, token);
+    expect(missingRawSupplier.status).toBe(400);
+
     expect((await post('/api/commands/raw-material-movements', {
       type: 'stock_in',
+      sourceType: 'supplier',
+      supplierId: rawSupplier.id,
+      supplierName: rawSupplier.name,
       locationId: 'loc-owner',
       items: [
         { materialId: material.id, quantity: 1, unitCost: 12000 },
@@ -318,6 +337,13 @@ describe('multi-tenant API', () => {
     expect(state.body.data.rawMaterialBalances.find(item => item.locationId === 'loc-owner' && item.materialId === seasoning.id).quantity).toBe(700);
     expect(state.body.data.rawMaterialMovements.filter(item => item.materialId === material.id)).toHaveLength(6);
     expect(state.body.data.rawMaterialMovements.filter(item => item.materialId === seasoning.id)).toHaveLength(6);
+    expect(state.body.data.rawMaterialMovements.find(
+      item => item.materialId === material.id && item.note === 'Penerimaan sekaligus',
+    )).toMatchObject({
+      sourceType: 'supplier',
+      supplierId: rawSupplier.id,
+      supplierName: rawSupplier.name,
+    });
 
     const picEmail = `pic-${suffix}@test.local`;
     expect((await post('/api/users', {
@@ -370,6 +396,11 @@ describe('multi-tenant API', () => {
     const owner = await post('/api/register', { organizationName: 'Role Policy', name: 'Owner', email: `owner-${suffix}@test.local`, password: 'Password123!' });
     const policy = { menus: ['dashboard', 'reports', 'help'], permissions: ['report.view', 'report.export'] };
     expect((await post('/api/commands/role-policies', { role: 'finance', policy }, owner.body.token)).status).toBe(201);
+    const delegatedVoid = await post('/api/commands/role-policies', {
+      role: 'admin',
+      policy: { menus: ['dashboard', 'sales'], permissions: ['sale.view', 'sale.void'] },
+    }, owner.body.token);
+    expect(delegatedVoid.status).toBe(400);
     const state = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
     expect(state.body.data.rolePolicies.finance).toEqual(policy);
     expect(state.body.data.movements.some(item => item.type === 'Perubahan hak akses')).toBe(true);
@@ -811,13 +842,96 @@ describe('multi-tenant API', () => {
     expect(refreshed.body.data.sales.find(item => item.id === firstSale.id)).toEqual(expect.objectContaining({ status: 'completed', printedBy: owner.body.user.id }));
     expect((await post(`/api/commands/sales/${firstSale.id}/finalize-print`, {}, owner.body.token)).status).toBe(400);
 
-    await post('/api/commands/sales', { locationId: 'loc-owner', channel: 'offline', payment: 'Tunai', requiresPrint: true, items: [{ variantId: `variant-${suffix}`, quantity: 3 }] }, owner.body.token);
+    const abortTrackingNumber = `PRINT${Date.now()}`;
+    await post('/api/commands/sales', {
+      locationId: 'loc-owner', channel: 'online', payment: 'Transfer',
+      sourcePlatform: 'Shopee', trackingNumber: abortTrackingNumber,
+      requiresPrint: true,
+      items: [{ variantId: `variant-${suffix}`, quantity: 3 }],
+    }, owner.body.token);
     refreshed = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
     const abortedSale = refreshed.body.data.sales.find(item => item.status === 'pending_print');
+    expect(refreshed.body.data.shipments).toContainEqual(expect.objectContaining({
+      trackingNumber: abortTrackingNumber,
+      sourceSaleId: abortedSale.id,
+      status: 'pending_packing',
+    }));
     expect((await post(`/api/commands/sales/${abortedSale.id}/abort-print`, {}, owner.body.token)).status).toBe(201);
     refreshed = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
     expect(refreshed.body.data.sales.find(item => item.id === abortedSale.id).status).toBe('voided');
+    expect(refreshed.body.data.shipments.find(
+      item => item.sourceSaleId === abortedSale.id,
+    )).toEqual(expect.objectContaining({
+      status: 'cancelled',
+      cancelledBy: owner.body.user.id,
+    }));
     expect(refreshed.body.data.balances.find(item => item.locationId === 'loc-owner' && item.variantId === `variant-${suffix}`).quantity).toBe(8);
+  });
+
+  it('records online order identity and settles COD exactly once', async () => {
+    const suffix = `${Date.now()}-cod-flow`;
+    const owner = await post('/api/register', {
+      organizationName: 'COD Flow', name: 'Owner',
+      email: `owner-${suffix}@test.local`, password: 'Password123!',
+    });
+    const variantId = `variant-${suffix}`;
+    expect((await post('/api/commands/products', {
+      product: {
+        id: `product-${suffix}`, name: 'Produk COD', category: 'Test', unit: 'Pcs', active: true,
+        variants: [{ id: variantId, name: 'Reguler', sku: `COD-${suffix}`, cost: 5000, onlineCost: 6000, price: 10000, onlinePrice: 12000, resellerPrice: 9000, minStock: 0 }],
+      },
+      initialStocks: [{ locationId: 'loc-owner', variantId, quantity: 3 }],
+    }, owner.body.token)).status).toBe(201);
+
+    expect((await post('/api/commands/sales', {
+      locationId: 'loc-owner', channel: 'offline', payment: 'COD',
+      items: [{ variantId, quantity: 1 }],
+    }, owner.body.token)).status).toBe(400);
+
+    const created = await post('/api/commands/sales', {
+      locationId: 'loc-owner', channel: 'online', payment: 'COD',
+      sourcePlatform: 'Shopee', marketplaceOrderId: `ORDER-${suffix}`,
+      platformFee: 2000,
+      items: [{ variantId, quantity: 1 }],
+    }, owner.body.token);
+    expect(created.status).toBe(201);
+    let state = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    const sale = state.body.data.sales[0];
+    expect(sale).toEqual(expect.objectContaining({
+      payment: 'COD', sourcePlatform: 'Shopee',
+      marketplaceOrderId: `ORDER-${suffix}`, codStatus: 'pending',
+      total: 12000, netPayout: 10000,
+    }));
+
+    const trackingNumber = `JX${Date.now()}`;
+    expect((await post(`/api/commands/sales/${sale.id}/online-details`, {
+      sourcePlatform: 'Shopee', marketplaceOrderId: `ORDER-${suffix}`,
+      trackingNumber,
+    }, owner.body.token)).status).toBe(201);
+    state = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    expect(state.body.data.sales.find(item => item.id === sale.id).trackingNumber).toBe(trackingNumber);
+    expect(state.body.data.shipments).toContainEqual(expect.objectContaining({
+      trackingNumber, locationId: 'loc-owner', marketplace: 'Shopee',
+      status: 'pending_packing', sourceSaleId: sale.id,
+    }));
+
+    const duplicateOrder = await post('/api/commands/sales', {
+      locationId: 'loc-owner', channel: 'online', payment: 'Transfer',
+      sourcePlatform: 'shopee', marketplaceOrderId: `order-${suffix}`,
+      items: [{ variantId, quantity: 1 }],
+    }, owner.body.token);
+    expect(duplicateOrder.status).toBe(400);
+
+    expect((await post(`/api/commands/sales/${sale.id}/settle-cod`, {
+      amount: 10000,
+    }, owner.body.token)).status).toBe(201);
+    expect((await post(`/api/commands/sales/${sale.id}/settle-cod`, {
+      amount: 10000,
+    }, owner.body.token)).status).toBe(400);
+    state = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    expect(state.body.data.sales.find(item => item.id === sale.id)).toEqual(expect.objectContaining({
+      codStatus: 'settled', codSettlementAmount: 10000,
+    }));
   });
 
   it('uses channel-specific price and HPP snapshots, allocates buyer discounts, and preserves history', async () => {

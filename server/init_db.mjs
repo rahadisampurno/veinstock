@@ -144,6 +144,11 @@ async function init() {
       platform_fee BIGINT NOT NULL DEFAULT 0,
       net_payout BIGINT NULL,
       source_platform VARCHAR(40) NULL,
+      marketplace_order_id VARCHAR(100) NULL,
+      tracking_number VARCHAR(80) NULL,
+      cod_status VARCHAR(20) NULL,
+      cod_settled_at VARCHAR(100) NULL,
+      cod_settlement_amount BIGINT NULL,
       source_import_id VARCHAR(80) NULL,
       channel VARCHAR(20) NOT NULL DEFAULT 'offline',
       method VARCHAR(50) NOT NULL,
@@ -278,7 +283,12 @@ async function init() {
     "ALTER TABLE sales ADD COLUMN platform_fee BIGINT NOT NULL DEFAULT 0 AFTER total",
     "ALTER TABLE sales ADD COLUMN net_payout BIGINT NULL AFTER platform_fee",
     "ALTER TABLE sales ADD COLUMN source_platform VARCHAR(40) NULL AFTER net_payout",
-    "ALTER TABLE sales ADD COLUMN source_import_id VARCHAR(80) NULL AFTER source_platform",
+    "ALTER TABLE sales ADD COLUMN marketplace_order_id VARCHAR(100) NULL AFTER source_platform",
+    "ALTER TABLE sales ADD COLUMN tracking_number VARCHAR(80) NULL AFTER marketplace_order_id",
+    "ALTER TABLE sales ADD COLUMN cod_status VARCHAR(20) NULL AFTER tracking_number",
+    "ALTER TABLE sales ADD COLUMN cod_settled_at VARCHAR(100) NULL AFTER cod_status",
+    "ALTER TABLE sales ADD COLUMN cod_settlement_amount BIGINT NULL AFTER cod_settled_at",
+    "ALTER TABLE sales ADD COLUMN source_import_id VARCHAR(80) NULL AFTER cod_settlement_amount",
   ]) {
     try { await pool.execute(statement); }
     catch (error) { if (error?.code !== 'ER_DUP_FIELDNAME') throw error; }

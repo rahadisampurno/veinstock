@@ -112,6 +112,9 @@ export interface RawMaterialMovement {
   type: RawMaterialMovementType;
   quantity: number;
   unitCost?: number;
+  sourceType?: "supplier" | "production";
+  supplierId?: string;
+  supplierName?: string;
   note: string;
   createdAt: string;
   createdBy?: string;
@@ -168,6 +171,16 @@ export interface Sale {
   netPayout?: number;
   /** Sumber transaksi impor, misalnya TikTok. */
   sourcePlatform?: string;
+  /** Nomor pesanan dari marketplace/chat untuk pencarian dan rekonsiliasi. */
+  marketplaceOrderId?: string;
+  /** Nomor resi yang menghubungkan penjualan dengan proses dan bukti packing. */
+  trackingNumber?: string;
+  /** Status pencairan untuk pembayaran COD. Tidak diisi untuk metode lain. */
+  codStatus?: "pending" | "settled";
+  /** Waktu dana COD dikonfirmasi masuk. */
+  codSettledAt?: string;
+  /** Dana COD bersih yang benar-benar diterima. */
+  codSettlementAmount?: number;
   /** ID batch impor untuk rekonsiliasi dan pencegahan duplikat. */
   sourceImportId?: string;
   payment: string;
@@ -412,9 +425,17 @@ export interface ShipmentPackage {
   marketplace: string;
   carrier: string;
   locationId: string;
-  status: "ready" | "handover_scanned" | "handed_over" | "cancelled";
-  packedAt: string;
-  packedBy: string;
+  status:
+    | "pending_packing"
+    | "ready"
+    | "handover_scanned"
+    | "handed_over"
+    | "cancelled";
+  createdAt?: string;
+  createdBy?: string;
+  sourceSaleId?: string;
+  packedAt?: string;
+  packedBy?: string;
   handoverBatchCode?: string;
   handedOverAt?: string;
   handedOverBy?: string;
