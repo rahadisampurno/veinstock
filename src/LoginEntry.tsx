@@ -36,8 +36,10 @@ export default function LoginEntry({
     event.preventDefault();
     if (loading) return;
     setLoading(true); setError("");
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 20_000);
     try {
-      const response = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password, remember }) });
+      const response = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password, remember }), signal: controller.signal });
       const result: unknown = await response.json().catch(() => null);
       if (!response.ok) {
         const message =
@@ -55,8 +57,14 @@ export default function LoginEntry({
       sessionStorage.setItem(savedSessionKey, session);
       if (remember) localStorage.setItem(savedSessionKey, session); else localStorage.removeItem(savedSessionKey);
       onAuthenticated();
-    } catch (caught) { setError(caught instanceof Error ? caught.message : "Login gagal"); }
-    finally { setLoading(false); }
+    } catch (caught) {
+      setError(
+        caught instanceof DOMException && caught.name === "AbortError"
+          ? "Server terlalu lama merespons. Periksa koneksi lalu coba masuk kembali."
+          : caught instanceof Error ? caught.message : "Login gagal",
+      );
+    }
+    finally { window.clearTimeout(timeout); setLoading(false); }
   };
 
   const requestOtp = async (event: FormEvent) => {

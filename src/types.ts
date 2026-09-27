@@ -119,6 +119,16 @@ export interface RawMaterialMovement {
   createdAt: string;
   createdBy?: string;
   createdByName?: string;
+  status?: "completed" | "revised" | "cancelled";
+  revisionNumber?: number;
+  revisionReason?: string;
+  revisedAt?: string;
+  revisedBy?: string;
+  revisedByName?: string;
+  cancelledAt?: string;
+  cancelledBy?: string;
+  cancelledByName?: string;
+  cancelReason?: string;
 }
 export interface Transfer {
   id: string;

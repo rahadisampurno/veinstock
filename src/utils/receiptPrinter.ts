@@ -231,6 +231,199 @@ export function receiptHtml(sale: Sale, data: AppData, settings: PrinterSettings
   </style></head><body><header>${business?.logoUrl ? `<img class="logo" src="${safe(business.logoUrl)}" alt="">` : ""}<h1>${safe(business?.name || "Menengs")}</h1><div class="muted">${safe(location?.name || "Lokasi usaha")}</div>${business?.address || location?.address ? `<div class="muted">${safe(business?.address || location?.address)}</div>` : ""}${business?.phone ? `<div class="muted">${safe(business.phone)}</div>` : ""}</header><div class="rule"></div><div class="meta"><span>No. Struk</span><b>${safe(saleCode(sale))}</b></div><div class="meta"><span>Tanggal</span><span>${safe(new Date(sale.createdAt).toLocaleString("id-ID"))}</span></div><div class="meta"><span>Kasir</span><span>${safe(cashier)}</span></div><div class="meta"><span>Pembayaran</span><span>${safe(sale.payment)}</span></div><div class="rule"></div><table class="items">${lines.map((line) => `<tr><td class="item-name">${safe(line.name)}<br><span class="muted">${line.quantity} × ${rupiah(line.unitPrice)}</span></td><td>${rupiah(line.subtotal)}</td></tr>`).join("")}</table><div class="rule"></div>${discountAmount > 0 ? `<div class="total-row"><span>SUBTOTAL</span><span>${rupiah(grossTotal)}</span></div><div class="total-row"><span>${safe(discountLabel(sale))}</span><span>−${rupiah(discountAmount)}</span></div>` : ""}<div class="total-row grand"><span>TOTAL</span><span>${rupiah(sale.total)}</span></div>${sale.note ? `<div class="rule"></div><b>CATATAN PESANAN</b><div>${safe(sale.note)}</div>` : ""}<div class="rule"></div><div class="footer">Terima kasih<br><span class="muted">Barang yang sudah dibeli mengikuti kebijakan retur toko.</span></div></body></html>`;
 }
 
+export async function downloadSaleReceiptPdf(sale: Sale, data: AppData) {
+  const { jsPDF } = await import("jspdf");
+  const pdf = new jsPDF({
+    orientation: "portrait",
+    unit: "mm",
+    format: [148, 210],
+  });
+  const business = data.business;
+  const location = data.locations.find((item) => item.id === sale.locationId);
+  const cashier =
+    data.users.find((item) => item.id === sale.cashierId)?.name ||
+    "Staf Menengs";
+  const lines = receiptLines(sale, data);
+  const discountAmount = Number(sale.discountAmount || 0);
+  const grossTotal = Number(
+    sale.grossTotal ??
+      (lines.reduce((sum, line) => sum + Number(line.subtotal || 0), 0) ||
+        sale.total + discountAmount),
+  );
+  const pageWidth = 148;
+  const pageHeight = 210;
+  const margin = 13;
+  const contentWidth = pageWidth - margin * 2;
+  const footerTop = pageHeight - 13;
+  let cursorY = 0;
+
+  pdf.setProperties({
+    title: `Struk ${saleCode(sale)}`,
+    subject: "Struk transaksi Menengs untuk dibagikan secara digital",
+    author: business?.name || "Menengs",
+  });
+
+  const drawPageHeader = (continued = false) => {
+    pdf.setFillColor(9, 145, 184);
+    pdf.rect(0, 0, pageWidth, continued ? 22 : 34, "F");
+    pdf.setTextColor(255, 255, 255);
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(continued ? 14 : 19);
+    pdf.text(business?.name || "MENENGS", margin, continued ? 10 : 13);
+    pdf.setFont("helvetica", "normal");
+    pdf.setFontSize(9);
+    pdf.text(
+      continued ? `Lanjutan struk ${saleCode(sale)}` : location?.name || "Lokasi usaha",
+      margin,
+      continued ? 16 : 20,
+    );
+    if (!continued) {
+      const address = business?.address || location?.address;
+      if (address) pdf.text(pdf.splitTextToSize(address, 82).slice(0, 2), margin, 25);
+      if (business?.phone)
+        pdf.text(String(business.phone), pageWidth - margin, 20, {
+          align: "right",
+        });
+      pdf.setFont("helvetica", "bold");
+      pdf.setFontSize(12);
+      pdf.text("STRUK PEMBAYARAN", pageWidth - margin, 29, {
+        align: "right",
+      });
+    }
+    pdf.setTextColor(24, 48, 65);
+    cursorY = continued ? 29 : 42;
+  };
+
+  const drawItemsHeader = () => {
+    pdf.setFillColor(235, 247, 251);
+    pdf.roundedRect(margin, cursorY, contentWidth, 8, 2, 2, "F");
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(8.5);
+    pdf.text("ITEM", margin + 3, cursorY + 5.3);
+    pdf.text("JUMLAH", pageWidth - margin - 3, cursorY + 5.3, {
+      align: "right",
+    });
+    cursorY += 12;
+  };
+
+  const nextPage = () => {
+    pdf.addPage([148, 210], "portrait");
+    drawPageHeader(true);
+    drawItemsHeader();
+  };
+
+  const ensureSpace = (height: number) => {
+    if (cursorY + height > footerTop) nextPage();
+  };
+
+  drawPageHeader();
+  pdf.setFontSize(8.5);
+  pdf.setFont("helvetica", "normal");
+  pdf.setTextColor(91, 108, 119);
+  const transactionDate = new Date(sale.createdAt).toLocaleString("id-ID", {
+    timeZone: "Asia/Jakarta",
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+  const metadata = [
+    ["Nomor struk", saleCode(sale)],
+    ["Tanggal", `${transactionDate} WIB`],
+    ["Kasir", cashier],
+    ["Pembayaran", sale.payment],
+  ];
+  metadata.forEach(([label, value], index) => {
+    const x = index % 2 === 0 ? margin : 77;
+    const y = cursorY + Math.floor(index / 2) * 12;
+    pdf.setFont("helvetica", "normal");
+    pdf.setFontSize(7.5);
+    pdf.setTextColor(105, 122, 132);
+    pdf.text(label.toUpperCase(), x, y);
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(9.5);
+    pdf.setTextColor(24, 48, 65);
+    pdf.text(pdf.splitTextToSize(String(value), 55).slice(0, 1), x, y + 5);
+  });
+  cursorY += 28;
+  drawItemsHeader();
+
+  lines.forEach((line) => {
+    const itemNameLines = pdf.splitTextToSize(line.name, 76);
+    const itemHeight = Math.max(13, itemNameLines.length * 4.2 + 7);
+    ensureSpace(itemHeight);
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(9.5);
+    pdf.setTextColor(24, 48, 65);
+    pdf.text(itemNameLines, margin + 3, cursorY);
+    pdf.setFont("helvetica", "normal");
+    pdf.setFontSize(8);
+    pdf.setTextColor(91, 108, 119);
+    pdf.text(
+      `${line.quantity} x ${rupiah(line.unitPrice)}`,
+      margin + 3,
+      cursorY + itemNameLines.length * 4.2 + 1,
+    );
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(9.5);
+    pdf.setTextColor(24, 48, 65);
+    pdf.text(rupiah(line.subtotal), pageWidth - margin - 3, cursorY, {
+      align: "right",
+    });
+    cursorY += itemHeight;
+    pdf.setDrawColor(225, 233, 237);
+    pdf.line(margin + 3, cursorY - 3, pageWidth - margin - 3, cursorY - 3);
+  });
+
+  const summaryHeight = discountAmount > 0 ? 37 : 27;
+  ensureSpace(summaryHeight + (sale.note ? 24 : 0));
+  pdf.setFillColor(247, 250, 251);
+  pdf.roundedRect(margin, cursorY, contentWidth, summaryHeight, 3, 3, "F");
+  let summaryY = cursorY + 7;
+  const totalRow = (label: string, value: string, emphasized = false) => {
+    pdf.setFont("helvetica", emphasized ? "bold" : "normal");
+    pdf.setFontSize(emphasized ? 12 : 9);
+    pdf.setTextColor(24, 48, 65);
+    pdf.text(label, margin + 4, summaryY);
+    pdf.text(value, pageWidth - margin - 4, summaryY, { align: "right" });
+    summaryY += emphasized ? 9 : 7;
+  };
+  if (discountAmount > 0) {
+    totalRow("Subtotal", rupiah(grossTotal));
+    totalRow(discountLabel(sale), `- ${rupiah(discountAmount)}`);
+  }
+  totalRow("TOTAL DIBAYAR", rupiah(sale.total), true);
+  cursorY += summaryHeight + 7;
+
+  if (sale.note) {
+    const noteLines = pdf.splitTextToSize(String(sale.note), contentWidth - 8);
+    ensureSpace(noteLines.length * 4 + 14);
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(8);
+    pdf.setTextColor(105, 122, 132);
+    pdf.text("CATATAN PESANAN", margin, cursorY);
+    pdf.setFont("helvetica", "normal");
+    pdf.setFontSize(9);
+    pdf.setTextColor(24, 48, 65);
+    pdf.text(noteLines, margin, cursorY + 6);
+  }
+
+  const pageCount = pdf.getNumberOfPages();
+  for (let page = 1; page <= pageCount; page += 1) {
+    pdf.setPage(page);
+    pdf.setDrawColor(220, 230, 235);
+    pdf.line(margin, footerTop - 2, pageWidth - margin, footerTop - 2);
+    pdf.setFont("helvetica", "normal");
+    pdf.setFontSize(7.5);
+    pdf.setTextColor(105, 122, 132);
+    pdf.text("Terima kasih sudah berbelanja.", margin, footerTop + 4);
+    pdf.text(`Halaman ${page} / ${pageCount}`, pageWidth - margin, footerTop + 4, {
+      align: "right",
+    });
+  }
+
+  const safeCode = saleCode(sale).replace(/[^A-Z0-9-]/gi, "-");
+  pdf.save(`Struk-Menengs-${safeCode}.pdf`);
+}
+
 function escposReceipt(sale: Sale, data: AppData, settings: PrinterSettings) {
   const columns = settings.paperWidth === "80" ? 48 : 32;
   const leftRight = (left: string, right: string) => `${left.slice(0, Math.max(1, columns - right.length - 1))}${" ".repeat(Math.max(1, columns - Math.min(left.length, columns - right.length - 1) - right.length))}${right}\n`;

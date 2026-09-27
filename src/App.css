@@ -3839,6 +3839,35 @@ th {
   background: #fff;
   color: var(--text);
 }
+.attendance-gps-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border: 1px solid #b9e5ef;
+  border-radius: 8px;
+  background: #eefafd;
+  color: #087fa9;
+  font-weight: 700;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.attendance-gps-link:hover {
+  border-color: #087fa9;
+  background: #def5fa;
+}
+.attendance-history-table th,
+.attendance-history-table td {
+  white-space: nowrap;
+}
+.attendance-history-table th:first-child,
+.attendance-history-table td:first-child {
+  min-width: 120px;
+}
+.attendance-history-table .status {
+  display: inline-flex;
+  white-space: nowrap;
+}
 .attendance-mode-tabs {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -14669,6 +14698,11 @@ button:disabled {
 .raw-material-report { order: 99; }
 .raw-material-report-filters .report-filter-field { display: block; padding: 8px 11px 7px; background: #f8fbfa; }
 .raw-material-report-kpis { margin-bottom: 12px; }
+.raw-stock-revenue-table { margin-bottom: 12px; }
+.raw-stock-revenue-table table { min-width: 760px; }
+.raw-stock-revenue-table td { vertical-align: top; }
+.raw-stock-revenue-table td small { display: block; margin-top: 3px; color: #78847e; font-size: 11px; }
+.raw-stock-revenue-table th:not(:first-child), .raw-stock-revenue-table td:not(:first-child) { white-space: nowrap; }
 .raw-material-report-table td small { display: block; margin-top: 2px; color: #78847e; font-size: 11px; }
 .raw-material-report-table td { vertical-align: top; }
 .raw-material-report-table table { min-width: 960px; }
@@ -14702,6 +14736,9 @@ button:disabled {
 .raw-movement-group-detail { border-top: 1px solid #e2e9e6; background: #f8fbfa; }
 .raw-movement-group-note { display: flex; align-items: baseline; gap: 12px; padding: 12px 18px; border-bottom: 1px solid #e2e9e6; color: #536b62; font-size: 13px; }
 .raw-movement-group-note b { color: #244d3e; }
+.raw-movement-status-note { background: #fff8e8; color: #765b1d; }
+.raw-movement-status-note b { color: #765b1d; }
+.raw-movement-group-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid #e2e9e6; background: #fff; }
 .raw-movement-group-detail .table-wrap { border: 0; border-radius: 0; background: transparent; }
 .raw-movement-group-detail table { margin: 0; }
 .raw-movement-group-detail th { background: #f2f7f4; }

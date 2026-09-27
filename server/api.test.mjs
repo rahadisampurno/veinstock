@@ -45,6 +45,12 @@ describe('multi-tenant API', () => {
     expect(initial.body.data.locations.map(item => item.id)).toEqual(
       expect.arrayContaining(['loc-owner', 'loc-outlet-1']),
     );
+    const versionOnly = await request('/api/state/version', {
+      headers: { authorization: `Bearer ${owner.body.token}` },
+    });
+    expect(versionOnly.status).toBe(200);
+    expect(versionOnly.body).toEqual({ version: initial.body.version });
+    expect(versionOnly.body.data).toBeUndefined();
 
     const pricing = await post('/api/commands/pricing', {
       pricing: {
@@ -87,6 +93,27 @@ describe('multi-tenant API', () => {
     expect((await post('/api/commands/locations', {
       location: { id: 'loc-branch', name: 'Cabang 1', type: 'outlet', active: true },
     }, token)).status).toBe(201);
+    const warehouseEmail = `warehouse-${suffix}@test.local`;
+    expect((await post('/api/users', {
+      name: 'Admin Gudang',
+      email: warehouseEmail,
+      password: 'Password123!',
+      role: 'warehouse',
+      outletId: 'loc-owner',
+    }, token)).status).toBe(201);
+    const warehouseLogin = await post('/api/login', {
+      email: warehouseEmail,
+      password: 'Password123!',
+    });
+    expect(warehouseLogin.status).toBe(200);
+    const warehouseState = await request('/api/state', {
+      headers: { authorization: `Bearer ${warehouseLogin.body.token}` },
+    });
+    expect(warehouseState.body.data.locations.map(item => item.id)).toEqual(
+      expect.arrayContaining(['loc-owner', 'loc-branch']),
+    );
+    expect(warehouseState.body.data.locations.find(item => item.id === 'loc-branch'))
+      .toEqual(expect.objectContaining({ name: 'Cabang 1', active: true }));
     expect((await post('/api/commands/raw-materials', {
       materials: [
         { name: 'Mie Kremes', sku: 'BB-MIE-001', category: 'Bahan Utama', unit: 'Kg', minStock: 5 },
@@ -376,6 +403,120 @@ describe('multi-tenant API', () => {
     expect(state.body.data.rawMaterialMovements.find(
       item => item.materialId === material.id && item.note === 'Pemakaian harian outlet',
     )).toMatchObject({ type: 'stock_out', locationId: 'loc-branch', quantity: -0.5 });
+  });
+
+  it('edits and cancels raw-material stock-in documents without losing the audit trail', async () => {
+    const suffix = `${Date.now()}-raw-stock-correction`;
+    const owner = await post('/api/register', {
+      organizationName: 'Koreksi Bahan',
+      name: 'Owner',
+      email: `owner-${suffix}@test.local`,
+      password: 'Password123!',
+    });
+    const token = owner.body.token;
+    expect((await post('/api/commands/raw-materials', {
+      materials: [
+        { name: 'Tepung', sku: `BB-TEP-${suffix}`, category: 'Bahan Utama', unit: 'Kg', minStock: 0 },
+        { name: 'Minyak', sku: `BB-MIN-${suffix}`, category: 'Bahan Utama', unit: 'Liter', minStock: 0 },
+      ],
+    }, token)).status).toBe(201);
+    let state = await request('/api/state', { headers: { authorization: `Bearer ${token}` } });
+    const flour = state.body.data.rawMaterials.find(item => item.name === 'Tepung');
+    const oil = state.body.data.rawMaterials.find(item => item.name === 'Minyak');
+    expect((await post('/api/commands/raw-material-movements', {
+      type: 'stock_in',
+      sourceType: 'supplier',
+      supplierName: 'Supplier Lama',
+      locationId: 'loc-owner',
+      items: [{ materialId: flour.id, quantity: 10, unitCost: 10000 }],
+      note: 'Input awal',
+    }, token)).status).toBe(201);
+    state = await request('/api/state', { headers: { authorization: `Bearer ${token}` } });
+    const original = state.body.data.rawMaterialMovements.find(item => item.materialId === flour.id);
+
+    expect((await patch(`/api/commands/raw-material-movements/${original.documentCode}`, {
+      type: 'stock_in',
+      sourceType: 'supplier',
+      supplierName: 'Supplier Benar',
+      locationId: 'loc-owner',
+      correctionReason: 'Jumlah dan supplier salah input',
+      items: [
+        { materialId: flour.id, quantity: 6, unitCost: 11000 },
+        { materialId: oil.id, quantity: 2.5, unitCost: 15000 },
+      ],
+      note: 'Data sudah dikoreksi',
+    }, token)).status).toBe(201);
+    state = await request('/api/state', { headers: { authorization: `Bearer ${token}` } });
+    expect(state.body.data.rawMaterialBalances.find(item => item.materialId === flour.id).quantity).toBe(6);
+    expect(state.body.data.rawMaterialBalances.find(item => item.materialId === oil.id).quantity).toBe(2.5);
+    expect(state.body.data.rawMaterialMovements.find(item => item.id === original.id)).toMatchObject({
+      status: 'revised',
+      revisionReason: 'Jumlah dan supplier salah input',
+    });
+    const currentLines = state.body.data.rawMaterialMovements.filter(
+      item => item.documentCode === original.documentCode && item.status !== 'revised',
+    );
+    expect(currentLines).toHaveLength(2);
+    expect(currentLines[0]).toMatchObject({ status: 'completed', revisionNumber: 2, supplierName: 'Supplier Benar' });
+
+    expect((await post('/api/commands/cancel', {
+      kind: 'raw-material-stock-in',
+      id: original.documentCode,
+      reason: 'Dokumen penerimaan ternyata tidak sah',
+    }, token)).status).toBe(201);
+    state = await request('/api/state', { headers: { authorization: `Bearer ${token}` } });
+    expect(state.body.data.rawMaterialBalances.find(item => item.materialId === flour.id).quantity).toBe(0);
+    expect(state.body.data.rawMaterialBalances.find(item => item.materialId === oil.id).quantity).toBe(0);
+    expect(state.body.data.rawMaterialMovements.filter(
+      item => item.documentCode === original.documentCode && item.status === 'cancelled',
+    )).toHaveLength(2);
+
+    expect((await post('/api/commands/raw-material-movements', {
+      type: 'stock_in',
+      sourceType: 'supplier',
+      supplierName: 'Supplier Aman',
+      locationId: 'loc-owner',
+      items: [{ materialId: flour.id, quantity: 3, unitCost: 12000 }],
+      note: 'Akan dipakai sebagian',
+    }, token)).status).toBe(201);
+    state = await request('/api/state', { headers: { authorization: `Bearer ${token}` } });
+    const usedDocument = state.body.data.rawMaterialMovements.find(
+      item => item.note === 'Akan dipakai sebagian' && item.type === 'stock_in',
+    );
+    expect((await post('/api/commands/raw-material-movements', {
+      type: 'stock_out',
+      locationId: 'loc-owner',
+      items: [{ materialId: flour.id, quantity: 2 }],
+      note: 'Sudah dipakai produksi',
+    }, token)).status).toBe(201);
+    const rejectedCancellation = await post('/api/commands/cancel', {
+      kind: 'raw-material-stock-in',
+      id: usedDocument.documentCode,
+      reason: 'Tidak boleh membuat saldo menjadi minus',
+    }, token);
+    expect(rejectedCancellation.status).toBe(400);
+    expect(rejectedCancellation.body.message).toMatch(/sudah terpakai/i);
+    const rejectedReduction = await patch(`/api/commands/raw-material-movements/${usedDocument.documentCode}`, {
+      type: 'stock_in',
+      sourceType: 'supplier',
+      supplierName: 'Supplier Aman',
+      locationId: 'loc-owner',
+      correctionReason: 'Koreksi akan membuat saldo minus',
+      items: [{ materialId: flour.id, quantity: 0.5, unitCost: 12000 }],
+    }, token);
+    expect(rejectedReduction.status).toBe(400);
+    expect(rejectedReduction.body.message).toMatch(/sudah terpakai/i);
+    state = await request('/api/state', { headers: { authorization: `Bearer ${token}` } });
+    expect(state.body.data.rawMaterialBalances.find(item => item.materialId === flour.id).quantity).toBe(1);
+    expect(state.body.data.rawMaterialMovements.find(item => item.id === usedDocument.id).status).toBe('completed');
+    const ledgerQuantity = state.body.data.rawMaterialMovements
+      .filter(item =>
+        item.locationId === 'loc-owner' &&
+        item.materialId === flour.id &&
+        !['revised', 'cancelled'].includes(item.status),
+      )
+      .reduce((sum, item) => sum + Number(item.quantity), 0);
+    expect(ledgerQuantity).toBe(1);
   });
 
   it('allows same-origin camera and geolocation features required by stock evidence and attendance', async () => {
@@ -787,7 +928,14 @@ describe('multi-tenant API', () => {
     const picState = await request('/api/state', { headers: { authorization: `Bearer ${pic.body.token}` } });
     expect(picState.body.data.transfers).toHaveLength(2);
     expect(new Set(picState.body.data.transfers.map(item => item.transferCode))).toEqual(new Set([code]));
-    expect(picState.body.data.locations.map(location => location.id)).toEqual(['outlet-transfer']);
+    expect(picState.body.data.locations.map(location => location.id)).toEqual(
+      expect.arrayContaining(['loc-owner', 'warehouse-transfer', 'outlet-transfer']),
+    );
+    expect(
+      picState.body.data.balances.every(
+        balance => balance.locationId === 'outlet-transfer',
+      ),
+    ).toBe(true);
     expect(picState.body.data.transfers.every(item => item.fromName === 'Gudang Transfer' && item.toName === 'Outlet Transfer')).toBe(true);
 
     const received = structuredClone(picState.body.data);

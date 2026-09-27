@@ -132,6 +132,7 @@ import {
   connectUsbPrinter,
   directPrintSale,
   disconnectPrinter,
+  downloadSaleReceiptPdf,
   isPrinterConnected,
   loadPrinterSettings,
   printerCapabilities,
@@ -2107,8 +2108,15 @@ function App({
     }
     setHydrated(false);
     setHydrateError("");
-    fetch("/api/state", { headers: { Authorization: `Bearer ${token}` } })
+    let active = true;
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 25_000);
+    fetch("/api/state", {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: controller.signal,
+    })
       .then((r) => {
+        if (!active) return null;
         if (r.status === 401 || r.status === 403) {
           sessionStorage.removeItem(savedSessionKey);
           localStorage.removeItem(savedSessionKey);
@@ -2125,7 +2133,7 @@ function App({
         return r.json();
       })
       .then((result) => {
-        if (!result) return;
+        if (!active || !result) return;
         serverVersion.current = result.version || 0;
         if (result.data) {
           applyLocalData(normalizeData(result.data));
@@ -2138,12 +2146,19 @@ function App({
         setHydrated(true);
       })
       .catch(() => {
+        if (!active) return;
         // Gangguan jaringan bukan berarti token tidak valid. Pertahankan sesi
         // dan tampilkan aksi retry agar pengguna tidak dilempar ke form kosong.
         setHydrateError(
           "Server tidak dapat dihubungi. Data operasional belum dapat dimuat.",
         );
-      });
+      })
+      .finally(() => window.clearTimeout(timeout));
+    return () => {
+      active = false;
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
     // Identitas profil tidak boleh memicu hydrate ulang; data tenant hanya berubah saat token/organisasi berubah atau pengguna meminta retry.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, user?.organizationId, hydrateAttempt]);
@@ -2153,6 +2168,13 @@ function App({
     const refreshFromServer = async () => {
       if (hasPendingLocalChanges.current) return;
       try {
+        const versionResponse = await fetch("/api/state/version", {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!versionResponse.ok) return;
+        const versionResult = await versionResponse.json();
+        if (Number(versionResult.version) <= serverVersion.current) return;
+
         const response = await fetch("/api/state", {
           headers: { Authorization: `Bearer ${token}` },
         });
@@ -2173,7 +2195,7 @@ function App({
     const refreshWhenVisible = () => {
       if (!document.hidden) void refreshFromServer();
     };
-    const interval = window.setInterval(refreshFromServer, 5_000);
+    const interval = window.setInterval(refreshFromServer, 10_000);
     window.addEventListener("focus", refreshFromServer);
     document.addEventListener("visibilitychange", refreshWhenVisible);
     return () => {
@@ -3077,6 +3099,10 @@ function App({
               canStockOut={can("stock.out")}
               canTransfer={can("transfer.create")}
               canAdjust={can("stock.adjust")}
+              cancel={(documentCode: string) =>
+                checkAuth("stock.in") &&
+                setModal(`cancel:raw-material-stock-in:${documentCode}`)
+              }
             />
           )}
           {page === "transfers" && (
@@ -4000,7 +4026,11 @@ function App({
           data={data}
           uploadImage={uploadImage}
           close={() => setModal(null)}
-          fixedFrom={user.role === "pic" ? user.outletId : undefined}
+          fixedFrom={
+            ["pic", "warehouse"].includes(user.role)
+              ? user.outletId
+              : undefined
+          }
           initialFrom={
             notificationIntent?.modal === "transfer"
               ? notificationIntent.sourceLocationId
@@ -4884,6 +4914,7 @@ function Dashboard({
   );
   const latestRawCosts: Record<string, number> = {};
   [...(data.rawMaterialMovements || [])]
+    .filter((movement: any) => !["revised", "cancelled"].includes(movement.status))
     .sort(
       (left: any, right: any) =>
         new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime(),
@@ -4904,6 +4935,7 @@ function Dashboard({
     (data.rawMaterialMovements || [])
       .filter(
         (movement: any) =>
+          !["revised", "cancelled"].includes(movement.status) &&
           movement.type === "stock_out" &&
           (!isPic || movement.locationId === outletId) &&
           jakartaDateKey(movement.createdAt) >= dateFrom &&
@@ -8221,6 +8253,24 @@ function AttendancePage({
     </PageBlock>
   );
 }
+function AttendanceGpsLink({ point }: { point?: string }) {
+  if (!point) return <>-</>;
+  return (
+    <a
+      className="attendance-gps-link"
+      href={`https://www.google.com/maps?q=${encodeURIComponent(point)}`}
+      target="_blank"
+      rel="noreferrer"
+      onClick={(event) => event.stopPropagation()}
+      title={`${point} · Buka di Google Maps`}
+      aria-label={`Buka titik absensi ${point} di Google Maps`}
+    >
+      <MapPin size={15} aria-hidden="true" />
+      <span>Lihat peta</span>
+    </a>
+  );
+}
+
 function AttendanceHistoryModal({ data, employee, account, close }: any) {
   const [page, setPage] = useState(1);
   const ITEMS_PER_PAGE = 10;
@@ -8238,12 +8288,14 @@ function AttendanceHistoryModal({ data, employee, account, close }: any) {
       wide
     >
       <div className="table-wrap">
-        <table>
+        <table className="attendance-history-table">
           <thead>
             <tr>
               <th>Tanggal</th>
               <th>Check-in</th>
+              <th>Titik masuk</th>
               <th>Check-out</th>
+              <th>Titik keluar</th>
               <th>Status</th>
             </tr>
           </thead>
@@ -8254,12 +8306,7 @@ function AttendanceHistoryModal({ data, employee, account, close }: any) {
                   <td>
                     {new Date(`${item.date}T00:00:00`).toLocaleDateString(
                       "id-ID",
-                      {
-                        weekday: "short",
-                        day: "numeric",
-                        month: "long",
-                        year: "numeric",
-                      },
+                      { day: "2-digit", month: "short", year: "numeric" },
                     )}
                   </td>
                   <td>
@@ -8268,9 +8315,15 @@ function AttendanceHistoryModal({ data, employee, account, close }: any) {
                       : "-"}
                   </td>
                   <td>
+                    <AttendanceGpsLink point={item.checkInGps} />
+                  </td>
+                  <td>
                     {item.checkOutAt
                       ? new Date(item.checkOutAt).toLocaleTimeString("id-ID")
                       : "-"}
+                  </td>
+                  <td>
+                    <AttendanceGpsLink point={item.checkOutGps} />
                   </td>
                   <td>
                     <span
@@ -9446,6 +9499,7 @@ function RawMaterialsPage({
   canStockOut,
   canTransfer,
   canAdjust,
+  cancel,
 }: any) {
   const locations = data.locations.filter(
     (location: any) =>
@@ -9515,6 +9569,7 @@ function RawMaterialsPage({
     supplierId: "",
     supplierName: "",
     note: "",
+    correctionReason: "",
   });
   const [transferItems, setTransferItems] = useState(() =>
     [] as ReturnType<typeof emptyRawTransferItem>[],
@@ -9533,6 +9588,7 @@ function RawMaterialsPage({
   const [movementFormError, setMovementFormError] = useState("");
   const [movementValidationAttempted, setMovementValidationAttempted] =
     useState(false);
+  const [editingMovementDocument, setEditingMovementDocument] = useState("");
   useEffect(() => {
     if (!locations.some((location: any) => location.id === locationId))
       setLocationId(defaultSourceLocationId);
@@ -9567,6 +9623,7 @@ function RawMaterialsPage({
         ? "transfer"
         : "adjustment";
   const openMovement = (type = defaultMovementType, materialId = "") => {
+    setEditingMovementDocument("");
     setMovementDraft({
       type,
       materialId,
@@ -9579,11 +9636,47 @@ function RawMaterialsPage({
       supplierId: "",
       supplierName: "",
       note: "",
+      correctionReason: "",
     });
     setTransferItems(
       materialId ? [emptyRawTransferItem(materialId)] : [],
     );
     setTransferStep(1);
+    setTransferSearch("");
+    setMovementItemErrors({});
+    setMovementFormError("");
+    setMovementValidationAttempted(false);
+    setDialog("movement");
+  };
+  const openMovementEdit = (documentCode: string, items: any[]) => {
+    const activeItems = items.filter(
+      (item: any) => item.type === "stock_in" && item.status !== "revised" && item.status !== "cancelled",
+    );
+    const first = activeItems[0];
+    if (!first) return;
+    setEditingMovementDocument(documentCode);
+    setMovementDraft({
+      type: "stock_in",
+      materialId: "",
+      locationId: first.locationId,
+      destinationLocationId: "",
+      quantity: "",
+      actualQuantity: "",
+      unitCost: "",
+      sourceType: first.sourceType === "production" ? "production" : "supplier",
+      supplierId: first.supplierId || (first.supplierName ? "__manual__" : ""),
+      supplierName: first.supplierName || "",
+      note: first.note || "",
+      correctionReason: "",
+    });
+    setTransferItems(
+      activeItems.map((item: any) => ({
+        ...emptyRawTransferItem(item.materialId),
+        quantity: String(item.quantity).replace(".", ","),
+        unitCost: item.unitCost ? String(item.unitCost) : "",
+      })),
+    );
+    setTransferStep(2);
     setTransferSearch("");
     setMovementItemErrors({});
     setMovementFormError("");
@@ -9877,7 +9970,9 @@ function RawMaterialsPage({
       if (Object.keys(rowErrors).length) errors[item.rowId] = rowErrors;
     }
     const formError =
-      movementDraft.type === "transfer" && !movementDraft.destinationLocationId
+      editingMovementDocument && movementDraft.correctionReason.trim().length < 5
+        ? "Alasan koreksi minimal 5 karakter."
+      : movementDraft.type === "transfer" && !movementDraft.destinationLocationId
         ? "Pilih lokasi tujuan transfer."
         : movementDraft.type === "stock_in" &&
             movementDraft.sourceType === "supplier" &&
@@ -9908,7 +10003,7 @@ function RawMaterialsPage({
     setMovementFormError("");
     setSaving(true);
     try {
-      await runCommand("/api/commands/raw-material-movements", {
+      const payload = {
         ...movementDraft,
         items: transferItems.map((item) => ({
           materialId: item.materialId,
@@ -9922,9 +10017,20 @@ function RawMaterialsPage({
             ? Number(movementDraft.actualQuantity)
             : undefined,
         unitCost: Number(movementDraft.unitCost || 0),
-      });
+      };
+      await runCommand(
+        editingMovementDocument
+          ? `/api/commands/raw-material-movements/${encodeURIComponent(editingMovementDocument)}`
+          : "/api/commands/raw-material-movements",
+        payload,
+        editingMovementDocument ? "PATCH" : "POST",
+      );
       setDialog(null);
-      notify(`${transferItems.length} bahan baku berhasil dicatat.`);
+      notify(
+        editingMovementDocument
+          ? "Stok masuk bahan baku berhasil dikoreksi."
+          : `${transferItems.length} bahan baku berhasil dicatat.`,
+      );
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Mutasi bahan baku gagal disimpan.";
@@ -9953,12 +10059,18 @@ function RawMaterialsPage({
       movementGroupMap.set(key, current);
     });
   const movementGroups = Array.from(movementGroupMap.entries())
-    .map(([documentCode, items]) => ({
+    .map(([documentCode, allItems]) => {
+      const revisionHistory = allItems.filter(
+        (item: any) => item.status === "revised",
+      );
+      const items = allItems.filter((item: any) => item.status !== "revised");
+      return {
       documentCode,
       items: items.sort(
         (left: any, right: any) =>
           new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime(),
       ),
+      revisionHistory,
       createdAt: items.reduce(
         (latest: string, item: any) =>
           !latest || new Date(item.createdAt) > new Date(latest)
@@ -9966,7 +10078,8 @@ function RawMaterialsPage({
             : latest,
         "",
       ),
-    }))
+    }})
+    .filter((group) => group.items.length > 0)
     .sort(
       (left, right) =>
         new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime(),
@@ -10095,6 +10208,15 @@ function RawMaterialsPage({
             {pagedMovementGroups.map((group) => {
               const first = group.items[0];
               const expanded = expandedMovementDocuments.has(group.documentCode);
+              const cancelled = group.items.every(
+                (movement: any) => movement.status === "cancelled",
+              );
+              const editableStockIn =
+                !cancelled &&
+                group.items.every((movement: any) => movement.type === "stock_in");
+              const latestRevision = group.items.find(
+                (movement: any) => movement.revisionNumber > 1,
+              );
               const types = Array.from(
                 new Set(
                   group.items.map(
@@ -10152,7 +10274,7 @@ function RawMaterialsPage({
                       <small>{first.createdByName || "Pengguna"}</small>
                     </span>
                     <span className="raw-movement-group-kind">
-                      <b>{types.join(" + ")}</b>
+                      <b>{cancelled ? "Dibatalkan" : types.join(" + ")}</b>
                       {sourceDescription ? (
                         <small>Sumber: {sourceDescription}</small>
                       ) : destinations.length > 0 ? (
@@ -10169,6 +10291,8 @@ function RawMaterialsPage({
                   </button>
                   {expanded && (
                     <div className="raw-movement-group-detail">
+                      {cancelled && <div className="raw-movement-group-note raw-movement-status-note"><b>Dibatalkan</b><span>{first.cancelReason || "Tanpa alasan"}</span></div>}
+                      {latestRevision && !cancelled && <div className="raw-movement-group-note raw-movement-status-note"><b>Sudah dikoreksi</b><span>{latestRevision.revisionReason || "Data stok masuk diperbarui"} · revisi {latestRevision.revisionNumber}</span></div>}
                       {sourceDescription && <div className="raw-movement-group-note"><b>Sumber stok</b><span>{sourceDescription}</span></div>}
                       {note && <div className="raw-movement-group-note"><b>Catatan</b><span>{note}</span></div>}
                       <div className="table-wrap raw-material-table">
@@ -10191,6 +10315,12 @@ function RawMaterialsPage({
                           </tbody>
                         </table>
                       </div>
+                      {canStockIn && editableStockIn && (
+                        <div className="raw-movement-group-actions">
+                          <button type="button" className="table-action" onClick={() => openMovementEdit(group.documentCode, group.items)}>Edit stok masuk</button>
+                          <button type="button" className="table-action danger-text" onClick={() => cancel(group.documentCode)}>Batalkan stok masuk</button>
+                        </div>
+                      )}
                     </div>
                   )}
                 </article>
@@ -10523,9 +10653,9 @@ function RawMaterialsPage({
           >
             <header>
               <div>
-                <small>BUKU MUTASI</small>
-                <h2>Catat banyak bahan baku</h2>
-                <p>Pilih beberapa bahan, lalu isi nilainya dalam satu dokumen mutasi.</p>
+                <small>{editingMovementDocument ? "KOREKSI DOKUMEN" : "BUKU MUTASI"}</small>
+                <h2>{editingMovementDocument ? "Edit stok masuk bahan baku" : "Catat banyak bahan baku"}</h2>
+                <p>{editingMovementDocument ? `Perbarui dokumen ${editingMovementDocument}. Versi sebelumnya tetap tersimpan untuk audit.` : "Pilih beberapa bahan, lalu isi nilainya dalam satu dokumen mutasi."}</p>
               </div>
               <button
                 type="button"
@@ -10555,6 +10685,7 @@ function RawMaterialsPage({
                     <span>Jenis transaksi</span>
                     <select
                       value={movementDraft.type}
+                      disabled={!!editingMovementDocument}
                       onChange={(event) => {
                         const type = event.target.value;
                         setMovementDraft({ ...movementDraft, type });
@@ -10692,7 +10823,7 @@ function RawMaterialsPage({
                       )}
                     </>
                   )}
-                  {movementDraft.type === "transfer" && transferStep === 2 && (
+                  {movementDraft.type === "transfer" && (
                     <label className="field">
                       <span>Lokasi tujuan</span>
                       <select
@@ -10706,7 +10837,16 @@ function RawMaterialsPage({
                           })
                         }}
                       >
-                        <option value="">Pilih tujuan</option>
+                        {allActiveLocations.some(
+                          (location: any) =>
+                            location.id !== movementDraft.locationId,
+                        ) ? (
+                          <option value="">Pilih tujuan</option>
+                        ) : (
+                          <option value="" disabled>
+                            Belum ada lokasi tujuan aktif
+                          </option>
+                        )}
                         {allActiveLocations
                           .filter(
                             (location: any) =>
@@ -10960,19 +11100,39 @@ function RawMaterialsPage({
                     </div>
                 )}
                 {transferStep === 2 && (
-                  <label className="field full raw-transfer-note">
-                    <span>Catatan / referensi</span>
-                    <textarea
-                      value={movementDraft.note}
-                      onChange={(event) =>
-                        setMovementDraft({
-                          ...movementDraft,
-                          note: event.target.value,
-                        })
-                      }
-                      placeholder="Supplier, keperluan produksi, atau alasan koreksi"
-                    />
-                  </label>
+                  <>
+                    <label className="field full raw-transfer-note">
+                      <span>Catatan / referensi</span>
+                      <textarea
+                        value={movementDraft.note}
+                        onChange={(event) =>
+                          setMovementDraft({
+                            ...movementDraft,
+                            note: event.target.value,
+                          })
+                        }
+                        placeholder="Supplier atau referensi penerimaan"
+                      />
+                    </label>
+                    {editingMovementDocument && (
+                      <label className="field full raw-transfer-note">
+                        <span>Alasan koreksi</span>
+                        <textarea
+                          required
+                          minLength={5}
+                          value={movementDraft.correctionReason}
+                          onChange={(event) => {
+                            setMovementFormError("");
+                            setMovementDraft({
+                              ...movementDraft,
+                              correctionReason: event.target.value,
+                            });
+                          }}
+                          placeholder="Contoh: Salah memasukkan jumlah bahan"
+                        />
+                      </label>
+                    )}
+                  </>
                 )}
               </div>
               <footer className="modal-actions">
@@ -11016,7 +11176,9 @@ function RawMaterialsPage({
                   <button className="primary" disabled={saving || !materials.length}>
                     {saving
                       ? "Menyimpan..."
-                      : `Simpan ${transferItems.length} bahan`}
+                      : editingMovementDocument
+                        ? "Simpan koreksi"
+                        : `Simpan ${transferItems.length} bahan`}
                   </button>
                 )}
               </footer>
@@ -12019,8 +12181,8 @@ function Sales({
   const [search, setSearch] = useState("");
   const [channel, setChannel] = useState("all");
   const [paymentStatus, setPaymentStatus] = useState("all");
-  const [filterStartDate, setFilterStartDate] = useState("");
-  const [filterEndDate, setFilterEndDate] = useState("");
+  const [filterStartDate, setFilterStartDate] = useState(jakartaDateKey);
+  const [filterEndDate, setFilterEndDate] = useState(jakartaDateKey);
 
   const [sortCol] = useState<string>("date");
   const [sortDesc] = useState<boolean>(true);
@@ -12172,6 +12334,7 @@ function Sales({
           to={filterEndDate}
           setFrom={setFilterStartDate}
           setTo={setFilterEndDate}
+          initialMode="realtime"
           className="list-period-picker"
         />
       </div>
@@ -13078,6 +13241,7 @@ function Reports({
     (movement: any) => {
       const material = rawMaterialMap[movement.materialId];
       return (
+        !["revised", "cancelled"].includes(movement.status) &&
         inPeriod(movement.createdAt) &&
         (!isPic || movement.locationId === outletId) &&
         (location === "all" || movement.locationId === location) &&
@@ -13092,6 +13256,7 @@ function Reports({
   );
   const latestRawCosts: Record<string, number> = {};
   [...(data.rawMaterialMovements || [])]
+    .filter((movement: any) => !["revised", "cancelled"].includes(movement.status))
     .sort(
       (left: any, right: any) =>
         new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime(),
@@ -13122,6 +13287,46 @@ function Reports({
       sum + Number(row.quantity || 0) * Number(row.unitCost || 0),
     0,
   );
+  const rawStockRevenueByLocation = visibleLocations
+    .filter(
+      (item: any) =>
+        item.active !== false &&
+        item.type !== "warehouse" &&
+        (location === "all" || item.id === location),
+    )
+    .map((item: any) => {
+      const stockValue = rawStockRows
+        .filter((row: any) => row.locationId === item.id)
+        .reduce(
+          (sum: number, row: any) =>
+            sum + Number(row.quantity || 0) * Number(row.unitCost || 0),
+          0,
+        );
+      const revenue = scopedSales
+        .filter(
+          (sale: any) =>
+            sale.locationId === item.id && inPeriod(sale.createdAt),
+        )
+        .reduce((sum: number, sale: any) => sum + Number(sale.total || 0), 0);
+      const missingCostRows = rawStockRows.filter(
+        (row: any) =>
+          row.locationId === item.id &&
+          Number(row.quantity || 0) !== 0 &&
+          Number(row.unitCost || 0) <= 0,
+      ).length;
+      return {
+        id: item.id,
+        name: item.name,
+        stockValue,
+        revenue,
+        ratio: revenue > 0 ? (stockValue / revenue) * 100 : null,
+        missingCostRows,
+      };
+    })
+    .sort(
+      (left: any, right: any) =>
+        right.revenue - left.revenue || right.stockValue - left.stockValue,
+    );
   const rawPurchaseValue = rawBaseMovements
     .filter((movement: any) => movement.type === "stock_in")
     .reduce(
@@ -13567,6 +13772,23 @@ function Reports({
               : Number(row.quantity || 0) <= Number(row.material.minStock || 0)
                 ? "Menipis"
                 : "Aman",
+          ]),
+        },
+        {
+          name: "Stok vs Omzet Outlet",
+          columns: [
+            { header: "Outlet", key: "outlet", width: 28 },
+            { header: "Modal Stok Bahan Baku", key: "stok", width: 24 },
+            { header: "Omzet Periode", key: "omzet", width: 22 },
+            { header: "Rasio Stok terhadap Omzet", key: "rasio", width: 27 },
+            { header: "Saldo Tanpa Harga Modal", key: "tanpaharga", width: 24 },
+          ],
+          data: rawStockRevenueByLocation.map((item: any) => [
+            item.name,
+            item.stockValue,
+            item.revenue,
+            item.ratio === null ? "Belum ada omzet" : `${item.ratio.toFixed(2)}%`,
+            item.missingCostRows,
           ]),
         },
         {
@@ -14156,6 +14378,59 @@ function Reports({
           <p className={`report-definition ${rawMissingCostRows ? "report-warning" : ""}`}>
             <b>Catatan:</b> jumlah tidak pernah dijumlahkan lintas satuan. Transfer antar lokasi tidak dihitung sebagai pembelian atau pemakaian.
             {rawMissingCostRows ? ` ${rawMissingCostRows} saldo belum memiliki harga masuk sehingga estimasi nilainya Rp0.` : " Nilai memakai harga masuk terakhir masing-masing bahan."}
+          </p>
+          <div className="report-section-heading">
+            <div>
+              <small>PERBANDINGAN PER OUTLET</small>
+              <h3>Modal stok bahan baku vs omzet</h3>
+            </div>
+            <span>{reportRangeLabel}</span>
+          </div>
+          <div className="table-wrap raw-stock-revenue-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Outlet</th>
+                  <th>Modal stok bahan baku saat ini</th>
+                  <th>Omzet periode</th>
+                  <th>Rasio stok : omzet</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rawStockRevenueByLocation.map((item: any) => (
+                  <tr key={item.id}>
+                    <td>
+                      <b>{item.name}</b>
+                      {item.missingCostRows > 0 && (
+                        <small>
+                          {item.missingCostRows} saldo belum memiliki harga modal
+                        </small>
+                      )}
+                    </td>
+                    <td><b>{money(item.stockValue)}</b></td>
+                    <td><b>{money(item.revenue)}</b></td>
+                    <td>
+                      <b>{item.ratio === null ? "—" : percentage(item.ratio)}</b>
+                      <small>
+                        {item.ratio === null
+                          ? "Belum ada omzet pada periode ini"
+                          : "Modal stok dibanding omzet"}
+                      </small>
+                    </td>
+                  </tr>
+                ))}
+                {!rawStockRevenueByLocation.length && (
+                  <tr>
+                    <td colSpan={4}>
+                      <p className="report-empty">Belum ada outlet yang dapat dibandingkan.</p>
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <p className="report-definition">
+            <b>Cara membaca:</b> rasio 40% berarti modal stok bahan baku saat ini setara 40% dari omzet pada periode terpilih. Angka ini bukan laba atau margin karena saldo stok adalah posisi saat ini, sedangkan omzet mengikuti periode dan kanal penjualan di atas. Filter produk tidak diterapkan karena bahan baku belum dipetakan langsung ke satu produk.
           </p>
           <div className="table-wrap raw-material-report-table">
             <table>
@@ -22899,6 +23174,7 @@ function SaleDetail({
     loadPrinterSettings(),
   );
   const [printing, setPrinting] = useState(false);
+  const [downloadingReceiptPdf, setDownloadingReceiptPdf] = useState(false);
   const [awaitingSystemConfirmation, setAwaitingSystemConfirmation] =
     useState(false);
   const [settlingCod, setSettlingCod] = useState(false);
@@ -22956,6 +23232,22 @@ function SaleDetail({
       );
     } finally {
       setPrinting(false);
+    }
+  };
+  const downloadReceiptPdf = async () => {
+    setDownloadingReceiptPdf(true);
+    try {
+      await downloadSaleReceiptPdf(item, data);
+      notify("PDF struk berhasil diunduh dan siap dikirim melalui WhatsApp.");
+    } catch (error) {
+      notify(
+        error instanceof Error
+          ? error.message
+          : "PDF struk tidak dapat dibuat.",
+        "error",
+      );
+    } finally {
+      setDownloadingReceiptPdf(false);
     }
   };
   return (
@@ -23182,6 +23474,15 @@ function SaleDetail({
             <Truck size={17} /> Lihat status pengiriman
           </button>
         )}
+        <button
+          type="button"
+          className="secondary"
+          onClick={() => void downloadReceiptPdf()}
+          disabled={downloadingReceiptPdf}
+        >
+          <Download size={17} />
+          {downloadingReceiptPdf ? "Membuat PDF..." : "Unduh PDF"}
+        </button>
         {item.status !== "voided" && (
           <button
             type="button"
@@ -30320,11 +30621,13 @@ function AnalyticsPage({
     );
     const rawMovements = (data.rawMaterialMovements || []).filter(
       (movement) =>
+        !["revised", "cancelled"].includes(movement.status || "") &&
         isInRange(movement.createdAt) &&
         (!rawScopeLocationId || movement.locationId === rawScopeLocationId),
     );
     const latestRawCosts: Record<string, number> = {};
     [...(data.rawMaterialMovements || [])]
+      .filter((movement) => !["revised", "cancelled"].includes(movement.status || ""))
       .sort(
         (left, right) =>
           new Date(right.createdAt).getTime() -

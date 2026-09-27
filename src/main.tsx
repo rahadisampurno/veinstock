@@ -1,10 +1,11 @@
-import { Component, lazy, StrictMode, Suspense, useCallback, useState, type ErrorInfo, type ReactNode } from 'react'
+import { Component, lazy, StrictMode, Suspense, useCallback, useEffect, useState, type ErrorInfo, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import LoginEntry from './LoginEntry.tsx'
 import { readStoredAuthSession } from './authSession.ts'
 
-const App = lazy(() => import('./App.tsx'))
+const loadApp = () => import('./App.tsx')
+const App = lazy(loadApp)
 
 document.addEventListener('keydown', (e) => {
   const target = e.target as HTMLInputElement;
@@ -52,6 +53,13 @@ window.addEventListener('error', (event) => {
 export function Bootstrap() {
   const [authenticated, setAuthenticated] = useState(() => Boolean(readStoredAuthSession()))
   const [authenticationError, setAuthenticationError] = useState('')
+  useEffect(() => {
+    if (authenticated) return
+    // Siapkan paket dashboard setelah form login tampil agar perpindahan setelah
+    // autentikasi tidak lagi menunggu unduhan bundle aplikasi yang besar.
+    const timer = window.setTimeout(() => void loadApp(), 1500)
+    return () => window.clearTimeout(timer)
+  }, [authenticated])
   const handleUnauthenticated = useCallback((message = '') => {
     setAuthenticationError(message)
     setAuthenticated(false)

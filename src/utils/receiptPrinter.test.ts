@@ -1,6 +1,20 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { directPrintSale, disconnectPrinter, isPrinterConnected, receiptHtml, reconnectSavedPrinter, systemPrintSale } from "./receiptPrinter";
+import { directPrintSale, disconnectPrinter, downloadSaleReceiptPdf, isPrinterConnected, receiptHtml, reconnectSavedPrinter, systemPrintSale } from "./receiptPrinter";
 import type { AppData, Sale } from "../types";
+
+const pdfMock = vi.hoisted(() => ({
+  setProperties: vi.fn(), setFillColor: vi.fn(), rect: vi.fn(),
+  setTextColor: vi.fn(), setFont: vi.fn(), setFontSize: vi.fn(), text: vi.fn(),
+  splitTextToSize: vi.fn((value: unknown) => [String(value)]), roundedRect: vi.fn(),
+  addPage: vi.fn(), setDrawColor: vi.fn(), line: vi.fn(),
+  getNumberOfPages: vi.fn(() => 1), setPage: vi.fn(), save: vi.fn(),
+}));
+const jsPdfMock = vi.hoisted(() =>
+  vi.fn(function JsPdfMock() {
+    return pdfMock;
+  }),
+);
+vi.mock("jspdf", () => ({ jsPDF: jsPdfMock }));
 
 const sale: Sale = {
   id: "sale-12345678",
@@ -45,6 +59,18 @@ describe("receipt printer", () => {
 
   it("renders 80 mm paper when configured", () => {
     expect(receiptHtml(sale, data, { mode: "system", paperWidth: "80", copies: 2 })).toContain("size:80mm auto");
+  });
+
+  it("downloads a readable A5 PDF receipt separately from thermal printing", async () => {
+    await downloadSaleReceiptPdf(sale, data);
+    expect(jsPdfMock).toHaveBeenCalledWith(expect.objectContaining({
+      orientation: "portrait",
+      unit: "mm",
+      format: [148, 210],
+    }));
+    expect(pdfMock.text).toHaveBeenCalledWith("STRUK PEMBAYARAN", 135, 29, { align: "right" });
+    expect(pdfMock.save).toHaveBeenCalledWith("Struk-Menengs-TRX-12345678.pdf");
+    expect(pdfMock.text.mock.calls.flat(3).join(" ")).not.toContain("HPP");
   });
 
   it("prints through a hidden iframe without opening another tab", () => {
