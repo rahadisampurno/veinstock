@@ -3235,26 +3235,41 @@ function App({
               open={() => {
                 if (!data.locations.some((l) => l.active))
                   return notify("Tambahkan lokasi aktif terlebih dahulu");
-                if (
-                  !data.products.some(
-                    (p) =>
-                      p.active && p.variants.some((v) => v.active !== false),
-                  )
-                )
-                  return notify("Tambahkan produk aktif terlebih dahulu");
-                if (checkAuth("stock.opname")) setModal("opname");
+                const hasProducts = data.products.some(
+                  (p) =>
+                    p.active && p.variants.some((v) => v.active !== false),
+                );
+                const hasRawMaterials = (data.rawMaterials || []).some(
+                  (material) => material.active !== false,
+                );
+                if (!hasProducts && !hasRawMaterials)
+                  return notify("Tambahkan produk atau bahan baku aktif terlebih dahulu");
+                if (!can("stock.opname") && !can("stock.adjust"))
+                  return notify("Anda tidak memiliki izin untuk melakukan stock opname");
+                setModal("opname");
               }}
               notify={notify}
               user={user.name}
               edit={(id: string) =>
                 checkAuth("stock.opname") && setModal(`opname:${id}`)
               }
+              editRaw={(documentCode: string) =>
+                checkAuth("stock.opname") &&
+                setModal(`raw-opname:${documentCode}`)
+              }
               cancel={(id: string) =>
                 checkAuth("stock.opname") && setModal(`cancel:opname:${id}`)
               }
+              cancelRaw={(documentCode: string) =>
+                checkAuth("stock.opname") &&
+                setModal(`cancel:raw-material-opname:${documentCode}`)
+              }
               detail={(id: string) => setModal(`opname-detail:${id}`)}
+              detailRaw={(documentCode: string) =>
+                setModal(`raw-opname-detail:${documentCode}`)
+              }
               canCorrect={can("stock.adjust")}
-              canCreate={can("stock.opname")}
+              canCreate={can("stock.opname") || can("stock.adjust")}
             />
           )}
           {page === "history" && (
@@ -4209,24 +4224,84 @@ function App({
           }
         />
       )}
-      {modal?.startsWith("opname") && (
+      {(modal === "opname" ||
+        (modal?.startsWith("opname:") &&
+          !modal.startsWith("opname-detail:")) ||
+        modal?.startsWith("raw-opname:")) && (
         <OpnameModal
           data={data}
+          canProductOpname={can("stock.opname")}
+          canRawMaterialOpname={can("stock.opname") || can("stock.adjust")}
           item={
-            modal.split(":")[1]
+            modal.startsWith("opname:")
               ? data.stockCounts.find((x: any) => x.id === modal.split(":")[1])
+              : null
+          }
+          rawItem={
+            modal.startsWith("raw-opname:")
+              ? rawMaterialOpnameGroups(data).find(
+                  (group: any) =>
+                    group.documentCode === modal.slice("raw-opname:".length),
+                )
               : null
           }
           fixedLocation={user.role === "pic" ? user.outletId : undefined}
           close={() => setModal(null)}
           save={async (
             loc: string,
-            items: { variantId: string; actualQty: number; reason: string }[],
+            items: {
+              variantId?: string;
+              materialId?: string;
+              actualQty?: number;
+              actualQuantity?: number;
+              reason: string;
+              note?: string;
+            }[],
+            inventoryType: "product" | "raw-material",
+            correctionReason?: string,
           ) => {
             if (items.length === 0)
               return notify("Isi stok fisik dan alasan opname dengan benar");
 
-            const isEdit = modal.includes(":");
+            const isRawEdit = modal.startsWith("raw-opname:");
+            const isEdit = modal.startsWith("opname:") || isRawEdit;
+            if (inventoryType === "raw-material") {
+              try {
+                const payload = {
+                  type: "adjustment",
+                  operation: "stock_opname",
+                  locationId: loc,
+                  items: items.map((item) => ({
+                    materialId: item.materialId,
+                    actualQuantity: item.actualQuantity,
+                    note: item.reason,
+                  })),
+                  note: items[0]?.reason || "Hasil stock opname bahan baku",
+                  correctionReason,
+                };
+                await runCommand(
+                  isRawEdit
+                    ? `/api/commands/raw-material-opnames/${encodeURIComponent(modal.slice("raw-opname:".length))}`
+                    : "/api/commands/raw-material-movements",
+                  payload,
+                  isRawEdit ? "PATCH" : "POST",
+                );
+                setModal(null);
+                notify(
+                  isRawEdit
+                    ? "Stock opname bahan baku berhasil diperbarui"
+                    : "Stock opname bahan baku berhasil dicatat",
+                );
+              } catch (error) {
+                notify(
+                  error instanceof Error
+                    ? error.message
+                    : "Stock opname bahan baku tidak dapat disimpan",
+                );
+                throw error;
+              }
+              return;
+            }
             if (isEdit) {
               const id = modal.split(":")[1];
               const oldItem = data.stockCounts.find((x: any) => x.id === id);
@@ -4360,6 +4435,18 @@ function App({
             (x: any) => x.id === modal.slice("opname-detail:".length),
           )}
           variants={variantMap}
+          locations={locationMap}
+          close={() => setModal(null)}
+        />
+      )}
+      {modal?.startsWith("raw-opname-detail:") && (
+        <RawMaterialOpnameDetail
+          item={rawMaterialOpnameGroups(data).find(
+            (group: any) =>
+              group.documentCode ===
+              modal.slice("raw-opname-detail:".length),
+          )}
+          materials={data.rawMaterials || []}
           locations={locationMap}
           close={() => setModal(null)}
         />
@@ -12469,14 +12556,64 @@ function Sales({
     </PageBlock>
   );
 }
+const rawMaterialOpnameGroups = (data: any) => {
+  const groups = new Map<string, any[]>();
+  (data.rawMaterialMovements || [])
+    .filter((movement: any) => movement.type === "adjustment")
+    .forEach((movement: any) => {
+      const key = movement.documentCode || movement.id;
+      groups.set(key, [...(groups.get(key) || []), movement]);
+    });
+  return Array.from(groups.entries())
+    .map(([documentCode, history]) => {
+      const items = history.filter(
+        (movement: any) => movement.status !== "revised",
+      );
+      const first = items[0] || history[0];
+      if (!first) return null;
+      return {
+        id: documentCode,
+        documentCode,
+        locationId: first.locationId,
+        items,
+        revisionHistory: history.filter(
+          (movement: any) => movement.status === "revised",
+        ),
+        createdBy: first.createdBy,
+        createdByName: first.createdByName,
+        createdAt: first.createdAt,
+        revisedAt: first.revisedAt,
+        revisedByName: first.revisedByName,
+        revisionReason: first.revisionReason,
+        revisionNumber: Math.max(
+          ...history.map((movement: any) =>
+            Number(movement.revisionNumber || 1),
+          ),
+        ),
+        status:
+          items.length > 0 &&
+          items.every((movement: any) => movement.status === "cancelled")
+            ? "cancelled"
+            : "completed",
+        cancelReason: items.find((movement: any) => movement.cancelReason)
+          ?.cancelReason,
+        inventoryType: "raw-material",
+      };
+    })
+    .filter(Boolean);
+};
+
 function Opname({
   data,
   variants,
   locations,
   open,
   edit,
+  editRaw,
   cancel,
+  cancelRaw,
   detail,
+  detailRaw,
   role,
   outletId,
   canCorrect,
@@ -12497,13 +12634,19 @@ function Opname({
 
   const isPic =
     ["pic", "warehouse", "cashier", "admin"].includes(role) && outletId;
+  const productOpname = data.stockCounts.map((item: any) => ({
+    ...item,
+    inventoryType: "product",
+  }));
+  const rawMaterialOpname = rawMaterialOpnameGroups(data);
+  const allOpname = [...productOpname, ...rawMaterialOpname];
   const filteredOpname = isPic
-    ? data.stockCounts.filter((o: any) => o.locationId === outletId)
-    : data.stockCounts;
+    ? allOpname.filter((o: any) => o.locationId === outletId)
+    : allOpname;
 
   const rows = filteredOpname.filter((o: any) => {
     const matchSearch =
-      `${o.reason} ${locations[o.locationId]?.name || ""} ${variants[o.variantId]?.name || ""}`
+      `${o.reason || ""} ${locations[o.locationId]?.name || ""} ${variants[o.variantId]?.name || ""} ${(o.items || []).map((line: any) => (data.rawMaterials || []).find((material: any) => material.id === line.materialId)?.name || "").join(" ")}`
         .toLowerCase()
         .includes(search.toLowerCase());
 
@@ -12522,12 +12665,12 @@ function Opname({
   });
 
   const totalOpname = rows.length;
-  const totalDiff = rows.reduce(
-    (acc: number, o: any) =>
-      acc + (o.status !== "cancelled" ? o.difference : 0),
-    0,
-  );
-
+  const totalProductOpname = rows.filter(
+    (row: any) => row.inventoryType === "product",
+  ).length;
+  const totalRawMaterialOpname = rows.filter(
+    (row: any) => row.inventoryType === "raw-material",
+  ).length;
   const sortedRows = [...rows].sort((a, b) => {
     let valA: any, valB: any;
     if (sortCol === "date") {
@@ -12584,9 +12727,14 @@ function Opname({
           sub="Sesuai filter"
         />
         <Stat
-          label="Total Selisih"
-          value={totalDiff.toString()}
-          sub="Unit barang"
+          label="Produk Jadi"
+          value={totalProductOpname.toString()}
+          sub="Riwayat opname"
+        />
+        <Stat
+          label="Bahan Baku"
+          value={totalRawMaterialOpname.toString()}
+          sub="Riwayat opname"
         />
       </div>
       <div className="filters">
@@ -12611,24 +12759,33 @@ function Opname({
               key={o.id}
               role="button"
               tabIndex={0}
-              onClick={() => detail(o.id)}
+              onClick={() => {
+                if (o.inventoryType === "product") detail(o.id);
+                else detailRaw(o.documentCode);
+              }}
               onKeyDown={(event) => {
                 if (event.key === "Enter" || event.key === " ") {
                   event.preventDefault();
-                  detail(o.id);
+                  if (o.inventoryType === "product") detail(o.id);
+                  else detailRaw(o.documentCode);
                 }
               }}
             >
               <div className="record-card-top">
                 <div className="record-card-code">
-                  <span>DOKUMEN STOCK OPNAME</span>
+                  <span>
+                    {o.inventoryType === "raw-material"
+                      ? "OPNAME BAHAN BAKU"
+                      : "OPNAME PRODUK JADI"}
+                  </span>
                   <b>
                     {locations[o.locationId]?.name || "Lokasi tidak diketahui"}
                   </b>
                   <time>
                     {jakartaDateTime(o.createdAt)} ·{" "}
-                    {data.users.find((user: any) => user.id === o.createdBy)
-                      ?.name ||
+                    {o.createdByName ||
+                      data.users.find((user: any) => user.id === o.createdBy)
+                        ?.name ||
                       o.createdBy ||
                       "Penginput tidak tercatat"}
                   </time>
@@ -12641,38 +12798,84 @@ function Opname({
               </div>
               <div className="record-card-body">
                 <div className="record-detail">
-                  <small>VARIAN & ALASAN</small>
+                  <small>
+                    {o.inventoryType === "raw-material"
+                      ? "BAHAN BAKU"
+                      : "VARIAN & ALASAN"}
+                  </small>
                   <b>
-                    {variants[o.variantId]?.productName} ·{" "}
-                    {variants[o.variantId]?.name}
+                    {o.inventoryType === "raw-material"
+                      ? `${o.items.length} bahan baku`
+                      : `${variants[o.variantId]?.productName} · ${variants[o.variantId]?.name}`}
                   </b>
                   <span>
-                    {o.status === "cancelled"
-                      ? `Dibatalkan: ${o.cancelReason || o.reason}`
-                      : o.reason}
+                    {o.inventoryType === "raw-material"
+                      ? o.items
+                          .slice(0, 3)
+                          .map(
+                            (line: any) =>
+                              (data.rawMaterials || []).find(
+                                (material: any) =>
+                                  material.id === line.materialId,
+                              )?.name || "Bahan diarsipkan",
+                          )
+                          .join(", ") +
+                        (o.items.length > 3
+                          ? `, +${o.items.length - 3} lainnya`
+                          : "")
+                      : o.status === "cancelled"
+                        ? `Dibatalkan: ${o.cancelReason || o.reason}`
+                        : o.reason}
                   </span>
                 </div>
                 <div className="record-detail">
-                  <small>SISTEM / FISIK / SELISIH</small>
+                  <small>
+                    {o.inventoryType === "raw-material"
+                      ? "RINGKASAN HASIL"
+                      : "SISTEM / FISIK / SELISIH"}
+                  </small>
                   <b>
-                    {qty(o.systemQty, variants[o.variantId]?.unit)} /{" "}
-                    {qty(o.actualQty, variants[o.variantId]?.unit)}
+                    {o.inventoryType === "raw-material"
+                      ? `${o.items.filter((line: any) => Number(line.quantity) > 0).length} naik · ${o.items.filter((line: any) => Number(line.quantity) < 0).length} turun · ${o.items.filter((line: any) => Number(line.quantity) === 0).length} sesuai`
+                      : o.systemQty == null || o.actualQty == null
+                      ? "Data opname lama"
+                      : `${qty(
+                          o.systemQty,
+                          o.inventoryType === "raw-material"
+                            ? (data.rawMaterials || []).find(
+                                (material: any) => material.id === o.materialId,
+                              )?.unit
+                            : variants[o.variantId]?.unit,
+                        )} / ${qty(
+                          o.actualQty,
+                          o.inventoryType === "raw-material"
+                            ? (data.rawMaterials || []).find(
+                                (material: any) => material.id === o.materialId,
+                              )?.unit
+                            : variants[o.variantId]?.unit,
+                        )}`}
                   </b>
-                  <strong
-                    className={o.difference < 0 ? "negative" : "positive"}
-                  >
-                    {o.difference > 0 ? "+" : ""}
-                    {qty(o.difference, variants[o.variantId]?.unit)}
-                  </strong>
+                  {o.inventoryType === "raw-material" ? (
+                    <strong>Lihat {o.items.length} rincian</strong>
+                  ) : (
+                    <strong
+                      className={o.difference < 0 ? "negative" : "positive"}
+                    >
+                      {o.difference > 0 ? "+" : ""}
+                      {qty(o.difference, variants[o.variantId]?.unit)}
+                    </strong>
+                  )}
                 </div>
               </div>
-              {canCorrect && o.status !== "cancelled" && (
+              {canCorrect &&
+                o.status !== "cancelled" && (
                 <div className="record-card-actions">
                   <button
                     className="table-action"
                     onClick={(event) => {
                       event.stopPropagation();
-                      edit(o.id);
+                      if (o.inventoryType === "product") edit(o.id);
+                      else editRaw(o.documentCode);
                     }}
                   >
                     Edit
@@ -12681,7 +12884,8 @@ function Opname({
                     className="table-action danger-text"
                     onClick={(event) => {
                       event.stopPropagation();
-                      cancel(o.id);
+                      if (o.inventoryType === "product") cancel(o.id);
+                      else cancelRaw(o.documentCode);
                     }}
                   >
                     Batalkan
@@ -22769,8 +22973,20 @@ function SaleModal({
     </Modal>
   );
 }
-function OpnameModal({ data, item, close, save, fixedLocation }: any) {
+function OpnameModal({
+  data,
+  item,
+  rawItem,
+  close,
+  save,
+  fixedLocation,
+  canProductOpname,
+  canRawMaterialOpname,
+}: any) {
   const [isSaving, setIsSaving] = useState(false);
+  const [inventoryType, setInventoryType] = useState<
+    "product" | "raw-material"
+  >(rawItem ? "raw-material" : item || canProductOpname ? "product" : "raw-material");
   const products = data.products
       .filter(
         (product: any) =>
@@ -22790,6 +23006,9 @@ function OpnameModal({ data, item, close, save, fixedLocation }: any) {
         productName: product.name,
       })),
     ),
+    rawMaterials = (data.rawMaterials || []).filter(
+      (material: any) => material.active !== false,
+    ),
     initialProductId = item
       ? products.find((product: any) =>
           product.variants.some(
@@ -22799,6 +23018,7 @@ function OpnameModal({ data, item, close, save, fixedLocation }: any) {
       : "",
     [loc, setLoc] = useState(
       item?.locationId ||
+        rawItem?.locationId ||
         fixedLocation ||
         data.locations[1]?.id ||
         data.locations[0]?.id ||
@@ -22807,8 +23027,10 @@ function OpnameModal({ data, item, close, save, fixedLocation }: any) {
     [selectedProductId, setSelectedProductId] = useState(initialProductId),
     [productPickerOpen, setProductPickerOpen] = useState(false),
     [productSearch, setProductSearch] = useState(""),
+    [rawMaterialPickerOpen, setRawMaterialPickerOpen] = useState(false),
+    [rawMaterialSearch, setRawMaterialSearch] = useState(""),
     [selectedItems, setSelectedItems] = useState<
-      Record<string, { actualQty: number | ""; reason: string }>
+      Record<string, { actualQty: number | string; reason: string }>
     >(
       item
         ? {
@@ -22817,11 +23039,30 @@ function OpnameModal({ data, item, close, save, fixedLocation }: any) {
               reason: item.reason || "Koreksi saldo dari halaman stok",
             },
           }
+        : rawItem
+          ? Object.fromEntries(
+              rawItem.items.map((line: any) => [
+                line.materialId,
+                {
+                  actualQty: String(line.actualQuantity ?? "").replace(
+                    ".",
+                    ",",
+                  ),
+                  reason:
+                    line.note || "Hasil hitung fisik bahan baku",
+                },
+              ]),
+            )
         : {},
-    );
+    ),
+    [correctionReason, setCorrectionReason] = useState("");
   const productPickerRef = useDismissiblePopover(
     productPickerOpen,
     setProductPickerOpen,
+  );
+  const rawMaterialPickerRef = useDismissiblePopover(
+    rawMaterialPickerOpen,
+    setRawMaterialPickerOpen,
   );
   const selectedProduct = products.find(
     (product: any) => product.id === selectedProductId,
@@ -22835,24 +23076,82 @@ function OpnameModal({ data, item, close, save, fixedLocation }: any) {
   const matchingProducts = products.filter((product: any) =>
     product.name.toLowerCase().includes(productSearch.toLowerCase()),
   );
-  const invalidItems = Object.values(selectedItems).some(
-    (selectedItem) =>
-      selectedItem.actualQty === "" ||
-      !Number.isInteger(Number(selectedItem.actualQty)) ||
-      Number(selectedItem.actualQty) < 0 ||
-      selectedItem.reason.trim().length < 3,
+  const matchingRawMaterials = rawMaterials.filter((material: any) =>
+    `${material.name} ${material.sku || ""} ${material.category || ""}`
+      .toLowerCase()
+      .includes(rawMaterialSearch.toLowerCase()),
   );
+  const rawBalance = (materialId: string) =>
+    Number(
+      (data.rawMaterialBalances || []).find(
+        (balance: any) =>
+          balance.locationId === loc && balance.materialId === materialId,
+      )?.quantity || 0,
+    );
+  const invalidItems = Object.values(selectedItems).some(
+    (selectedItem, index) => {
+      const selectedId = Object.keys(selectedItems)[index];
+      const material = rawMaterials.find(
+        (candidate: any) => candidate.id === selectedId,
+      );
+      const actual =
+        inventoryType === "raw-material"
+          ? parseRawMaterialNumber(String(selectedItem.actualQty))
+          : Number(selectedItem.actualQty);
+      return (
+        selectedItem.actualQty === "" ||
+        !Number.isFinite(actual) ||
+        actual < 0 ||
+        (inventoryType === "product" && !Number.isInteger(actual)) ||
+        (inventoryType === "raw-material" &&
+          material &&
+          RAW_MATERIAL_INTEGER_UNITS.has(material.unit) &&
+          !Number.isInteger(actual)) ||
+        Math.abs(actual * 1000 - Math.round(actual * 1000)) > 1e-8 ||
+        selectedItem.reason.trim().length < 3
+      );
+    },
+  );
+  const switchInventoryType = (next: "product" | "raw-material") => {
+    setInventoryType(next);
+    setSelectedItems({});
+    setSelectedProductId("");
+    setProductPickerOpen(false);
+    setRawMaterialPickerOpen(false);
+    setProductSearch("");
+    setRawMaterialSearch("");
+  };
   const selectProduct = (product: any) => {
     setSelectedProductId(product.id);
     setProductPickerOpen(false);
     setProductSearch("");
     blurFocusedTextInput();
   };
+  const selectRawMaterial = (material: any) => {
+    setSelectedItems((current) => {
+      if (current[material.id]) {
+        const next = { ...current };
+        delete next[material.id];
+        return next;
+      }
+      return {
+        ...current,
+        [material.id]: {
+          actualQty: "",
+          reason: "Hasil hitung fisik bahan baku",
+        },
+      };
+    });
+  };
 
   return (
     <Modal
-      title="Catat stock opname"
-      desc="Selisih akan menjadi koreksi dengan jejak audit."
+      title={rawItem ? "Edit stock opname bahan baku" : "Catat stock opname"}
+      desc={
+        rawItem
+          ? "Versi sebelumnya tetap tersimpan sebagai jejak audit."
+          : "Selisih akan menjadi koreksi dengan jejak audit."
+      }
       close={close}
     >
       <form
@@ -22866,11 +23165,23 @@ function OpnameModal({ data, item, close, save, fixedLocation }: any) {
           try {
             await save(
               loc,
-              Object.entries(selectedItems).map(([vid, val]) => ({
-                variantId: vid,
-                actualQty: Number(val.actualQty),
-                reason: val.reason,
-              })),
+              Object.entries(selectedItems).map(([id, val]) =>
+                inventoryType === "product"
+                  ? {
+                      variantId: id,
+                      actualQty: Number(val.actualQty),
+                      reason: val.reason,
+                    }
+                  : {
+                      materialId: id,
+                      actualQuantity: parseRawMaterialNumber(
+                        String(val.actualQty),
+                      ),
+                      reason: val.reason,
+                    },
+              ),
+              inventoryType,
+              correctionReason,
             );
           } catch {
             // Callback halaman sudah menampilkan pesan error.
@@ -22879,6 +23190,47 @@ function OpnameModal({ data, item, close, save, fixedLocation }: any) {
           }
         }}
       >
+        {!item && !rawItem && canProductOpname && canRawMaterialOpname && (
+          <div className="field opname-inventory-field">
+            <span>Jenis persediaan</span>
+            <div
+              className="opname-inventory-tabs"
+              role="group"
+              aria-label="Jenis persediaan yang akan diopname"
+            >
+              <button
+                type="button"
+                className={inventoryType === "product" ? "active" : ""}
+                aria-pressed={inventoryType === "product"}
+                onClick={() => switchInventoryType("product")}
+              >
+                <span className="opname-inventory-icon"><Boxes size={20} /></span>
+                <span className="opname-inventory-copy">
+                  <b>Produk jadi</b>
+                  <small>Barang jual dan varian</small>
+                </span>
+                {inventoryType === "product" && (
+                  <span className="opname-inventory-check"><Check size={14} /></span>
+                )}
+              </button>
+              <button
+                type="button"
+                className={inventoryType === "raw-material" ? "active" : ""}
+                aria-pressed={inventoryType === "raw-material"}
+                onClick={() => switchInventoryType("raw-material")}
+              >
+                <span className="opname-inventory-icon"><Archive size={20} /></span>
+                <span className="opname-inventory-copy">
+                  <b>Bahan baku</b>
+                  <small>Bumbu, kemasan, perlengkapan</small>
+                </span>
+                {inventoryType === "raw-material" && (
+                  <span className="opname-inventory-check"><Check size={14} /></span>
+                )}
+              </button>
+            </div>
+          </div>
+        )}
         <Field label="Lokasi opname">
           <AppSelect
             value={loc}
@@ -22895,7 +23247,18 @@ function OpnameModal({ data, item, close, save, fixedLocation }: any) {
               ))}
           </AppSelect>
         </Field>
-        {!item && (
+        {rawItem && (
+          <Field label="Alasan koreksi">
+            <textarea
+              required
+              minLength={5}
+              value={correctionReason}
+              onChange={(event) => setCorrectionReason(event.target.value)}
+              placeholder="Contoh: Salah memasukkan hasil hitung fisik"
+            />
+          </Field>
+        )}
+        {!item && inventoryType === "product" && (
           <Field label="Scan barang fisik">
             <BarcodeScanControl
               label="Scan barang"
@@ -22926,7 +23289,7 @@ function OpnameModal({ data, item, close, save, fixedLocation }: any) {
             </small>
           </Field>
         )}
-        <Field label="Pilih produk">
+        {inventoryType === "product" && <Field label="Pilih produk">
           <div ref={productPickerRef} className="product-picker">
             <button
               type="button"
@@ -22976,8 +23339,8 @@ function OpnameModal({ data, item, close, save, fixedLocation }: any) {
               </div>
             )}
           </div>
-        </Field>
-        {selectedProduct && (
+        </Field>}
+        {inventoryType === "product" && selectedProduct && (
           <Field label={`Pilih varian ${selectedProduct.name}`}>
             <div className="variant-picker-list">
               {visibleVariants.map((v: any) => (
@@ -23014,66 +23377,171 @@ function OpnameModal({ data, item, close, save, fixedLocation }: any) {
             </div>
           </Field>
         )}
-        {!selectedProduct && (
+        {inventoryType === "product" && !selectedProduct && (
           <p className="variant-picker-hint">
             Pilih nama produk untuk menampilkan varian yang akan dihitung.
           </p>
         )}
+        {inventoryType === "raw-material" && (
+          <Field label="Pilih bahan baku">
+            <div ref={rawMaterialPickerRef} className="product-picker">
+              <button
+                type="button"
+                className={`product-picker-trigger ${rawMaterialPickerOpen ? "open" : ""}`}
+                onClick={() =>
+                  setRawMaterialPickerOpen((open: boolean) => !open)
+                }
+                aria-expanded={rawMaterialPickerOpen}
+              >
+                <span>
+                  {Object.keys(selectedItems).length
+                    ? `${Object.keys(selectedItems).length} bahan baku dipilih`
+                    : "Pilih nama bahan baku"}
+                </span>
+                <ChevronDown size={18} />
+              </button>
+              {rawMaterialPickerOpen && (
+                <div className="product-picker-panel">
+                  <label className="product-picker-search">
+                    <Search size={17} />
+                    <input
+                      autoFocus={shouldAutoFocusTextInput()}
+                      value={rawMaterialSearch}
+                      onChange={(event) =>
+                        setRawMaterialSearch(event.target.value)
+                      }
+                      placeholder="Cari nama bahan baku"
+                    />
+                  </label>
+                  <div className="product-picker-options">
+                    {matchingRawMaterials.length ? (
+                      matchingRawMaterials.map((material: any) => (
+                        <button
+                          type="button"
+                          key={material.id}
+                          className={
+                            selectedItems[material.id] ? "selected" : ""
+                          }
+                          onTouchEnd={(event) =>
+                            selectFromTouch(event, () =>
+                              selectRawMaterial(material),
+                            )
+                          }
+                          onClick={() => selectRawMaterial(material)}
+                        >
+                          <span>{material.name}</span>
+                          <small>
+                            {material.sku || "Tanpa kode"} · {material.category} · {qty(rawBalance(material.id), material.unit)}
+                          </small>
+                          {selectedItems[material.id] && <Check size={16} />}
+                        </button>
+                      ))
+                    ) : (
+                      <p>Bahan baku tidak ditemukan.</p>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </Field>
+        )}
         {Object.keys(selectedItems).length > 0 && (
           <div style={{ marginTop: 16, marginBottom: 16 }}>
             <h4 style={{ margin: "0 0 12px", fontSize: 14 }}>
-              Varian Terpilih:
+              {inventoryType === "product" ? "Varian Terpilih:" : "Bahan Baku Terpilih:"}
             </h4>
             {Object.entries(selectedItems).map(([vid, selectedItem]) => {
-              const v = variants.find((x: any) => x.id === vid);
+              const v =
+                inventoryType === "product"
+                  ? variants.find((x: any) => x.id === vid)
+                  : rawMaterials.find((x: any) => x.id === vid);
               if (!v) return null;
+              const systemBalance =
+                inventoryType === "product"
+                  ? getBalance(data.balances, loc, vid)
+                  : rawBalance(vid);
+              const actualValue =
+                inventoryType === "raw-material"
+                  ? parseRawMaterialNumber(String(selectedItem.actualQty))
+                  : Number(selectedItem.actualQty);
               return (
                 <div key={vid} className="opname-selected-item">
                   <div className="opname-item-head">
                     <div>
                       <b>
-                        {v.productName} · {v.name}
+                        {inventoryType === "product"
+                          ? `${v.productName} · ${v.name}`
+                          : v.name}
                       </b>
                       <small>
                         Stok sistem:{" "}
-                        {qty(getBalance(data.balances, loc, v.id), v.unit)}
+                        {qty(systemBalance, v.unit)}
                       </small>
                     </div>
-                    {selectedItem.actualQty === "" ? (
-                      <span className="status wait">Belum dihitung</span>
-                    ) : (
-                      <span
-                        className={
-                          Number(selectedItem.actualQty) -
-                            getBalance(data.balances, loc, v.id) ===
-                          0
-                            ? "status ok"
-                            : "status wait"
-                        }
-                      >
-                        {Number(selectedItem.actualQty) -
-                          getBalance(data.balances, loc, v.id) ===
-                        0
-                          ? "Sesuai"
-                          : `Selisih ${Number(selectedItem.actualQty) - getBalance(data.balances, loc, v.id) > 0 ? "+" : ""}${qty(Number(selectedItem.actualQty) - getBalance(data.balances, loc, v.id), v.unit)}`}
-                      </span>
-                    )}
+                    <div className="opname-item-status-actions">
+                      {selectedItem.actualQty === "" ? (
+                        <span className="status wait">Belum dihitung</span>
+                      ) : (
+                        <span
+                          className={
+                            actualValue - systemBalance === 0
+                              ? "status ok"
+                              : "status wait"
+                          }
+                        >
+                          {actualValue - systemBalance === 0
+                            ? "Sesuai"
+                            : `Selisih ${actualValue - systemBalance > 0 ? "+" : ""}${qty(actualValue - systemBalance, v.unit)}`}
+                        </span>
+                      )}
+                      {inventoryType === "raw-material" && (
+                        <button
+                          type="button"
+                          className="opname-remove-selected"
+                          aria-label={`Hapus ${v.name} dari pilihan`}
+                          title="Hapus dari pilihan"
+                          onClick={() =>
+                            setSelectedItems((current) => {
+                              const next = { ...current };
+                              delete next[vid];
+                              return next;
+                            })
+                          }
+                        >
+                          <X size={15} />
+                        </button>
+                      )}
+                    </div>
                   </div>
                   <div className="form-grid">
                     <Field label={`Stok fisik (${v.unit})`}>
                       <input
-                        type="number"
-                        min="0"
-                        step="1"
+                        type={inventoryType === "product" ? "number" : "text"}
+                        inputMode={
+                          inventoryType === "raw-material" &&
+                          !RAW_MATERIAL_INTEGER_UNITS.has(v.unit)
+                            ? "decimal"
+                            : "numeric"
+                        }
+                        min={inventoryType === "product" ? "0" : undefined}
+                        step={inventoryType === "product" ? "1" : undefined}
                         required
                         placeholder="Masukkan hasil hitung"
                         value={selectedItem.actualQty}
                         onInput={(e) => {
-                          const raw = e.currentTarget.value;
+                          const raw =
+                            inventoryType === "raw-material"
+                              ? sanitizeRawMaterialQuantityInput(
+                                  e.currentTarget.value,
+                                  RAW_MATERIAL_INTEGER_UNITS.has(v.unit),
+                                )
+                              : e.currentTarget.value;
                           const actualQty =
                             raw === ""
                               ? ""
-                              : Math.max(0, Math.trunc(Number(raw) || 0));
+                              : inventoryType === "product"
+                                ? Math.max(0, Math.trunc(Number(raw) || 0))
+                                : raw;
                           setSelectedItems((current) => ({
                             ...current,
                             [vid]: { ...current[vid], actualQty },
@@ -23104,8 +23572,12 @@ function OpnameModal({ data, item, close, save, fixedLocation }: any) {
         )}
         <ModalActions
           close={close}
+          cancelDisabled={isSaving}
           disabled={
-            isSaving || Object.keys(selectedItems).length === 0 || invalidItems
+            isSaving ||
+            Object.keys(selectedItems).length === 0 ||
+            invalidItems ||
+            (rawItem && correctionReason.trim().length < 5)
           }
         />
       </form>
@@ -23735,6 +24207,109 @@ function OpnameDetail({ item, variants, locations, close }: any) {
           <span>Status</span>
           <b>{item.status === "cancelled" ? "Dibatalkan" : "Selesai"}</b>
         </p>
+      </div>
+      <footer className="modal-actions detail-modal-actions">
+        <button type="button" className="secondary" onClick={close}>
+          Tutup
+        </button>
+      </footer>
+    </Modal>
+  );
+}
+function RawMaterialOpnameDetail({
+  item,
+  materials,
+  locations,
+  close,
+}: any) {
+  if (!item) return null;
+  return (
+    <Modal
+      title="Detail stock opname bahan baku"
+      desc={`${item.documentCode} · ${item.items.length} bahan tercatat`}
+      close={close}
+      wide
+    >
+      <div className="detail-list">
+        <p>
+          <span>Waktu</span>
+          <b>{jakartaDateTime(item.createdAt)}</b>
+        </p>
+        <p>
+          <span>Lokasi</span>
+          <b>{locations[item.locationId]?.name || "Lokasi tidak diketahui"}</b>
+        </p>
+        <p>
+          <span>Penginput</span>
+          <b>{item.createdByName || "Pengguna"}</b>
+        </p>
+        {item.revisionNumber > 1 && (
+          <p>
+            <span>Revisi terakhir</span>
+            <b>
+              Revisi {item.revisionNumber}
+              {item.revisedByName ? ` · ${item.revisedByName}` : ""}
+              {item.revisionReason ? ` · ${item.revisionReason}` : ""}
+            </b>
+          </p>
+        )}
+        <p>
+          <span>Status</span>
+          <b>
+            {item.status === "cancelled"
+              ? `Dibatalkan: ${item.cancelReason || "Tanpa alasan"}`
+              : "Selesai"}
+          </b>
+        </p>
+      </div>
+      <div className="table-wrap raw-opname-detail-table">
+        <table>
+          <thead>
+            <tr>
+              <th>Bahan baku</th>
+              <th>Stok sistem</th>
+              <th>Stok fisik</th>
+              <th>Selisih</th>
+              <th>Catatan</th>
+            </tr>
+          </thead>
+          <tbody>
+            {item.items.map((line: any) => {
+              const material = materials.find(
+                (candidate: any) => candidate.id === line.materialId,
+              );
+              return (
+                <tr key={line.id}>
+                  <td>
+                    <b>{material?.name || "Bahan diarsipkan"}</b>
+                    <small>{material?.sku || "Tanpa kode"}</small>
+                  </td>
+                  <td>
+                    {line.systemQuantity == null
+                      ? "—"
+                      : qty(line.systemQuantity, material?.unit)}
+                  </td>
+                  <td>
+                    {line.actualQuantity == null
+                      ? "—"
+                      : qty(line.actualQuantity, material?.unit)}
+                  </td>
+                  <td>
+                    <strong
+                      className={
+                        Number(line.quantity) < 0 ? "negative" : "positive"
+                      }
+                    >
+                      {Number(line.quantity) > 0 ? "+" : ""}
+                      {qty(line.quantity, material?.unit)}
+                    </strong>
+                  </td>
+                  <td>{line.note || "—"}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
       <footer className="modal-actions detail-modal-actions">
         <button type="button" className="secondary" onClick={close}>
@@ -25903,9 +26478,20 @@ function PasswordInput({
     </div>
   );
 }
-const ModalActions = ({ close, onDelete, disabled, label = "Simpan" }: any) => (
+const ModalActions = ({
+  close,
+  onDelete,
+  disabled,
+  cancelDisabled = false,
+  label = "Simpan",
+}: any) => (
   <footer className="modal-actions">
-    <button type="button" className="secondary" onClick={close} disabled={disabled}>
+    <button
+      type="button"
+      className="secondary"
+      onClick={close}
+      disabled={cancelDisabled}
+    >
       Batal
     </button>
     {onDelete && (

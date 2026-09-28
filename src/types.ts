@@ -111,6 +111,8 @@ export interface RawMaterialMovement {
   destinationLocationId?: string;
   type: RawMaterialMovementType;
   quantity: number;
+  systemQuantity?: number;
+  actualQuantity?: number;
   unitCost?: number;
   sourceType?: "supplier" | "production";
   supplierId?: string;

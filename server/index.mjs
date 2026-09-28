@@ -6995,8 +6995,18 @@ app.post("/api/commands/raw-material-movements", requireAuth, async (req, res) =
       throw invalidCommand("Lokasi bahan baku tidak ditemukan.");
     if (!["stock_in", "stock_out", "transfer", "adjustment"].includes(type))
       throw invalidCommand("Jenis mutasi bahan baku tidak valid.");
+    const isStockOpname =
+      type === "adjustment" && req.body?.operation === "stock_opname";
     const action =
-      type === "stock_in" ? "stock.in" : type === "adjustment" ? "stock.adjust" : type === "transfer" ? "transfer.create" : "stock.out";
+      type === "stock_in"
+        ? "stock.in"
+        : type === "adjustment"
+          ? isStockOpname
+            ? "stock.opname"
+            : "stock.adjust"
+          : type === "transfer"
+            ? "transfer.create"
+            : "stock.out";
     const authorization = commandAuth(actor, action, locationId);
     if (!authorization.allowed) throw forbiddenCommand(authorization.reason);
     const documentCode = `BB-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${crypto.randomBytes(2).toString("hex").toUpperCase()}`;
@@ -7036,6 +7046,7 @@ app.post("/api/commands/raw-material-movements", requireAuth, async (req, res) =
       signedQuantity,
       destination,
       targetUnitCost,
+      opnameSnapshot,
     ) =>
       state.rawMaterialMovements.unshift({
         id: commandId("rmm"),
@@ -7045,6 +7056,7 @@ app.post("/api/commands/raw-material-movements", requireAuth, async (req, res) =
         destinationLocationId: destination,
         type: movementType,
         quantity: signedQuantity,
+        ...(opnameSnapshot || {}),
         unitCost: targetUnitCost || undefined,
         sourceType:
           movementType === "stock_in" && sourceType
@@ -7058,7 +7070,7 @@ app.post("/api/commands/raw-material-movements", requireAuth, async (req, res) =
           movementType === "stock_in" && sourceType === "supplier"
             ? supplierName
             : undefined,
-        note: String(note || ""),
+        note: String(opnameSnapshot?.note ?? note ?? ""),
         status: "completed",
         revisionNumber: 1,
         createdAt,
@@ -7116,10 +7128,20 @@ app.post("/api/commands/raw-material-movements", requireAuth, async (req, res) =
           { allowZero: true },
         );
         if (actualQuantityError) throw invalidCommand(actualQuantityError);
+        const adjustmentNote = String(input?.note ?? note ?? "").trim();
+        if (isStockOpname && adjustmentNote.length < 3)
+          throw invalidCommand(
+            `Alasan opname ${targetMaterial.name} minimal 3 karakter.`,
+          );
         const delta = Math.round((actualQuantity - available) * 1000) / 1000;
-        if (delta === 0)
-          throw invalidCommand(`Stok fisik ${targetMaterial.name} sama dengan stok sistem.`);
-        return { material: targetMaterial, actualQuantity, delta, unitCost };
+        return {
+          material: targetMaterial,
+          systemQuantity: available,
+          actualQuantity,
+          delta,
+          unitCost,
+          note: adjustmentNote,
+        };
       }
 
       const quantity = Number(input?.quantity);
@@ -7155,7 +7177,19 @@ app.post("/api/commands/raw-material-movements", requireAuth, async (req, res) =
           item.material.id,
           item.delta,
         );
-        pushMovement(item.material.id, "adjustment", locationId, item.delta);
+        pushMovement(
+          item.material.id,
+          "adjustment",
+          locationId,
+          item.delta,
+          undefined,
+          undefined,
+          {
+            systemQuantity: item.systemQuantity,
+            actualQuantity: item.actualQuantity,
+            note: item.note,
+          },
+        );
         continue;
       }
 
@@ -7357,6 +7391,152 @@ app.patch("/api/commands/raw-material-movements/:documentCode", requireAuth, asy
       revisedBy: actor.id,
       revisedByName: actor.name,
     }));
+    state.rawMaterialMovements.unshift(...replacementLines);
+    state.rawMaterialBalances = nextBalances;
+  });
+});
+
+app.patch("/api/commands/raw-material-opnames/:documentCode", requireAuth, async (req, res) => {
+  await executeCommand(req, res, async (state, actor) => {
+    const documentCode = String(req.params.documentCode || "").trim();
+    const currentLines = (state.rawMaterialMovements || []).filter(
+      (item) =>
+        (item.documentCode === documentCode || item.id === documentCode) &&
+        item.type === "adjustment" &&
+        !["revised", "cancelled"].includes(item.status),
+    );
+    if (!currentLines.length)
+      throw invalidCommand(
+        "Stock opname bahan baku tidak ditemukan atau sudah dibatalkan.",
+      );
+
+    const { locationId, items, correctionReason } = req.body || {};
+    const reason = String(correctionReason || "").trim();
+    if (reason.length < 5)
+      throw invalidCommand("Alasan koreksi minimal 5 karakter.");
+    if (
+      !state.locations.some(
+        (item) => item.id === locationId && item.active !== false,
+      )
+    )
+      throw invalidCommand("Lokasi bahan baku tidak ditemukan.");
+
+    for (const targetLocationId of new Set([
+      ...currentLines.map((item) => item.locationId),
+      locationId,
+    ])) {
+      const authorization = commandAuth(actor, "stock.opname", targetLocationId);
+      if (!authorization.allowed) throw forbiddenCommand(authorization.reason);
+    }
+
+    if (!Array.isArray(items) || !items.length || items.length > 100)
+      throw invalidCommand("Pilih 1 sampai 100 bahan untuk dicatat.");
+    const seen = new Set();
+    const validated = items.map((input, index) => {
+      const material = state.rawMaterials.find(
+        (item) => item.id === input?.materialId && item.active !== false,
+      );
+      if (!material)
+        throw invalidCommand(
+          `Bahan pada baris ${index + 1} tidak ditemukan atau tidak aktif.`,
+        );
+      if (seen.has(material.id))
+        throw invalidCommand(`${material.name} dipilih lebih dari satu kali.`);
+      seen.add(material.id);
+      const actualQuantity = Number(input?.actualQuantity);
+      const quantityError = validateRawMaterialQuantity(
+        actualQuantity,
+        material.unit,
+        `Stok fisik ${material.name}`,
+        { allowZero: true },
+      );
+      if (quantityError) throw invalidCommand(quantityError);
+      const itemNote = String(input?.note || "").trim();
+      if (itemNote.length < 3)
+        throw invalidCommand(
+          `Alasan opname ${material.name} minimal 3 karakter.`,
+        );
+      return {
+        material,
+        actualQuantity,
+        note: itemNote,
+      };
+    });
+
+    let nextBalances = state.rawMaterialBalances;
+    for (const line of currentLines) {
+      const nextQuantity =
+        rawMaterialBalance(nextBalances, line.locationId, line.materialId) -
+        Number(line.quantity || 0);
+      if (nextQuantity < -1e-9) {
+        const material = state.rawMaterials.find(
+          (item) => item.id === line.materialId,
+        );
+        throw invalidCommand(
+          `Koreksi gagal: stok ${material?.name || "bahan baku"} hasil opname sudah terpakai. Catat opname baru sebagai koreksi.`,
+        );
+      }
+      nextBalances = adjustRawMaterialBalance(
+        nextBalances,
+        line.locationId,
+        line.materialId,
+        -Number(line.quantity || 0),
+      );
+    }
+
+    const replacementLines = [];
+    const now = new Date().toISOString();
+    const revisionNumber =
+      Math.max(
+        1,
+        ...(state.rawMaterialMovements || [])
+          .filter((item) => item.documentCode === documentCode)
+          .map((item) => Number(item.revisionNumber || 1)),
+      ) + 1;
+    for (const item of validated) {
+      const systemQuantity = rawMaterialBalance(
+        nextBalances,
+        locationId,
+        item.material.id,
+      );
+      const difference =
+        Math.round((item.actualQuantity - systemQuantity) * 1000) / 1000;
+      nextBalances = adjustRawMaterialBalance(
+        nextBalances,
+        locationId,
+        item.material.id,
+        difference,
+      );
+      replacementLines.push({
+        id: commandId("rmm"),
+        documentCode,
+        materialId: item.material.id,
+        locationId,
+        type: "adjustment",
+        quantity: difference,
+        systemQuantity,
+        actualQuantity: item.actualQuantity,
+        note: item.note,
+        status: "completed",
+        revisionNumber,
+        revisionReason: reason,
+        createdAt: currentLines[0].createdAt,
+        createdBy: currentLines[0].createdBy,
+        createdByName: currentLines[0].createdByName,
+        revisedAt: now,
+        revisedBy: actor.id,
+        revisedByName: actor.name,
+      });
+    }
+    currentLines.forEach((line) =>
+      Object.assign(line, {
+        status: "revised",
+        revisionReason: reason,
+        revisedAt: now,
+        revisedBy: actor.id,
+        revisedByName: actor.name,
+      }),
+    );
     state.rawMaterialMovements.unshift(...replacementLines);
     state.rawMaterialBalances = nextBalances;
   });
@@ -7929,6 +8109,55 @@ app.post("/api/commands/cancel", requireAuth, async (req, res) => {
           required.materialId,
           -required.quantity,
         );
+      for (const line of lines)
+        Object.assign(line, {
+          status: "cancelled",
+          cancelReason: note,
+          cancelledAt: now,
+          cancelledBy: actor.id,
+          cancelledByName: actor.name,
+        });
+      state.rawMaterialBalances = rawBalances;
+    } else if (kind === "raw-material-opname") {
+      const lines = (state.rawMaterialMovements || []).filter(
+        (item) =>
+          (item.documentCode === id || item.id === id) &&
+          item.type === "adjustment" &&
+          !["revised", "cancelled"].includes(item.status),
+      );
+      if (!lines.length)
+        throw invalidCommand(
+          "Stock opname bahan baku tidak ditemukan atau sudah dibatalkan.",
+        );
+      const authorization = commandAuth(
+        actor,
+        "stock.opname",
+        lines[0].locationId,
+      );
+      if (!authorization.allowed) throw forbiddenCommand(authorization.reason);
+      let rawBalances = state.rawMaterialBalances;
+      for (const line of lines) {
+        const nextQuantity =
+          rawMaterialBalance(
+            rawBalances,
+            line.locationId,
+            line.materialId,
+          ) - Number(line.quantity || 0);
+        if (nextQuantity < -1e-9) {
+          const material = state.rawMaterials.find(
+            (item) => item.id === line.materialId,
+          );
+          throw invalidCommand(
+            `Pembatalan gagal: stok ${material?.name || "bahan baku"} hasil opname sudah terpakai. Catat opname baru sebagai koreksi.`,
+          );
+        }
+        rawBalances = adjustRawMaterialBalance(
+          rawBalances,
+          line.locationId,
+          line.materialId,
+          -Number(line.quantity || 0),
+        );
+      }
       for (const line of lines)
         Object.assign(line, {
           status: "cancelled",

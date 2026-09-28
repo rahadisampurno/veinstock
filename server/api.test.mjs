@@ -353,8 +353,8 @@ describe('multi-tenant API', () => {
       type: 'adjustment',
       locationId: 'loc-owner',
       items: [
-        { materialId: material.id, actualQuantity: 9 },
-        { materialId: seasoning.id, actualQuantity: 700 },
+        { materialId: material.id, actualQuantity: 9, note: 'Hitung fisik mie' },
+        { materialId: seasoning.id, actualQuantity: 700, note: 'Hitung fisik bumbu' },
       ],
       note: 'Opname bersama',
     }, token)).status).toBe(201);
@@ -365,12 +365,67 @@ describe('multi-tenant API', () => {
     expect(state.body.data.rawMaterialMovements.filter(item => item.materialId === material.id)).toHaveLength(6);
     expect(state.body.data.rawMaterialMovements.filter(item => item.materialId === seasoning.id)).toHaveLength(6);
     expect(state.body.data.rawMaterialMovements.find(
+      item => item.materialId === material.id && item.type === 'adjustment',
+    )).toMatchObject({
+      systemQuantity: 10,
+      actualQuantity: 9,
+      quantity: -1,
+      note: 'Hitung fisik mie',
+    });
+    expect(state.body.data.rawMaterialMovements.find(
       item => item.materialId === material.id && item.note === 'Penerimaan sekaligus',
     )).toMatchObject({
       sourceType: 'supplier',
       supplierId: rawSupplier.id,
       supplierName: rawSupplier.name,
     });
+
+    expect((await post('/api/commands/raw-material-movements', {
+      type: 'adjustment',
+      operation: 'stock_opname',
+      locationId: 'loc-owner',
+      items: [
+        { materialId: material.id, actualQuantity: 9, note: 'Hitung ulang gudang' },
+      ],
+    }, warehouseLogin.body.token)).status).toBe(201);
+    state = await request('/api/state', { headers: { authorization: `Bearer ${token}` } });
+    const rawOpnameDocument = state.body.data.rawMaterialMovements.find(
+      item => item.type === 'adjustment' && item.note === 'Hitung ulang gudang',
+    ).documentCode;
+    expect((await patch(`/api/commands/raw-material-opnames/${rawOpnameDocument}`, {
+      locationId: 'loc-owner',
+      correctionReason: 'Koreksi hasil hitung ulang',
+      items: [
+        { materialId: material.id, actualQuantity: 8, note: 'Hitung fisik terkoreksi' },
+      ],
+    }, warehouseLogin.body.token)).status).toBe(201);
+    state = await request('/api/state', { headers: { authorization: `Bearer ${token}` } });
+    expect(state.body.data.rawMaterialBalances.find(
+      item => item.locationId === 'loc-owner' && item.materialId === material.id,
+    ).quantity).toBe(8);
+    expect(state.body.data.rawMaterialMovements.find(
+      item => item.documentCode === rawOpnameDocument && item.status === 'completed',
+    )).toMatchObject({
+      actualQuantity: 8,
+      quantity: -1,
+      revisionNumber: 2,
+      revisionReason: 'Koreksi hasil hitung ulang',
+    });
+    expect(state.body.data.rawMaterialMovements.some(
+      item => item.documentCode === rawOpnameDocument && item.status === 'revised',
+    )).toBe(true);
+    expect((await post('/api/commands/cancel', {
+      kind: 'raw-material-opname',
+      id: rawOpnameDocument,
+      reason: 'Dokumen opname salah',
+    }, warehouseLogin.body.token)).status).toBe(201);
+    state = await request('/api/state', { headers: { authorization: `Bearer ${token}` } });
+    expect(state.body.data.rawMaterialBalances.find(
+      item => item.locationId === 'loc-owner' && item.materialId === material.id,
+    ).quantity).toBe(9);
+    expect(state.body.data.rawMaterialMovements.find(
+      item => item.documentCode === rawOpnameDocument && item.status === 'cancelled',
+    )).toMatchObject({ cancelReason: 'Dokumen opname salah' });
 
     const picEmail = `pic-${suffix}@test.local`;
     expect((await post('/api/users', {

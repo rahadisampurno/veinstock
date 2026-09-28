@@ -154,11 +154,14 @@ export const sections = [
             <p>Jika jumlah barang fisik tidak sama dengan jumlah di sistem (misal karena rusak, hilang, atau selisih hitung), gunakan <strong>Stok Opname</strong>.</p>
             <ol>
               <li>Buka menu <strong>Stok Opname</strong>, lalu buat laporan opname baru.</li>
+              <li>Pilih jenis persediaan <strong>Produk Jadi</strong> atau <strong>Bahan Baku</strong>.</li>
               <li>Pilih Lokasi yang ingin disesuaikan.</li>
-              <li>Sistem akan menampilkan jumlah stok saat ini. Masukkan <strong>Jumlah Fisik Nyata</strong> pada kolom yang tersedia.</li>
+              <li>Cari dan pilih satu atau beberapa barang yang sudah dihitung.</li>
+              <li>Sistem akan menampilkan jumlah stok saat ini. Masukkan <strong>Jumlah Fisik Nyata</strong> dan alasan pada kolom yang tersedia.</li>
               <li>Sistem akan otomatis menghitung selisihnya (kurang atau lebih).</li>
               <li>Klik Simpan. Stok sistem akan tertimpa dan langsung disesuaikan dengan jumlah fisik nyata tersebut.</li>
             </ol>
+            <p>Hasil bahan baku disimpan sebagai satu dokumen opname. Buka dokumen untuk melihat rinciannya. Gunakan <strong>Edit</strong> jika hasil hitung perlu direvisi, atau <strong>Batalkan</strong> jika seluruh dokumen salah. Versi lama dan alasan koreksi tetap tersimpan untuk audit.</p>
           </div>
         )
       },

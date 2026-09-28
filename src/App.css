@@ -2169,6 +2169,19 @@ td small.block {
 .detail-list span {
   color: #667585;
 }
+.raw-opname-detail-table {
+  margin: 0 22px 22px;
+  border: 1px solid #dce4eb;
+  border-radius: 12px;
+}
+.raw-opname-detail-table table {
+  min-width: 680px;
+}
+.raw-opname-detail-table td small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+}
 .stock-out-detail-modal > header {
   position: sticky;
   top: 0;
@@ -3770,6 +3783,125 @@ th {
   color: var(--muted);
   font-size: 12px;
   margin-top: 2px;
+}
+.opname-item-status-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 7px;
+}
+.modal .opname-remove-selected {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  min-height: 30px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid #ead8d6;
+  border-radius: 8px;
+  background: #fff;
+  color: #ad4d47;
+  cursor: pointer;
+}
+.modal .opname-remove-selected:hover {
+  border-color: #e2aaa5;
+  background: #fff4f3;
+}
+.opname-inventory-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding: 6px;
+  border: 1px solid #dce8ed;
+  border-radius: 16px;
+  background: #f3f7f8;
+}
+.modal .opname-inventory-tabs > button {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 68px;
+  align-items: center;
+  gap: 11px;
+  padding: 11px 38px 11px 12px;
+  border: 1px solid transparent;
+  border-radius: 11px;
+  background: transparent;
+  color: #607487;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .18s ease, background .18s ease,
+    box-shadow .18s ease, color .18s ease, transform .18s ease;
+}
+.modal .opname-inventory-tabs > button:hover {
+  border-color: #c9dce3;
+  background: #ffffffa8;
+  color: #173d51;
+}
+.modal .opname-inventory-tabs > button.active {
+  border-color: #9dd6e3;
+  background: #fff;
+  color: #0b405a;
+  box-shadow: 0 5px 16px rgba(18, 67, 88, .1);
+}
+.modal .opname-inventory-tabs > button:active {
+  transform: translateY(1px);
+}
+.opname-inventory-icon {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  place-items: center;
+  border-radius: 10px;
+  background: #e4edf0;
+  color: #57717e;
+  transition: background .18s ease, color .18s ease;
+}
+.opname-inventory-tabs > button.active .opname-inventory-icon {
+  background: #dff4f7;
+  color: #087d96;
+}
+.opname-inventory-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+.opname-inventory-copy b,
+.opname-inventory-copy small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.opname-inventory-copy b {
+  color: inherit;
+  font-size: 14px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.opname-inventory-copy small {
+  color: #7a8c98;
+  font-size: 11px;
+  line-height: 1.35;
+}
+.opname-inventory-check {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 50%;
+  background: #0b8da6;
+  color: #fff;
+  transform: translateY(-50%);
+}
+@media (max-width: 520px) {
+  .opname-inventory-tabs {
+    grid-template-columns: 1fr;
+  }
 }
 .attendance-hero {
   background: linear-gradient(115deg, var(--navy), #087fa9);
@@ -6794,6 +6926,14 @@ th {
 .product-picker {
   position: relative;
 }
+.modal .product-picker:has(.product-picker-trigger.open) {
+  z-index: 20;
+}
+.modal > form:has(.product-picker-trigger.open) > .modal-actions {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .15s ease;
+}
 .product-picker-trigger {
   width: 100%;
   min-height: 48px;
@@ -6826,7 +6966,7 @@ th {
 }
 .product-picker-panel {
   position: absolute;
-  z-index: 5;
+  z-index: 30;
   top: calc(100% + 8px);
   left: 0;
   right: 0;
@@ -6855,9 +6995,20 @@ th {
   background: transparent;
   padding: 0;
 }
+.modal .product-picker-search input,
+.modal .product-picker-search input:focus {
+  min-height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  outline: 0;
+}
 .product-picker-options {
-  max-height: 230px;
+  max-height: min(280px, 38vh);
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 6px;
 }
 .product-picker-options button {
