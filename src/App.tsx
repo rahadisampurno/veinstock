@@ -5249,7 +5249,7 @@ function DateRangePicker({
   to,
   setFrom,
   setTo,
-  initialMode = "all",
+  initialMode = "realtime",
   onApplied,
   className = "",
 }: {
@@ -5274,12 +5274,12 @@ function DateRangePicker({
   );
   const pickerRef = useRef<HTMLElement | null>(null);
   useEffect(() => {
-    // Filter lama yang berarti "semua data" dinormalisasi saat komponen
-    // dibuka agar tidak pernah memuat lebih dari batas performa 60 hari.
+    // Semua daftar berbasis tanggal dibuka pada data hari ini. Rentang lain
+    // tetap dapat dipilih pengguna sampai batas performa 60 hari.
     if (!from && !to) {
-      setFrom(earliestAllowed);
+      setFrom(todayKey);
       setTo(todayKey);
-      setMode("all");
+      setMode("realtime");
     }
   }, [earliestAllowed, from, setFrom, setTo, to, todayKey]);
   useEffect(() => {
@@ -5379,7 +5379,7 @@ function DateRangePicker({
     setPickerView("range");
   };
   const options: Array<[PeriodMode, string, string]> = [
-    ["realtime", "Real-time", "Data hingga waktu sekarang"],
+    ["realtime", "Hari ini", "Data pada tanggal hari ini"],
     ["yesterday", "Kemarin", "Satu hari penuh sebelumnya"],
     ["last7", "7 hari terakhir", "Termasuk hari ini"],
     ["last30", "30 hari terakhir", "Termasuk hari ini"],
@@ -6399,8 +6399,8 @@ function ReceiptsPage({
   canManage,
 }: any) {
   const [search, setSearch] = useState("");
-  const [filterStartDate, setFilterStartDate] = useState("");
-  const [filterEndDate, setFilterEndDate] = useState("");
+  const [filterStartDate, setFilterStartDate] = useState(jakartaDateKey);
+  const [filterEndDate, setFilterEndDate] = useState(jakartaDateKey);
   const [filterSource, setFilterSource] = useState("");
 
   const [sortCol] = useState<string>("date");
@@ -6823,8 +6823,8 @@ function ReturnsPage({
   canManage,
 }: any) {
   const [search, setSearch] = useState("");
-  const [filterStartDate, setFilterStartDate] = useState("");
-  const [filterEndDate, setFilterEndDate] = useState("");
+  const [filterStartDate, setFilterStartDate] = useState(jakartaDateKey);
+  const [filterEndDate, setFilterEndDate] = useState(jakartaDateKey);
 
   const [sortCol] = useState<string>("date");
   const [sortDesc] = useState<boolean>(true);
@@ -8894,8 +8894,8 @@ function LoansPage({
   const [loanSearch, setLoanSearch] = useState(""),
     [loanStatus, setLoanStatus] = useState("all"),
     [loanLocation, setLoanLocation] = useState("all"),
-    [loanFrom, setLoanFrom] = useState(""),
-    [loanTo, setLoanTo] = useState(""),
+    [loanFrom, setLoanFrom] = useState(jakartaDateKey),
+    [loanTo, setLoanTo] = useState(jakartaDateKey),
     [loanSort, setLoanSort] = useState("date"),
     [loanDesc, setLoanDesc] = useState(true),
     [loanPage, setLoanPage] = useState(1);
@@ -9666,8 +9666,8 @@ function RawMaterialsPage({
   const [expandedMovementDocuments, setExpandedMovementDocuments] = useState<
     Set<string>
   >(() => new Set());
-  const [historyDateFrom, setHistoryDateFrom] = useState("");
-  const [historyDateTo, setHistoryDateTo] = useState("");
+  const [historyDateFrom, setHistoryDateFrom] = useState(jakartaDateKey);
+  const [historyDateTo, setHistoryDateTo] = useState(jakartaDateKey);
   const [movementPage, setMovementPage] = useState(1);
   const [movementItemErrors, setMovementItemErrors] = useState<
     Record<string, { quantity?: string; actualQuantity?: string; unitCost?: string }>
@@ -10268,10 +10268,14 @@ function RawMaterialsPage({
             <button
               type="button"
               className="secondary raw-history-reset"
-              disabled={!historyDateFrom && !historyDateTo && !search}
+              disabled={
+                historyDateFrom === jakartaDateKey() &&
+                historyDateTo === jakartaDateKey() &&
+                !search
+              }
               onClick={() => {
-                setHistoryDateFrom("");
-                setHistoryDateTo("");
+                setHistoryDateFrom(jakartaDateKey());
+                setHistoryDateTo(jakartaDateKey());
                 setSearch("");
               }}
             >
@@ -11647,8 +11651,8 @@ function Transfers({
   canCancelPermission,
 }: any) {
   const [search, setSearch] = useState("");
-  const [filterStartDate, setFilterStartDate] = useState("");
-  const [filterEndDate, setFilterEndDate] = useState("");
+  const [filterStartDate, setFilterStartDate] = useState(jakartaDateKey);
+  const [filterEndDate, setFilterEndDate] = useState(jakartaDateKey);
 
   const [page, setPage] = useState<number>(1);
   const [selectedCodes, setSelectedCodes] = useState<string[]>([]);
@@ -12620,8 +12624,8 @@ function Opname({
   canCreate,
 }: any) {
   const [search, setSearch] = useState("");
-  const [filterStartDate, setFilterStartDate] = useState("");
-  const [filterEndDate, setFilterEndDate] = useState("");
+  const [filterStartDate, setFilterStartDate] = useState(jakartaDateKey);
+  const [filterEndDate, setFilterEndDate] = useState(jakartaDateKey);
 
   const [sortCol] = useState<string>("date");
   const [sortDesc] = useState<boolean>(true);
@@ -12935,8 +12939,8 @@ function Opname({
 }
 function HistoryPage({ data, variants, locations, role, outletId }: any) {
   const [search, setSearch] = useState("");
-  const [filterStartDate, setFilterStartDate] = useState("");
-  const [filterEndDate, setFilterEndDate] = useState("");
+  const [filterStartDate, setFilterStartDate] = useState(jakartaDateKey);
+  const [filterEndDate, setFilterEndDate] = useState(jakartaDateKey);
 
   const [sortCol] = useState<string>("date");
   const [sortDesc] = useState<boolean>(true);
@@ -13145,7 +13149,7 @@ function Reports({
   canExport,
 }: any) {
   const todayKey = jakartaDateKey();
-  const [dateFrom, setDateFrom] = useState(shiftDateKey(todayKey, -29));
+  const [dateFrom, setDateFrom] = useState(todayKey);
   const [dateTo, setDateTo] = useState(todayKey);
   const [location, setLocation] = useState("all"),
     [product, setProduct] = useState("all"),
@@ -14368,7 +14372,7 @@ function Reports({
             to={dateTo}
             setFrom={setDateFrom}
             setTo={setDateTo}
-            initialMode="last30"
+            initialMode="realtime"
             className="report-period-picker"
           />
           <div className="filters report-filters">
@@ -15409,8 +15413,8 @@ function CashbookPage({
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState("");
   const [locationFilter, setLocationFilter] = useState("");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+  const [dateFrom, setDateFrom] = useState(jakartaDateKey);
+  const [dateTo, setDateTo] = useState(jakartaDateKey);
   const [currentPage, setCurrentPage] = useState(1);
   const [pendingDelete, setPendingDelete] = useState<CashEntry | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -25616,7 +25620,7 @@ function ShipmentBatchHistory({
   const [query, setQuery] = useState(""),
     [locationFilter, setLocationFilter] = useState("all"),
     [carrierFilter, setCarrierFilter] = useState("all"),
-    [dateFilter, setDateFilter] = useState(""),
+    [dateFilter, setDateFilter] = useState(jakartaDateKey),
     [page, setPage] = useState(1);
   const ITEMS_PER_PAGE = 10;
   const completedCarriers = Array.from(
@@ -25878,7 +25882,7 @@ function GroupedShipmentList({
     [carrier, setCarrier] = useState("all"),
     [marketplace, setMarketplace] = useState("all"),
     [locationFilter, setLocationFilter] = useState("all"),
-    [dateFilter, setDateFilter] = useState(""),
+    [dateFilter, setDateFilter] = useState(jakartaDateKey),
     [page, setPage] = useState(1);
   const ITEMS_PER_PAGE = 10;
   const today = jakartaDateKey();
