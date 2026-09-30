@@ -16,6 +16,48 @@ describe('SQL state synchronization', () => {
     expect(result.data.rolePolicies.pic).toEqual(policy);
     expect(result.data.securityMigrations.operationalRoleScopeV1).toBe(true);
   });
+
+  it('associates a large sales history with the correct line items', async () => {
+    const sales = Array.from({ length: 1_000 }, (_, index) => ({
+      id: `sale-${index}`,
+      locationId: 'outlet-1',
+      total: 10_000,
+      method: 'Tunai',
+      status: 'completed',
+    }));
+    const saleItems = sales.map((sale, index) => ({
+      sale_id: sale.id,
+      variantId: `variant-${index % 10}`,
+      quantity: 1,
+      unitCost: 5_000,
+      price: 10_000,
+      discount: 0,
+      subtotal: 10_000,
+    }));
+    const connection = {
+      execute: async (query) => {
+        if (query.startsWith('SELECT id, location_id as locationId, gross_total')) return [sales, []];
+        if (query.startsWith('SELECT name, owner_name')) return [[{ name: 'Menengs' }], []];
+        if (query.startsWith('SELECT version, payload')) return [[{ version: 9, payload: {} }], []];
+        return [[], []];
+      },
+      query: async (query, params) => {
+        if (query.startsWith('SELECT sale_id')) {
+          expect(params[0]).toHaveLength(1_000);
+          return [saleItems, []];
+        }
+        return [[], []];
+      },
+    };
+
+    const result = await getStateFromSQL(connection, 'org-meneng');
+
+    expect(result.data.sales).toHaveLength(1_000);
+    expect(result.data.sales[731].items).toEqual([
+      expect.objectContaining({ variantId: 'variant-1', subtotal: 10_000 }),
+    ]);
+    expect(result.data.sales.every(sale => sale.items.length === 1)).toBe(true);
+  });
   it('stores product image URLs using the frontend imageUrl field', async () => {
     const calls = [];
     const conn = {

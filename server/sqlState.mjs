@@ -402,15 +402,17 @@ export async function getStateFromSQL(conn, orgId) {
     [orgId],
   );
 
+  const variantsByProduct = new Map();
+  for (const variant of variants) {
+    const productVariants = variantsByProduct.get(variant.product_id) || [];
+    const copy = { ...variant, active: variant.active === 1 };
+    delete copy.product_id;
+    productVariants.push(copy);
+    variantsByProduct.set(variant.product_id, productVariants);
+  }
   for (const p of products) {
     p.active = p.active === 1;
-    p.variants = variants
-      .filter((v) => v.product_id === p.id)
-      .map((v) => {
-        const copy = { ...v, active: v.active === 1 };
-        delete copy.product_id;
-        return copy;
-      });
+    p.variants = variantsByProduct.get(p.id) || [];
   }
 
   const [balances] = await conn.execute(
@@ -431,6 +433,12 @@ export async function getStateFromSQL(conn, orgId) {
     );
     saleItems = items;
   }
+  const saleItemsBySale = new Map();
+  for (const item of saleItems) {
+    const items = saleItemsBySale.get(item.sale_id) || [];
+    items.push(item);
+    saleItemsBySale.set(item.sale_id, items);
+  }
   for (const s of sales) {
     s.discountAmount = Number(s.discountAmount || 0);
     s.discountValue = Number(s.discountValue ?? s.discountAmount);
@@ -442,8 +450,7 @@ export async function getStateFromSQL(conn, orgId) {
       s.codSettlementAmount = Number(s.codSettlementAmount);
     s.payment = s.method;
     const seenItems = new Set();
-    s.items = saleItems
-      .filter((i) => i.sale_id === s.id)
+    s.items = (saleItemsBySale.get(s.id) || [])
       .filter((item) => {
         const key = [
           item.variantId,

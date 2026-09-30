@@ -1,6 +1,7 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
+import compression from "compression";
 import mysql from "mysql2/promise";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
@@ -605,6 +606,10 @@ app.use(
   }),
 );
 app.disable("x-powered-by");
+// Snapshot operasional didominasi JSON berulang (produk, transaksi, dan
+// pergerakan stok). Kompresi mengurangi waktu transfer secara signifikan,
+// terutama pada koneksi seluler yang sebelumnya mudah melewati timeout klien.
+app.use(compression());
 app.use((req, res, next) => {
   res.set({
     "X-Content-Type-Options": "nosniff",
@@ -3455,6 +3460,17 @@ app.get("/api/state/version", requireAuth, async (req, res) => {
   res.json({ version: Number(rows[0]?.version || 0) });
 });
 app.get("/api/state", requireAuth, async (req, res) => {
+  const loadStartedAt = Date.now();
+  res.once("finish", () => {
+    const durationMs = Date.now() - loadStartedAt;
+    if (durationMs >= 5_000)
+      console.warn("Slow operational state load", {
+        organizationId: req.auth.org,
+        role: req.auth.role,
+        status: res.statusCode,
+        durationMs,
+      });
+  });
   const conn = await db();
   const actor = await currentUser(conn, req.auth);
   if (!actor)
@@ -3845,11 +3861,6 @@ app.get("/api/state", requireAuth, async (req, res) => {
       [req.auth.org],
     );
     const allUsers = userRows.map(safeUser);
-
-    // Filter data based on actor scope
-    const actor = await currentUser(conn, req.auth);
-    if (!actor || !actor.active)
-      return res.status(401).json({ message: "Akun tidak aktif" });
 
     let {
       locations,

@@ -174,6 +174,10 @@ import {
 } from "./utils/rawMaterialInput";
 import { readStoredAuthSession, savedSessionKey } from "./authSession";
 import {
+  fetchOperationalState,
+  OperationalStateError,
+} from "./operationalState";
+import {
   createEmptyData,
   getBalance,
   newId,
@@ -2110,14 +2114,26 @@ function App({
     setHydrateError("");
     let active = true;
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 25_000);
-    fetch("/api/state", {
-      headers: { Authorization: `Bearer ${token}` },
-      signal: controller.signal,
-    })
-      .then((r) => {
-        if (!active) return null;
-        if (r.status === 401 || r.status === 403) {
+    fetchOperationalState({ token, signal: controller.signal })
+      .then((result) => {
+        if (!active) return;
+        serverVersion.current = result.version;
+        if (result.data) {
+          applyLocalData(normalizeData(result.data as AppData));
+        } else
+          applyLocalData(
+            user.organizationId === "org-meneng"
+              ? seedData
+              : createEmptyData(user.organizationName, user),
+          );
+        setHydrated(true);
+      })
+      .catch((error: unknown) => {
+        if (!active || controller.signal.aborted) return;
+        if (
+          error instanceof OperationalStateError &&
+          error.authenticationFailed
+        ) {
           sessionStorage.removeItem(savedSessionKey);
           localStorage.removeItem(savedSessionKey);
           sessionStorage.removeItem("veinstock_user");
@@ -2127,36 +2143,16 @@ function App({
           onUnauthenticated?.(
             "Sesi tidak dapat diverifikasi. Silakan masuk kembali.",
           );
-          return null;
+          return;
         }
-        if (!r.ok) throw new Error("network");
-        return r.json();
-      })
-      .then((result) => {
-        if (!active || !result) return;
-        serverVersion.current = result.version || 0;
-        if (result.data) {
-          applyLocalData(normalizeData(result.data));
-        } else
-          applyLocalData(
-            user.organizationId === "org-meneng"
-              ? seedData
-              : createEmptyData(user.organizationName, user),
-          );
-        setHydrated(true);
-      })
-      .catch(() => {
-        if (!active) return;
-        // Gangguan jaringan bukan berarti token tidak valid. Pertahankan sesi
-        // dan tampilkan aksi retry agar pengguna tidak dilempar ke form kosong.
         setHydrateError(
-          "Server tidak dapat dihubungi. Data operasional belum dapat dimuat.",
+          error instanceof Error
+            ? error.message
+            : "Server tidak dapat dihubungi. Data operasional belum dapat dimuat.",
         );
-      })
-      .finally(() => window.clearTimeout(timeout));
+      });
     return () => {
       active = false;
-      window.clearTimeout(timeout);
       controller.abort();
     };
     // Identitas profil tidak boleh memicu hydrate ulang; data tenant hanya berubah saat token/organisasi berubah atau pengguna meminta retry.
