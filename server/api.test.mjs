@@ -1434,8 +1434,25 @@ describe('multi-tenant API', () => {
 
     const staff = await post('/api/login', { email: employeeEmail, password: 'Password123!' });
     expect(staff.body.user.outletId).toBe(secondWarehouse.id);
-    expect((await post('/api/commands/attendance', { kind: 'in', latitude: -6.2, longitude: 106.8, capturedAt: '2026-07-31T01:10:00.000Z' }, staff.body.token)).status).toBe(201);
-    expect((await post('/api/commands/attendance', { kind: 'out', latitude: -6.2, longitude: 106.8, capturedAt: '2026-07-31T09:10:00.000Z' }, staff.body.token)).status).toBe(201);
+    const checkedIn = await post('/api/commands/attendance', { kind: 'in', latitude: -6.2, longitude: 106.8, capturedAt: '2026-07-31T01:10:00.000Z' }, staff.body.token);
+    expect(checkedIn.status).toBe(201);
+    expect(checkedIn.body.attendance).toEqual(expect.objectContaining({
+      employeeId: employee.id,
+      date: '2026-07-31',
+      checkInAt: '2026-07-31T01:10:00.000Z',
+    }));
+    const duplicateCheckIns = await Promise.all([
+      post('/api/commands/attendance', { kind: 'in', latitude: -6.2, longitude: 106.8, capturedAt: '2026-07-31T01:11:00.000Z' }, staff.body.token),
+      post('/api/commands/attendance', { kind: 'in', latitude: -6.2, longitude: 106.8, capturedAt: '2026-07-31T01:12:00.000Z' }, staff.body.token),
+    ]);
+    expect(duplicateCheckIns.map((response) => response.status)).toEqual([400, 400]);
+    const checkedOut = await post('/api/commands/attendance', { kind: 'out', latitude: -6.2, longitude: 106.8, capturedAt: '2026-07-31T09:10:00.000Z' }, staff.body.token);
+    expect(checkedOut.status).toBe(201);
+    expect(checkedOut.body.attendance).toEqual(expect.objectContaining({
+      employeeId: employee.id,
+      checkInAt: '2026-07-31T01:10:00.000Z',
+      checkOutAt: '2026-07-31T09:10:00.000Z',
+    }));
     expect((await post('/api/commands/live-sessions', { session: { name: 'Live tanpa jadwal pasti', platform: 'TikTok', locationId: secondWarehouse.id, hostEmployeeIds: [employee.id], note: 'Uji sesi aktual' } }, owner.body.token)).status).toBe(201);
     let liveState = await request('/api/state', { headers: { authorization: `Bearer ${staff.body.token}` } });
     const liveSession = liveState.body.data.liveSessions.find(item => item.name === 'Live tanpa jadwal pasti');

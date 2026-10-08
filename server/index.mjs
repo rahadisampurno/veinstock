@@ -856,6 +856,23 @@ async function db() {
       payload JSON NOT NULL,
       updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     )`);
+    await pool.execute(`CREATE TABLE IF NOT EXISTS attendance_records (
+      id VARCHAR(80) PRIMARY KEY,
+      organization_id VARCHAR(40) NOT NULL,
+      employee_id VARCHAR(80) NOT NULL,
+      location_id VARCHAR(40) NOT NULL,
+      attendance_date DATE NOT NULL,
+      check_in_at VARCHAR(100) NULL,
+      check_out_at VARCHAR(100) NULL,
+      check_in_gps VARCHAR(50) NULL,
+      check_out_gps VARCHAR(50) NULL,
+      late_minutes INT NOT NULL DEFAULT 0,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_attendance_employee_day (organization_id, employee_id, attendance_date),
+      INDEX idx_attendance_org_date (organization_id, attendance_date),
+      INDEX idx_attendance_org_employee (organization_id, employee_id)
+    )`);
     await pool.execute(`CREATE TABLE IF NOT EXISTS media_upload_intents (
       id VARCHAR(40) PRIMARY KEY,
       organization_id VARCHAR(40) NOT NULL,
@@ -2783,7 +2800,10 @@ async function executeCommand(req, res, mutate) {
       loaded.data,
     );
     if (connection) await connection.commit();
-    res.status(201).json({ version: nextVersion });
+    res.status(201).json({
+      version: nextVersion,
+      ...(res.locals.commandResult || {}),
+    });
     return { ok: true, version: nextVersion };
   } catch (error) {
     if (connection) await connection.rollback();
@@ -5731,90 +5751,257 @@ app.post("/api/commands/live-sessions/:id/end", requireAuth, async (req, res) =>
     });
   });
 });
-app.post("/api/commands/attendance", requireAuth, async (req, res) => {
-  await executeCommand(req, res, async (state, actor) => {
-    if (!commandAuth(actor, "attendance.record").allowed)
-      throw forbiddenCommand(
-        "Akun Anda tidak memiliki izin mencatat kehadiran.",
-      );
-    const { kind, latitude, longitude, capturedAt } = req.body || {};
-    if (
-      !["in", "out"].includes(kind) ||
-      !Number.isFinite(Number(latitude)) ||
-      !Number.isFinite(Number(longitude))
+function attendanceContext(state, actor, input) {
+  if (!commandAuth(actor, "attendance.record").allowed)
+    throw forbiddenCommand(
+      "Akun Anda tidak memiliki izin mencatat kehadiran.",
+    );
+  const { kind, latitude, longitude, capturedAt } = input || {};
+  const numericLatitude = Number(latitude);
+  const numericLongitude = Number(longitude);
+  if (
+    !["in", "out"].includes(kind) ||
+    !Number.isFinite(numericLatitude) ||
+    !Number.isFinite(numericLongitude) ||
+    numericLatitude < -90 ||
+    numericLatitude > 90 ||
+    numericLongitude < -180 ||
+    numericLongitude > 180
+  )
+    throw invalidCommand("Data absensi atau GPS tidak valid.");
+  const at = new Date(capturedAt || Date.now());
+  if (Number.isNaN(at.getTime()))
+    throw invalidCommand("Waktu absensi tidak valid.");
+  const employee = state.employees.find(
+    (item) => item.userId === actor.id && item.active,
+  );
+  if (
+    !employee?.locationId ||
+    !state.locations.some(
+      (location) =>
+        location.id === employee.locationId && location.active !== false,
     )
-      throw invalidCommand("Data absensi atau GPS tidak valid.");
-    const employee = state.employees.find(
-      (item) => item.userId === actor.id && item.active,
-    );
-    if (
-      !employee?.locationId ||
-      !state.locations.some(
-        (location) =>
-          location.id === employee.locationId && location.active !== false,
-      )
-    )
-      throw forbiddenCommand("Akun belum ditugaskan ke lokasi aktif.");
-    const date = new Date(capturedAt || Date.now()).toLocaleDateString(
-      "en-CA",
-      { timeZone: "Asia/Jakarta" },
-    );
-    const setting = state.attendanceSettings.find(
-      (item) => item.locationId === employee.locationId,
-    ) || { checkInStart: "08:00", lateToleranceMinutes: 10 };
-    const at = new Date(capturedAt || Date.now());
-    const point = `${Number(latitude).toFixed(6)}, ${Number(longitude).toFixed(6)}`;
-    const index = state.attendances.findIndex(
-      (item) => item.employeeId === employee.id && item.date === date,
-    );
-    const record =
-      index >= 0
-        ? state.attendances[index]
-        : {
-            id: commandId("att"),
-            employeeId: employee.id,
-            locationId: employee.locationId,
-            date,
-          };
-    if (kind === "in") {
-      if (record.checkInAt)
-        throw invalidCommand("Check-in hari ini sudah tercatat.");
-      const jakartaTime = at.toLocaleTimeString("en-GB", {
-        timeZone: "Asia/Jakarta",
-        hour: "2-digit",
-        minute: "2-digit",
-        hour12: false,
-      });
-      const minutes =
-        Number(jakartaTime.slice(0, 2)) * 60 + Number(jakartaTime.slice(3, 5));
-      const start = String(setting.checkInStart || "08:00")
-        .split(":")
-        .map(Number);
-      const late = Math.max(
-        0,
-        minutes -
-          ((start[0] || 0) * 60 +
-            (start[1] || 0) +
-            Number(setting.lateToleranceMinutes || 0)),
-      );
-      Object.assign(record, {
-        checkInAt: at.toISOString(),
-        checkInGps: point,
-        lateMinutes: late,
-      });
-    } else {
-      if (!record.checkInAt)
-        throw invalidCommand("Lakukan check-in sebelum check-out.");
-      if (record.checkOutAt)
-        throw invalidCommand("Check-out hari ini sudah tercatat.");
-      Object.assign(record, {
-        checkOutAt: at.toISOString(),
-        checkOutGps: point,
-      });
-    }
-    if (index >= 0) state.attendances[index] = record;
-    else state.attendances.unshift(record);
+  )
+    throw forbiddenCommand("Akun belum ditugaskan ke lokasi aktif.");
+  const date = at.toLocaleDateString("en-CA", {
+    timeZone: "Asia/Jakarta",
   });
+  const setting = state.attendanceSettings.find(
+    (item) => item.locationId === employee.locationId,
+  ) || { checkInStart: "08:00", lateToleranceMinutes: 10 };
+  const point = `${numericLatitude.toFixed(6)}, ${numericLongitude.toFixed(6)}`;
+  const jakartaTime = at.toLocaleTimeString("en-GB", {
+    timeZone: "Asia/Jakarta",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const minutes =
+    Number(jakartaTime.slice(0, 2)) * 60 + Number(jakartaTime.slice(3, 5));
+  const start = String(setting.checkInStart || "08:00")
+    .split(":")
+    .map(Number);
+  const lateMinutes = Math.max(
+    0,
+    minutes -
+      ((start[0] || 0) * 60 +
+        (start[1] || 0) +
+        Number(setting.lateToleranceMinutes || 0)),
+  );
+  return { kind, employee, date, at, point, lateMinutes };
+}
+
+function recordAttendanceInState(state, actor, input) {
+  const context = attendanceContext(state, actor, input);
+  const { kind, employee, date, at, point, lateMinutes } = context;
+  const index = state.attendances.findIndex(
+    (item) => item.employeeId === employee.id && item.date === date,
+  );
+  const record =
+    index >= 0
+      ? state.attendances[index]
+      : {
+          id: commandId("att"),
+          employeeId: employee.id,
+          locationId: employee.locationId,
+          date,
+        };
+  if (kind === "in") {
+    if (record.checkInAt)
+      throw invalidCommand("Check-in hari ini sudah tercatat.");
+    Object.assign(record, {
+      checkInAt: at.toISOString(),
+      checkInGps: point,
+      lateMinutes,
+    });
+  } else {
+    if (!record.checkInAt)
+      throw invalidCommand("Lakukan check-in sebelum check-out.");
+    if (record.checkOutAt)
+      throw invalidCommand("Check-out hari ini sudah tercatat.");
+    Object.assign(record, {
+      checkOutAt: at.toISOString(),
+      checkOutGps: point,
+    });
+  }
+  if (index >= 0) state.attendances[index] = record;
+  else state.attendances.unshift(record);
+  return record;
+}
+
+const attendanceRow = (row) => ({
+  id: row.id,
+  employeeId: row.employeeId,
+  locationId: row.locationId,
+  date: row.date,
+  checkInAt: row.checkInAt || undefined,
+  checkOutAt: row.checkOutAt || undefined,
+  checkInGps: row.checkInGps || undefined,
+  checkOutGps: row.checkOutGps || undefined,
+  lateMinutes: Number(row.lateMinutes || 0),
+});
+
+app.post("/api/commands/attendance", requireAuth, async (req, res) => {
+  const startedAt = Date.now();
+  res.once("finish", () => {
+    const durationMs = Date.now() - startedAt;
+    if (durationMs >= 2_000)
+      console.warn("Slow attendance command", {
+        organizationId: req.auth.org,
+        userId: req.auth.sub,
+        status: res.statusCode,
+        durationMs,
+      });
+  });
+  const conn = await db();
+  // Demo/local mode keeps using the generic command store. Production uses a
+  // narrow row-level transaction so simultaneous check-ins do not queue behind
+  // an organization-wide snapshot rewrite.
+  if (!conn) {
+    return executeCommand(req, res, async (state, actor) => {
+      const attendance = recordAttendanceInState(state, actor, req.body);
+      res.locals.commandResult = { attendance };
+    });
+  }
+
+  const actor = await currentUser(conn, req.auth);
+  if (!actor)
+    return res.status(401).json({ message: "Akun tidak aktif" });
+
+  let connection;
+  try {
+    const [stateRows] = await conn.execute(
+      "SELECT payload FROM app_state WHERE id = ? LIMIT 1",
+      [req.auth.org],
+    );
+    let state = stateRows[0]?.payload;
+    if (typeof state === "string") state = JSON.parse(state);
+    if (!state)
+      throw invalidCommand(
+        "Data usaha belum siap. Muat ulang halaman lalu coba lagi.",
+      );
+    state.employees ||= [];
+    state.locations ||= [];
+    state.attendanceSettings ||= [];
+    state.attendances ||= [];
+    actor.rolePermissions = state.rolePolicies?.[actor.role]?.permissions;
+    attachEmployeeLocation(state, actor);
+    const context = attendanceContext(state, actor, req.body);
+    const legacyRecord = state.attendances.find(
+      (item) =>
+        item.employeeId === context.employee.id && item.date === context.date,
+    );
+
+    connection = await conn.getConnection();
+    await connection.beginTransaction();
+    if (legacyRecord) {
+      await connection.execute(
+        "INSERT IGNORE INTO attendance_records (id, organization_id, employee_id, location_id, attendance_date, check_in_at, check_out_at, check_in_gps, check_out_gps, late_minutes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+          legacyRecord.id,
+          req.auth.org,
+          legacyRecord.employeeId,
+          legacyRecord.locationId,
+          legacyRecord.date,
+          legacyRecord.checkInAt || null,
+          legacyRecord.checkOutAt || null,
+          legacyRecord.checkInGps || null,
+          legacyRecord.checkOutGps || null,
+          Number(legacyRecord.lateMinutes || 0),
+        ],
+      );
+    }
+
+    if (context.kind === "in") {
+      if (legacyRecord?.checkInAt)
+        throw invalidCommand("Check-in hari ini sudah tercatat.");
+      await connection.execute(
+        "INSERT INTO attendance_records (id, organization_id, employee_id, location_id, attendance_date, check_in_at, check_in_gps, late_minutes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+          commandId("att"),
+          req.auth.org,
+          context.employee.id,
+          context.employee.locationId,
+          context.date,
+          context.at.toISOString(),
+          context.point,
+          context.lateMinutes,
+        ],
+      );
+    } else {
+      const [updateResult] = await connection.execute(
+        "UPDATE attendance_records SET check_out_at = ?, check_out_gps = ? WHERE organization_id = ? AND employee_id = ? AND attendance_date = ? AND check_in_at IS NOT NULL AND check_out_at IS NULL",
+        [
+          context.at.toISOString(),
+          context.point,
+          req.auth.org,
+          context.employee.id,
+          context.date,
+        ],
+      );
+      if (!updateResult.affectedRows) {
+        const [existingRows] = await connection.execute(
+          "SELECT check_in_at as checkInAt, check_out_at as checkOutAt FROM attendance_records WHERE organization_id = ? AND employee_id = ? AND attendance_date = ? LIMIT 1",
+          [req.auth.org, context.employee.id, context.date],
+        );
+        if (!existingRows[0]?.checkInAt)
+          throw invalidCommand("Lakukan check-in sebelum check-out.");
+        throw invalidCommand("Check-out hari ini sudah tercatat.");
+      }
+    }
+
+    const [savedRows] = await connection.execute(
+      "SELECT id, employee_id as employeeId, location_id as locationId, DATE_FORMAT(attendance_date, '%Y-%m-%d') as date, check_in_at as checkInAt, check_out_at as checkOutAt, check_in_gps as checkInGps, check_out_gps as checkOutGps, late_minutes as lateMinutes FROM attendance_records WHERE organization_id = ? AND employee_id = ? AND attendance_date = ? LIMIT 1",
+      [req.auth.org, context.employee.id, context.date],
+    );
+    // Keep the organization-wide lock to one atomic update plus one trivial
+    // connection-local read. Attendance validation and row writes above remain
+    // concurrent across employees.
+    await connection.execute(
+      "UPDATE app_state SET version = LAST_INSERT_ID(version + 1) WHERE id = ?",
+      [req.auth.org],
+    );
+    const [versionRows] = await connection.execute(
+      "SELECT LAST_INSERT_ID() as version",
+    );
+    await connection.commit();
+    return res.status(201).json({
+      version: Number(versionRows[0]?.version || 0),
+      attendance: attendanceRow(savedRows[0]),
+    });
+  } catch (error) {
+    if (connection) await connection.rollback();
+    if (error?.code === "ER_DUP_ENTRY")
+      return commandFailure(
+        res,
+        invalidCommand("Check-in hari ini sudah tercatat."),
+      );
+    if (!error?.status || error.status >= 500)
+      console.error("Attendance command failed:", error);
+    return commandFailure(res, error);
+  } finally {
+    connection?.release();
+  }
 });
 app.patch(
   "/api/commands/attendance-settings/:locationId",

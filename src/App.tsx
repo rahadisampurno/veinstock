@@ -2297,6 +2297,7 @@ function App({
     path: string,
     payload: object,
     method: "POST" | "PATCH" = "POST",
+    refreshState = true,
   ) => {
     if (!token) throw new Error("Sesi tidak ditemukan. Silakan masuk kembali.");
     hasPendingLocalChanges.current = true;
@@ -2320,7 +2321,7 @@ function App({
       if (!response.ok)
         throw new Error(commandErrorMessage(response.status, result.message));
       serverVersion.current = Number(result.version || serverVersion.current);
-      return refreshCommandState();
+      return refreshState ? refreshCommandState() : result;
     } finally {
       hasPendingLocalChanges.current = false;
     }
@@ -3390,6 +3391,22 @@ function App({
               user={user}
               runCommand={runCommand}
               notify={notify}
+              onAttendanceSaved={(attendance: any) => {
+                const latest = dataRef.current;
+                applyLocalData({
+                  ...latest,
+                  attendances: [
+                    attendance,
+                    ...(latest.attendances || []).filter(
+                      (item: any) =>
+                        !(
+                          item.employeeId === attendance.employeeId &&
+                          item.date === attendance.date
+                        ),
+                    ),
+                  ],
+                });
+              }}
               canRecord={can("attendance.record")}
               canManage={can("attendance.manage")}
             />
@@ -7991,6 +8008,7 @@ function AttendancePage({
   user,
   runCommand,
   notify,
+  onAttendanceSaved,
   canRecord,
   canManage,
 }: any) {
@@ -7999,6 +8017,9 @@ function AttendancePage({
     "regular",
   );
   const [historyPage, setHistoryPage] = useState(1);
+  const [attendanceSubmitting, setAttendanceSubmitting] = useState<
+    "in" | "out" | null
+  >(null);
   const ATTENDANCE_ITEMS_PER_PAGE = 10;
   if (attendanceMode === "live")
     return (
@@ -8058,35 +8079,50 @@ function AttendancePage({
     lateToleranceMinutes: 10,
   };
   const capture = (kind: "in" | "out") => {
+    if (attendanceSubmitting) return;
     if (!canRecord)
       return notify("Peran Anda tidak memiliki izin mencatat kehadiran.");
     if (!employee || !assigned)
       return notify(
         "Lokasi kerja belum ditetapkan. Hubungi owner sebelum melakukan absensi.",
       );
-    navigator.geolocation?.getCurrentPosition(
+    if (!navigator.geolocation)
+      return notify(
+        "GPS tidak tersedia. Aktifkan izin lokasi untuk melakukan absensi.",
+      );
+    setAttendanceSubmitting(kind);
+    navigator.geolocation.getCurrentPosition(
       (position) => {
-        void runCommand("/api/commands/attendance", {
-          kind,
-          latitude: position.coords.latitude,
-          longitude: position.coords.longitude,
-          capturedAt: new Date().toISOString(),
-        })
-          .then(() =>
+        void runCommand(
+          "/api/commands/attendance",
+          {
+            kind,
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude,
+            capturedAt: new Date().toISOString(),
+          },
+          "POST",
+          false,
+        )
+          .then((result: any) => {
+            if (result.attendance) onAttendanceSaved(result.attendance);
             notify(
               kind === "in"
                 ? "Check-in dan lokasi GPS berhasil dicatat."
                 : "Check-out dan lokasi GPS berhasil dicatat.",
-            ),
-          )
+            );
+          })
           .catch((error: any) =>
             notify(error.message || "Absensi gagal disimpan ke server."),
-          );
+          )
+          .finally(() => setAttendanceSubmitting(null));
       },
-      () =>
+      () => {
+        setAttendanceSubmitting(null);
         notify(
           "GPS tidak tersedia. Aktifkan izin lokasi untuk melakukan absensi.",
-        ),
+        );
+      },
       { enableHighAccuracy: true, timeout: 10000 },
     );
   };
@@ -8153,21 +8189,34 @@ function AttendancePage({
         <div className="attendance-actions">
           <button
             className="primary"
-            disabled={!assigned || !!attendance?.checkInAt}
+            disabled={
+              !assigned || !!attendance?.checkInAt || !!attendanceSubmitting
+            }
             onClick={() => capture("in")}
           >
             <MapPin size={17} />{" "}
-            {attendance?.checkInAt ? "Sudah check-in" : "Check-in"}
+            {attendanceSubmitting === "in"
+              ? "Menyimpan..."
+              : attendance?.checkInAt
+                ? "Sudah check-in"
+                : "Check-in"}
           </button>
           <button
             className="secondary"
             disabled={
-              !assigned || !attendance?.checkInAt || !!attendance?.checkOutAt
+              !assigned ||
+              !attendance?.checkInAt ||
+              !!attendance?.checkOutAt ||
+              !!attendanceSubmitting
             }
             onClick={() => capture("out")}
           >
             <Clock3 size={17} />{" "}
-            {attendance?.checkOutAt ? "Sudah check-out" : "Check-out"}
+            {attendanceSubmitting === "out"
+              ? "Menyimpan..."
+              : attendance?.checkOutAt
+                ? "Sudah check-out"
+                : "Check-out"}
           </button>
         </div>
       </section>

@@ -514,6 +514,10 @@ export async function getStateFromSQL(conn, orgId) {
   );
   const rawState = states[0]?.payload || {};
   const version = Number(states[0]?.version || 0);
+  const [attendanceRows] = await conn.execute(
+    "SELECT id, employee_id as employeeId, location_id as locationId, DATE_FORMAT(attendance_date, '%Y-%m-%d') as date, check_in_at as checkInAt, check_out_at as checkOutAt, check_in_gps as checkInGps, check_out_gps as checkOutGps, late_minutes as lateMinutes FROM attendance_records WHERE organization_id = ? ORDER BY attendance_date DESC",
+    [orgId],
+  );
   const [marketplaceSkuMappings] = await conn.execute(
     "SELECT platform, external_sku as externalSku, variant_id as variantId, created_at as createdAt, updated_at as updatedAt FROM marketplace_sku_mappings WHERE organization_id = ?",
     [orgId],
@@ -579,6 +583,22 @@ export async function getStateFromSQL(conn, orgId) {
     return Array.from(map.values());
   };
 
+  const mergeAttendances = (sqlArr, rawArr) => {
+    const map = new Map();
+    (rawArr || []).forEach((item) =>
+      map.set(`${item.employeeId}\0${item.date}`, item),
+    );
+    (sqlArr || []).forEach((item) =>
+      map.set(`${item.employeeId}\0${item.date}`, {
+        ...item,
+        lateMinutes: Number(item.lateMinutes || 0),
+      }),
+    );
+    return Array.from(map.values()).sort((a, b) =>
+      String(b.date).localeCompare(String(a.date)),
+    );
+  };
+
   const sqlLocations = locations.map((l) => ({
     ...l,
     active: l.active === 1,
@@ -606,7 +626,7 @@ export async function getStateFromSQL(conn, orgId) {
       suppliers: rawState.suppliers || [],
       employees: rawState.employees || [],
       attendanceSettings: rawState.attendanceSettings || [],
-      attendances: rawState.attendances || [],
+      attendances: mergeAttendances(attendanceRows, rawState.attendances),
       liveSessions: rawState.liveSessions || [],
       loans: rawState.loans || [],
       payrolls: rawState.payrolls || [],

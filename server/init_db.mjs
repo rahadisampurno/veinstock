@@ -44,6 +44,23 @@ async function init() {
       payload JSON NOT NULL,
       updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     )`,
+    `CREATE TABLE IF NOT EXISTS attendance_records (
+      id VARCHAR(80) PRIMARY KEY,
+      organization_id VARCHAR(40) NOT NULL,
+      employee_id VARCHAR(80) NOT NULL,
+      location_id VARCHAR(40) NOT NULL,
+      attendance_date DATE NOT NULL,
+      check_in_at VARCHAR(100) NULL,
+      check_out_at VARCHAR(100) NULL,
+      check_in_gps VARCHAR(50) NULL,
+      check_out_gps VARCHAR(50) NULL,
+      late_minutes INT NOT NULL DEFAULT 0,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_attendance_employee_day (organization_id, employee_id, attendance_date),
+      INDEX idx_attendance_org_date (organization_id, attendance_date),
+      INDEX idx_attendance_org_employee (organization_id, employee_id)
+    )`,
     `CREATE TABLE IF NOT EXISTS organizations (
       id VARCHAR(40) PRIMARY KEY,
       name VARCHAR(150) NOT NULL,
