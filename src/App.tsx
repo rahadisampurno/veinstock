@@ -2293,6 +2293,24 @@ function App({
     setDataState(dataRef.current);
     return current.data;
   };
+  const applyCommandShipment = (shipment: any) => {
+    let next = dataRef.current;
+    applyLocalData((current) => {
+      next = {
+        ...current,
+        shipments: [
+          shipment,
+          ...(current.shipments || []).filter(
+            (item: any) =>
+              item.id !== shipment.id &&
+              item.trackingNumber !== shipment.trackingNumber,
+          ),
+        ],
+      };
+      return next;
+    });
+    return next;
+  };
   const runCommand = async (
     path: string,
     payload: object,
@@ -2351,7 +2369,11 @@ function App({
         : [],
     };
   };
-  const runFormCommand = async (path: string, body: FormData) => {
+  const runFormCommand = async (
+    path: string,
+    body: FormData,
+    refreshState = true,
+  ) => {
     if (!token) throw new Error("Sesi tidak ditemukan. Silakan masuk kembali.");
     hasPendingLocalChanges.current = true;
     try {
@@ -2371,7 +2393,7 @@ function App({
       if (!response.ok)
         throw new Error(commandErrorMessage(response.status, result.message));
       serverVersion.current = Number(result.version || serverVersion.current);
-      return refreshCommandState();
+      return refreshState ? refreshCommandState() : result;
     } finally {
       hasPendingLocalChanges.current = false;
     }
@@ -3174,6 +3196,7 @@ function App({
               user={user}
               runCommand={runCommand}
               runFormCommand={runFormCommand}
+              onShipmentSaved={applyCommandShipment}
               getPackingEvidenceUrl={getPackingEvidenceUrl}
               uploadImage={uploadImage}
               notify={notify}
@@ -4196,11 +4219,17 @@ function App({
               body.append("marketplace", onlineDetails.sourcePlatform);
               body.append("image", packingProofFile);
               try {
+                const uploadResult = await runFormCommand(
+                  "/api/commands/shipping/ready-with-evidence",
+                  body,
+                  false,
+                );
+                if (!uploadResult.shipment)
+                  throw new Error(
+                    "Server tidak mengembalikan status paket yang tersimpan.",
+                  );
                 updated = normalizeData(
-                  await runFormCommand(
-                    "/api/commands/shipping/ready-with-evidence",
-                    body,
-                  ),
+                  applyCommandShipment(uploadResult.shipment),
                 );
                 sale = updated.sales.find((item) => item.id === sale.id) || sale;
                 packingEvidenceSaved = true;
@@ -24604,6 +24633,7 @@ function ShippingPage({
   user,
   runCommand,
   runFormCommand,
+  onShipmentSaved,
   getPackingEvidenceUrl,
   uploadImage,
   notify,
@@ -24794,23 +24824,20 @@ function ShippingPage({
       body.append("locationId", locationId);
       body.append("marketplace", marketplace);
       body.append("image", photo);
-      await runFormCommand(
+      const result = await runFormCommand(
         "/api/commands/shipping/ready-with-evidence",
         body,
+        false,
       );
+      if (!result.shipment)
+        throw new Error("Server tidak mengembalikan status paket yang tersimpan.");
+      onShipmentSaved(result.shipment);
       notify(`${trackingNumber} tersimpan dengan bukti packing dan siap diangkut.`);
       setPackingCandidate("");
       setPackingProofFile(null);
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Resi tidak dapat dicatat.";
-      // Command dapat sudah sukses di server ketika refresh state sesudahnya
-      // terputus. Jangan biarkan operator mengirim resi yang sama dua kali;
-      // polling berikutnya akan mengambil state kanonis dari server.
-      if (/^Transaksi tersimpan,/i.test(message)) {
-        setPackingCandidate("");
-        setPackingProofFile(null);
-      }
       notify(
         message,
       );

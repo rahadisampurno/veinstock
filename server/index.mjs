@@ -22,6 +22,9 @@ import {
   resolvePackingEvidence,
 } from "./shippingEvidence.mjs";
 
+sharp.cache({ memory: 32, files: 0, items: 64 });
+sharp.concurrency(Math.max(1, Math.min(2, sharp.concurrency())));
+
 // EAN-13 adalah format yang dapat dibaca oleh scanner barcode retail umum.
 // Prefix 20 dipakai untuk kode internal usaha; 10 digit berikutnya diturunkan
 // dari ID organisasi + varian agar kode tetap stabil saat data dimuat ulang.
@@ -571,6 +574,7 @@ const defaultRolePolicyState = () =>
 
 const app = express();
 const port = Number(process.env.PORT || 8787);
+const releaseId = "packing-evidence-hotfix-2026-10-09";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const isProduction = process.env.NODE_ENV === "production";
 const databaseRequired =
@@ -3450,7 +3454,11 @@ app.get("/api/health", async (_req, res) => {
   try {
     const conn = await db();
     if (conn) await conn.query("SELECT 1");
-    res.json({ ok: true, database: conn ? "mysql" : "demo" });
+    res.json({
+      ok: true,
+      database: conn ? "mysql" : "demo",
+      release: releaseId,
+    });
   } catch (error) {
     console.error("Database health check failed", {
       code: error?.code,
@@ -4144,6 +4152,7 @@ const recordReadyShipments = (
       );
   }
   const packedAt = new Date().toISOString();
+  const recorded = [];
   trackingNumbers.forEach((trackingNumber) => {
     const detectedCarrier = detectShippingCarrier(trackingNumber);
     // Packing tidak boleh gagal hanya karena pola resi ekspedisi berubah.
@@ -4192,7 +4201,9 @@ const recordReadyShipments = (
     }
     if (packingEvidence) shipment.packingEvidence = packingEvidence;
     if (!existing) state.shipments.unshift(shipment);
+    recorded.push(shipment);
   });
+  return recorded;
 };
 
 const recordHandoverShipments = (
@@ -4269,9 +4280,26 @@ app.post(
   requireAuth,
   imageUpload.single("image"),
   async (req, res) => {
+    const startedAt = Date.now();
+    const timings = {};
+    let stage = "validate_request";
     let upload;
     let evidenceId;
     let conn;
+    res.once("finish", () => {
+      const totalMs = Date.now() - startedAt;
+      const details = {
+        organizationId: req.auth.org,
+        userId: req.auth.sub,
+        status: res.statusCode,
+        totalMs,
+        ...timings,
+        originalBytes: Number(req.file?.size || 0),
+      };
+      if (totalMs >= 5_000 || res.statusCode >= 400)
+        console.warn("Packing evidence command completed", details);
+      else console.info("Packing evidence command completed", details);
+    });
     try {
       if (req.invalidImageType)
         throw invalidCommand(
@@ -4289,34 +4317,14 @@ app.post(
       const actor = await currentUser(conn, req.auth);
       if (!actor)
         throw Object.assign(new Error("Akun tidak aktif"), { status: 401 });
-      const loaded = await loadStateForCommand(conn, req.auth.org);
-      if (!loaded.data)
-        throw invalidCommand(
-          "Data usaha belum siap. Muat ulang halaman lalu coba lagi.",
-        );
-      actor.rolePermissions =
-        loaded.data.rolePolicies?.[actor.role]?.permissions;
-      attachEmployeeLocation(loaded.data, actor);
-      ensureActiveShippingLocation(loaded.data, actor, locationId);
-      const existing = (loaded.data.shipments || []).find(
-        (item) => item.trackingNumber === trackingNumber,
+      await attachRolePermissions(conn, req.auth.org, actor);
+      const shippingAuthorization = commandAuth(
+        actor,
+        "shipping.manage",
+        locationId,
       );
-      if (
-        existing &&
-        existing.status !== "cancelled" &&
-        existing.status !== "pending_packing"
-      )
-        throw invalidCommand(
-          existing.status === "handed_over"
-            ? `Resi ${trackingNumber} sudah diserahkan ke ekspedisi.`
-          : `Resi ${trackingNumber} sudah tercatat pada proses pengiriman.`,
-        );
-      if (existing?.status === "pending_packing" && existing.locationId !== locationId)
-        throw invalidCommand(
-          `Resi ${trackingNumber} berasal dari lokasi packing yang berbeda.`,
-        );
-
-      let packingEvidence;
+      if (!shippingAuthorization.allowed)
+        throw forbiddenCommand(shippingAuthorization.reason);
       if (req.file) {
         const evidenceAuthorization = commandAuth(
           actor,
@@ -4325,6 +4333,27 @@ app.post(
         );
         if (!evidenceAuthorization.allowed)
           throw forbiddenCommand(evidenceAuthorization.reason);
+      }
+      if (conn) {
+        const [locationRows] = await conn.execute(
+          "SELECT id FROM locations WHERE id=? AND organization_id=? AND active=TRUE LIMIT 1",
+          [locationId, req.auth.org],
+        );
+        if (!locationRows.length)
+          throw invalidCommand("Lokasi packing tidak aktif atau tidak ditemukan.");
+      } else {
+        const demoState = ensureDemoState(req.auth.org).data;
+        if (
+          !demoState?.locations?.some(
+            (location) =>
+              location.id === locationId && location.active !== false,
+          )
+        )
+          throw invalidCommand("Lokasi packing tidak aktif atau tidak ditemukan.");
+      }
+
+      let packingEvidence;
+      if (req.file) {
         if (!process.env.CLOUDINARY_URL)
           throw Object.assign(
             new Error("Penyimpanan bukti foto belum dikonfigurasi."),
@@ -4342,12 +4371,15 @@ app.post(
           organizationId: req.auth.org,
           publicId,
         });
+        stage = "upload_evidence";
+        const uploadStartedAt = Date.now();
         upload = await uploadPackingEvidence({
           file: req.file,
           organizationId: req.auth.org,
           evidenceId,
           capturedAt,
         });
+        timings.uploadMs = Date.now() - uploadStartedAt;
         await updateMediaUploadIntent(
           conn,
           evidenceId,
@@ -4362,18 +4394,24 @@ app.post(
         });
       }
 
+      stage = "commit_shipment";
+      const commitStartedAt = Date.now();
       const commandResult = await executeCommand(
         req,
         res,
         async (state, commandActor) => {
-          recordReadyShipments(state, commandActor, {
-          trackingNumbers,
-          locationId,
-          marketplace,
-          packingEvidence,
+          const [shipment] = recordReadyShipments(state, commandActor, {
+            trackingNumbers,
+            locationId,
+            marketplace,
+            packingEvidence,
           });
+          res.locals.commandResult = {
+            shipment: publicShipmentEvidence(shipment),
+          };
         },
       );
+      timings.commitMs = Date.now() - commitStartedAt;
       if (commandResult.ok) {
         if (evidenceId)
           updateMediaUploadIntent(conn, evidenceId, "committed").catch(
@@ -4391,6 +4429,15 @@ app.post(
         }
       }
     } catch (error) {
+      console.error("Packing evidence command failed", {
+        organizationId: req.auth.org,
+        userId: req.auth.sub,
+        stage,
+        durationMs: Date.now() - startedAt,
+        code: error?.code,
+        status: error?.status,
+        message: error?.message,
+      });
       if (upload) {
         try {
           await deleteCloudinaryPackingEvidence(upload);

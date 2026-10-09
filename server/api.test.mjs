@@ -577,6 +577,7 @@ describe('multi-tenant API', () => {
   it('allows same-origin camera and geolocation features required by stock evidence and attendance', async () => {
     const response = await fetch(`${base}/api/health`);
     expect(response.headers.get('permissions-policy')).toBe('camera=(self), microphone=(), geolocation=(self)');
+    expect((await response.json()).release).toBe('packing-evidence-hotfix-2026-10-09');
   });
 
   it('returns a readable JSON error when login rate limiting is reached', async () => {
@@ -738,6 +739,9 @@ describe('multi-tenant API', () => {
       body: form,
     });
     expect(recorded.status).toBe(201);
+    expect(recorded.body.shipment).toMatchObject({
+      trackingNumber: 'SPXID1234567890', status: 'ready', marketplace: 'Shopee',
+    });
     const afterScan = await request('/api/state', {
       headers: { authorization: `Bearer ${owner.body.token}` },
     });
