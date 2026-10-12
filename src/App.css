@@ -7014,7 +7014,7 @@ th {
 .product-picker-options button {
   width: 100%;
   display: grid;
-  grid-template-columns: 1fr auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 10px;
   border: 0;
@@ -7041,6 +7041,36 @@ th {
 }
 .product-picker-options button svg {
   color: #079bc3;
+}
+.product-picker-options button.raw-material-picker-option {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+.raw-material-picker-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-weight: 400 !important;
+}
+.raw-material-picker-copy b {
+  overflow: hidden;
+  font-size: 14px;
+  line-height: 1.35;
+  overflow-wrap: break-word;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.product-picker-options .raw-material-picker-copy small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.raw-material-picker-option > svg {
+  align-self: center;
+  flex: 0 0 auto;
 }
 .product-picker-options p {
   margin: 10px;
@@ -7297,6 +7327,78 @@ th {
   width: min(560px, calc(100vw - 32px));
   border-radius: 14px;
 }
+.attendance-period-stats {
+  margin: 4px 20px 18px;
+}
+.attendance-summary-block {
+  margin: 0 20px 22px;
+  overflow: hidden;
+  border: 1px solid #cfe5eb;
+  border-radius: 14px;
+  background: #f8fcfd;
+}
+.attendance-summary-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px;
+  border-bottom: 1px solid #dcebf0;
+}
+.attendance-summary-head h4 {
+  margin: 0 0 4px;
+  font: 800 15px Manrope;
+  color: var(--navy);
+}
+.attendance-summary-head p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.attendance-summary-head > span {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: #e1f5f8;
+  color: #08758d;
+  font-size: 11px;
+  font-weight: 800;
+}
+.attendance-summary-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 18px;
+  border-bottom: 1px solid #dcebf0;
+  background: #fff;
+}
+.attendance-summary-controls .list-search {
+  width: min(100%, 360px);
+  margin: 0;
+}
+.attendance-summary-controls > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+.attendance-summary-block > .table-pagination {
+  padding: 12px 18px;
+  border-top: 1px solid #dcebf0;
+  background: #fff;
+}
+.attendance-summary-table th,
+.attendance-summary-table td {
+  white-space: nowrap;
+}
+.attendance-summary-table td:first-child {
+  min-width: 180px;
+}
+.attendance-summary-table .status {
+  min-width: 34px;
+  justify-content: center;
+}
 @media (max-width: 1180px) {
   .attendance-recap-controls {
     grid-template-columns: 1fr 1fr;
@@ -7323,6 +7425,21 @@ th {
   }
   .attendance-recap-controls > * {
     grid-column: 1;
+  }
+  .attendance-period-stats,
+  .attendance-summary-block {
+    margin-right: 12px;
+    margin-left: 12px;
+  }
+  .attendance-summary-head {
+    flex-direction: column;
+  }
+  .attendance-summary-controls {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .attendance-summary-controls .list-search {
+    width: 100%;
   }
 }
 .small-primary {

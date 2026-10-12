@@ -26,6 +26,10 @@ import {
   type OperationalNotification,
 } from "./utils/operationalNotifications";
 import {
+  buildAttendanceSummary,
+  formatLateDuration,
+} from "./utils/attendanceSummary";
+import {
   applyTikTokVariationMapping,
   groupTikTokSkuVariations,
   parseTikTokIncome,
@@ -877,6 +881,17 @@ const jakartaDateKey = (value: Date | string | number = new Date()) => {
   const part = (type: string) =>
     parts.find((item) => item.type === type)?.value || "";
   return `${part("year")}-${part("month")}-${part("day")}`;
+};
+const jakartaMinuteOfDay = (value: Date | string | number = new Date()) => {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Jakarta",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date(value));
+  const part = (type: string) =>
+    Number(parts.find((item) => item.type === type)?.value || 0);
+  return part("hour") * 60 + part("minute");
 };
 const shiftDateKey = (dateKey: string, days: number) => {
   const date = new Date(`${dateKey}T12:00:00Z`);
@@ -8524,13 +8539,19 @@ function OwnerAttendancePage({
   const [employeeId, setEmployeeId] = useState("all");
   const [viewHistoryFor, setViewHistoryFor] = useState<any>(null);
   const [page, setPage] = useState(1);
+  const [summarySearch, setSummarySearch] = useState("");
+  const [summaryPage, setSummaryPage] = useState(1);
   const [sort, setSort] = useState("date");
   const [desc, setDesc] = useState(true);
   const pageSize = 10;
+  const summaryPageSize = 5;
 
   useEffect(() => {
     setPage(1);
   }, [search, locationId, employeeId, dateFrom, dateTo]);
+  useEffect(() => {
+    setSummaryPage(1);
+  }, [summarySearch, search, locationId, employeeId, dateFrom, dateTo]);
   const employees = (data.employees || []).filter(
     (employee: any) => employee.active,
   );
@@ -8570,7 +8591,17 @@ function OwnerAttendancePage({
           (attendance: any) =>
             attendance.employeeId === employee.id && attendance.date === d,
         );
-        rows.push({ employee, account, record, location, date: d });
+        const attendanceSetting = (data.attendanceSettings || []).find(
+          (setting: any) => setting.locationId === employee.locationId,
+        );
+        rows.push({
+          employee,
+          account,
+          record,
+          location,
+          date: d,
+          checkInEnd: attendanceSetting?.checkInEnd || "09:00",
+        });
       }
     });
   });
@@ -8593,6 +8624,36 @@ function OwnerAttendancePage({
     }
     return (av > bv ? 1 : av < bv ? -1 : 0) * (desc ? -1 : 1);
   });
+  const attendanceSummary = buildAttendanceSummary(
+    rows,
+    today,
+    jakartaMinuteOfDay(),
+  );
+  const normalizedSummarySearch = summarySearch.trim().toLocaleLowerCase("id");
+  const filteredAttendanceSummary = attendanceSummary.filter((item) =>
+    item.employeeName.toLocaleLowerCase("id").includes(normalizedSummarySearch),
+  );
+  const summaryTotalPages = Math.max(
+    1,
+    Math.ceil(filteredAttendanceSummary.length / summaryPageSize),
+  );
+  const currentSummaryPage = Math.min(summaryPage, summaryTotalPages);
+  const visibleAttendanceSummary = filteredAttendanceSummary.slice(
+    (currentSummaryPage - 1) * summaryPageSize,
+    currentSummaryPage * summaryPageSize,
+  );
+  const assessedDays = attendanceSummary.reduce(
+    (sum, item) => sum + item.assessedDays,
+    0,
+  );
+  const presentDays = attendanceSummary.reduce(
+    (sum, item) => sum + item.presentDays,
+    0,
+  );
+  const absentDays = attendanceSummary.reduce(
+    (sum, item) => sum + item.absentDays,
+    0,
+  );
   const toggleSort = (key: string) => {
     if (sort === key) setDesc(!desc);
     else {
@@ -8714,6 +8775,108 @@ function OwnerAttendancePage({
             setTo={setDateTo}
             className="list-period-picker"
             initialMode="realtime"
+          />
+        </div>
+        <div className="stats-grid compact attendance-period-stats">
+          <Stat
+            label="Hari dinilai"
+            value={String(assessedDays)}
+            sub="Total hari karyawan yang sudah dinilai"
+            tone="navy"
+          />
+          <Stat
+            label="Total masuk"
+            value={String(presentDays)}
+            sub="Hari dengan check-in tercatat"
+          />
+          <Stat
+            label="Total bolos"
+            value={String(absentDays)}
+            sub="Hari terlewati tanpa check-in"
+            tone="red"
+          />
+        </div>
+        <div className="attendance-summary-block">
+          <div className="attendance-summary-head">
+            <div>
+              <h4>Ringkasan per karyawan</h4>
+              <p>
+                Bolos dihitung setelah batas masuk, mulai tanggal bergabung.
+                Tanggal mendatang tidak ikut dinilai.
+              </p>
+            </div>
+            <span>{attendanceSummary.length} karyawan</span>
+          </div>
+          <div className="attendance-summary-controls">
+            <ListSearch
+              value={summarySearch}
+              setValue={setSummarySearch}
+              placeholder="Cari nama karyawan"
+            />
+            {summarySearch.trim() && (
+              <span>
+                {filteredAttendanceSummary.length} karyawan ditemukan
+              </span>
+            )}
+          </div>
+          <div className="table-wrap">
+            <table className="attendance-summary-table">
+              <thead>
+                <tr>
+                  <th>Karyawan</th>
+                  <th>Lokasi</th>
+                  <th>Hari dinilai</th>
+                  <th>Masuk</th>
+                  <th>Bolos</th>
+                  <th>Lengkap</th>
+                  <th>Belum check-out</th>
+                  <th>Terlambat</th>
+                  <th>Total telat</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleAttendanceSummary.length ? (
+                  visibleAttendanceSummary.map((item) => (
+                    <tr key={item.employeeId}>
+                      <td>
+                        <b>{item.employeeName}</b>
+                        <small className="block">{item.position}</small>
+                      </td>
+                      <td>{item.locationName}</td>
+                      <td>{item.assessedDays}</td>
+                      <td>
+                        <span className="status ok">{item.presentDays}</span>
+                      </td>
+                      <td>
+                        <span
+                          className={`status ${item.absentDays ? "danger" : "ok"}`}
+                        >
+                          {item.absentDays}
+                        </span>
+                      </td>
+                      <td>{item.completedDays}</td>
+                      <td>{item.incompleteDays}</td>
+                      <td>{item.lateDays} hari</td>
+                      <td>{formatLateDuration(item.totalLateMinutes)}</td>
+                    </tr>
+                  ))
+                ) : (
+                  <Empty
+                    text={
+                      summarySearch.trim()
+                        ? "Nama karyawan tidak ditemukan."
+                        : "Tidak ada karyawan pada filter ini."
+                    }
+                  />
+                )}
+              </tbody>
+            </table>
+          </div>
+          <TablePagination
+            page={currentSummaryPage}
+            total={filteredAttendanceSummary.length}
+            size={summaryPageSize}
+            setPage={setSummaryPage}
           />
         </div>
         <div className="table-wrap">
@@ -23497,9 +23660,9 @@ function OpnameModal({
                         <button
                           type="button"
                           key={material.id}
-                          className={
+                          className={`raw-material-picker-option ${
                             selectedItems[material.id] ? "selected" : ""
-                          }
+                          }`}
                           onTouchEnd={(event) =>
                             selectFromTouch(event, () =>
                               selectRawMaterial(material),
@@ -23507,10 +23670,14 @@ function OpnameModal({
                           }
                           onClick={() => selectRawMaterial(material)}
                         >
-                          <span>{material.name}</span>
-                          <small>
-                            {material.sku || "Tanpa kode"} · {material.category} · {qty(rawBalance(material.id), material.unit)}
-                          </small>
+                          <span className="raw-material-picker-copy">
+                            <b>{material.name}</b>
+                            <small
+                              title={`${material.sku || "Tanpa kode"} · ${material.category} · ${qty(rawBalance(material.id), material.unit)}`}
+                            >
+                              {material.sku || "Tanpa kode"} · {material.category} · {qty(rawBalance(material.id), material.unit)}
+                            </small>
+                          </span>
                           {selectedItems[material.id] && <Check size={16} />}
                         </button>
                       ))
