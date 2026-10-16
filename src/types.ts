@@ -438,7 +438,6 @@ export interface ShipmentPackage {
   carrier: string;
   locationId: string;
   status:
-    | "pending_packing"
     | "ready"
     | "handover_scanned"
     | "handed_over"

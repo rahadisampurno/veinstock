@@ -753,6 +753,9 @@ describe('multi-tenant API', () => {
     const capturedAt = '2026-01-01T00:00:00.000Z';
     const expiresAt = '2026-01-31T00:00:00.000Z';
     const injected = structuredClone(afterScan.body.data);
+    injected.shipments[0].status = 'pending_packing';
+    delete injected.shipments[0].packedAt;
+    delete injected.shipments[0].packedBy;
     injected.shipments[0].packingEvidence = {
       id: 'pke-private-test', status: 'available', available: true,
       capturedAt, capturedBy: owner.body.user.id, expiresAt,
@@ -776,6 +779,10 @@ describe('multi-tenant API', () => {
     expect(sanitized.body.data.shipments[0].packingEvidence).toMatchObject({
       status: 'resolved', available: false, capturedAt, expiresAt,
     });
+    expect(sanitized.body.data.shipments[0]).toMatchObject({
+      status: 'ready', packedBy: 'system-migration',
+    });
+    expect(sanitized.body.data.shipments[0].packedAt).toBeTruthy();
     expect(JSON.stringify(sanitized.body.data)).not.toContain('must-never-leak');
     expect((await request(
       `/api/shipping/packages/${sanitized.body.data.shipments[0].id}/packing-evidence`,
@@ -1089,7 +1096,7 @@ describe('multi-tenant API', () => {
     expect(refreshed.body.data.shipments).toContainEqual(expect.objectContaining({
       trackingNumber: abortTrackingNumber,
       sourceSaleId: abortedSale.id,
-      status: 'pending_packing',
+      status: 'ready',
     }));
     expect((await post(`/api/commands/sales/${abortedSale.id}/abort-print`, {}, owner.body.token)).status).toBe(201);
     refreshed = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
@@ -1147,7 +1154,52 @@ describe('multi-tenant API', () => {
     expect(state.body.data.sales.find(item => item.id === sale.id).trackingNumber).toBe(trackingNumber);
     expect(state.body.data.shipments).toContainEqual(expect.objectContaining({
       trackingNumber, locationId: 'loc-owner', marketplace: 'Shopee',
-      status: 'pending_packing', sourceSaleId: sale.id,
+      status: 'ready', sourceSaleId: sale.id,
+    }));
+    expect(state.body.data.shipments.find(
+      item => item.trackingNumber === trackingNumber,
+    ).packedAt).toBeTruthy();
+
+    const correctedTrackingNumber = `${trackingNumber}FIX`;
+    expect((await post(`/api/commands/sales/${sale.id}/online-details`, {
+      sourcePlatform: 'Shopee', marketplaceOrderId: `ORDER-${suffix}`,
+      trackingNumber: correctedTrackingNumber,
+    }, owner.body.token)).status).toBe(201);
+    state = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    expect(state.body.data.shipments).toContainEqual(expect.objectContaining({
+      trackingNumber: correctedTrackingNumber, status: 'ready', sourceSaleId: sale.id,
+    }));
+
+    const optionalEvidenceForm = new FormData();
+    optionalEvidenceForm.append('trackingNumber', correctedTrackingNumber);
+    optionalEvidenceForm.append('locationId', 'loc-owner');
+    optionalEvidenceForm.append('marketplace', 'Shopee');
+    const optionalEvidenceResult = await request('/api/commands/shipping/ready-with-evidence', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${owner.body.token}` },
+      body: optionalEvidenceForm,
+    });
+    expect(optionalEvidenceResult.status).toBe(201);
+    expect(optionalEvidenceResult.body.shipment).toMatchObject({
+      trackingNumber: correctedTrackingNumber, status: 'ready',
+    });
+
+    const batchCode = `KRM-ONLINE-${Date.now()}`;
+    expect((await post('/api/commands/shipping/handover/scan', {
+      trackingNumber: correctedTrackingNumber, locationId: 'loc-owner',
+      carrier: 'J&T Express', batchCode,
+    }, owner.body.token)).status).toBe(201);
+    expect((await post(`/api/commands/sales/${sale.id}/online-details`, {
+      sourcePlatform: 'Shopee', marketplaceOrderId: `ORDER-${suffix}`,
+      trackingNumber: `${correctedTrackingNumber}LATE`,
+    }, owner.body.token)).status).toBe(400);
+    expect((await post('/api/commands/shipping/handover/finalize', {
+      batchCode, courierName: 'Kurir Uji',
+    }, owner.body.token)).status).toBe(201);
+    state = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
+    expect(state.body.data.shipments).toContainEqual(expect.objectContaining({
+      trackingNumber: correctedTrackingNumber, status: 'handed_over',
+      handoverBatchCode: batchCode,
     }));
 
     const duplicateOrder = await post('/api/commands/sales', {

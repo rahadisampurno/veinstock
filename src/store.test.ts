@@ -113,4 +113,20 @@ describe('inventory balance', () => {
     expect(data.sales[0].items[0].price).toBe(10_000);
     expect(data.sales[0].total).toBe(30_000);
   });
+
+  it('moves legacy packages waiting for packing evidence into ready status', () => {
+    const data = normalizeData({
+      ...seedData,
+      shipments: [{
+        id: 'shipment-legacy', trackingNumber: 'SPXID123456',
+        marketplace: 'Shopee', carrier: 'SPX Express', locationId: 'loc-owner',
+        status: 'pending_packing', createdAt: '2026-10-13T02:00:00.000Z',
+        createdBy: 'u-owner',
+      } as any],
+    });
+
+    expect(data.shipments?.[0]).toMatchObject({
+      status: 'ready', packedAt: '2026-10-13T02:00:00.000Z', packedBy: 'u-owner',
+    });
+  });
 });

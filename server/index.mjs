@@ -2785,6 +2785,7 @@ async function executeCommand(req, res, mutate) {
     state.marketplaceImports ||= [];
     state.shipments ||= [];
     state.shipmentHandovers ||= [];
+    normalizeShippingState(state);
     for (const sale of state.sales) sale.cashierId ||= "system-migration";
     normalizeChannelPricingState(state);
     assignMissingBarcodes(state, req.auth.org);
@@ -3865,6 +3866,7 @@ app.get("/api/state", requireAuth, async (req, res) => {
       assignMissingBarcodes(state.data, req.auth.org);
       normalizeRawMaterialUnits(state.data);
       assignMissingRawMaterialSkus(state.data);
+      normalizeShippingState(state.data);
     }
     const users = demoUsers
       .filter((item) => item.organization_id === req.auth.org)
@@ -3884,6 +3886,7 @@ app.get("/api/state", requireAuth, async (req, res) => {
     if (!sqlState.data) return res.json({ version: 0, data: null });
     normalizeRawMaterialUnits(sqlState.data);
     assignMissingRawMaterialSkus(sqlState.data);
+    normalizeShippingState(sqlState.data);
     const [userRows] = await conn.execute(
       "SELECT id, organization_id, name, email, role, outlet_id, active FROM users WHERE organization_id = ? ORDER BY created_at",
       [req.auth.org],
@@ -3971,6 +3974,7 @@ app.put("/api/state", requireAuth, async (req, res) => {
     assignMissingBarcodes(nextData, req.auth.org);
     normalizeRawMaterialUnits(nextData);
     assignMissingRawMaterialSkus(nextData);
+    normalizeShippingState(nextData);
     const invalid = validateState(nextData);
     if (invalid) return res.status(400).json({ message: invalid });
     const denied =
@@ -4011,6 +4015,7 @@ app.put("/api/state", requireAuth, async (req, res) => {
     assignMissingBarcodes(nextData, req.auth.org);
     normalizeRawMaterialUnits(nextData);
     assignMissingRawMaterialSkus(nextData);
+    normalizeShippingState(nextData);
     const invalid = validateState(nextData);
     if (invalid) {
       await connection.rollback();
@@ -4085,7 +4090,20 @@ const ensureActiveShippingLocation = (state, actor, locationId) => {
     throw invalidCommand("Lokasi packing tidak aktif atau tidak ditemukan.");
 };
 
-const recordPendingShipments = (
+// Foto packing kini bersifat opsional. Data lama yang masih berada pada
+// pending_packing dinaikkan ke ready agar tidak ada paket yang tertahan hanya
+// karena bukti foto belum pernah diunggah.
+const normalizeShippingState = (state) => {
+  state.shipments ||= [];
+  for (const shipment of state.shipments) {
+    if (shipment.status !== "pending_packing") continue;
+    shipment.status = "ready";
+    shipment.packedAt ||= shipment.createdAt || new Date().toISOString();
+    shipment.packedBy ||= shipment.createdBy || "system-migration";
+  }
+};
+
+const recordSaleShipments = (
   state,
   actor,
   { trackingNumbers, locationId, marketplace, sourceSaleId },
@@ -4110,13 +4128,13 @@ const recordPendingShipments = (
       locationId,
       marketplace,
       carrier: detectShippingCarrier(trackingNumber) || "Belum ditentukan",
-      status: "pending_packing",
+      status: "ready",
       createdAt,
       createdBy: actor.id,
       sourceSaleId,
+      packedAt: createdAt,
+      packedBy: actor.id,
     });
-    delete shipment.packedAt;
-    delete shipment.packedBy;
     delete shipment.handoverBatchCode;
     delete shipment.handedOverAt;
     delete shipment.handedOverBy;
@@ -4136,6 +4154,7 @@ const recordReadyShipments = (
   state,
   actor,
   { trackingNumbers, locationId, marketplace, packingEvidence },
+  { allowExistingReady = false } = {},
 ) => {
   ensureActiveShippingLocation(state, actor, locationId);
   if (packingEvidence) {
@@ -4161,17 +4180,24 @@ const recordReadyShipments = (
     const existing = state.shipments.find(
       (item) => item.trackingNumber === trackingNumber,
     );
-    if (
-      existing?.status === "pending_packing" &&
-      !packingEvidence
-    )
-      throw invalidCommand(
-        `Upload bukti packing untuk resi ${trackingNumber} sebelum menandainya siap diangkut.`,
-      );
+    const existingReadyNoop =
+      allowExistingReady &&
+      !packingEvidence &&
+      existing?.status === "ready" &&
+      existing.locationId === locationId;
+    if (existingReadyNoop) {
+      recorded.push(existing);
+      return;
+    }
+    const mayAttachOptionalEvidence =
+      existing?.status === "ready" &&
+      existing.locationId === locationId &&
+      Boolean(packingEvidence);
     if (
       existing &&
       existing.status !== "cancelled" &&
-      existing.status !== "pending_packing"
+      existing.status !== "pending_packing" &&
+      !mayAttachOptionalEvidence
     )
       throw invalidCommand(
         existing.status === "handed_over"
@@ -4405,7 +4431,7 @@ app.post(
             locationId,
             marketplace,
             packingEvidence,
-          });
+          }, { allowExistingReady: true });
           res.locals.commandResult = {
             shipment: publicShipmentEvidence(shipment),
           };
@@ -6659,7 +6685,7 @@ app.post("/api/commands/sales", requireAuth, async (req, res) => {
     });
     if (channel === "online" && normalizedTrackingNumber) {
       state.shipments ||= [];
-      recordPendingShipments(
+      recordSaleShipments(
         state,
         actor,
         {
@@ -6900,10 +6926,10 @@ app.post(
       if (
         linkedShipment &&
         trackingNumber !== linkedShipment.trackingNumber &&
-        linkedShipment.status !== "pending_packing"
+        !["pending_packing", "ready"].includes(linkedShipment.status)
       )
         throw invalidCommand(
-          "Nomor resi tidak dapat diubah setelah paket siap diangkut.",
+          "Nomor resi tidak dapat diubah setelah paket masuk proses serah terima.",
         );
       if (
         trackingNumber &&
@@ -6925,7 +6951,7 @@ app.post(
         });
       } else if (!linkedShipment && trackingNumber) {
         state.shipments ||= [];
-        recordPendingShipments(
+        recordSaleShipments(
           state,
           actor,
           {

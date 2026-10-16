@@ -1763,7 +1763,7 @@ function ContinuousResiScanner({
         <span className="scan-status-dot" />
         <b>
           {paused
-            ? "Resi sudah terbaca. Selesaikan bukti packing sebelum scan berikutnya."
+            ? "Resi sudah terbaca. Simpan paket sebelum scan berikutnya; foto boleh dilewati."
             : feedback.message}
         </b>
       </div>
@@ -4250,7 +4250,7 @@ function App({
                 packingEvidenceSaved = true;
               } catch (error) {
                 notify(
-                  `Penjualan sudah tersimpan dan masuk Packing, tetapi foto belum berhasil disimpan. Unggah ulang dari menu Pengiriman Pesanan. ${error instanceof Error ? error.message : ""}`.trim(),
+                  `Penjualan sudah tersimpan dan paket tetap Siap Diangkut, tetapi foto opsional belum berhasil disimpan. ${error instanceof Error ? error.message : ""}`.trim(),
                   "error",
                 );
               }
@@ -4261,7 +4261,7 @@ function App({
                 : packingEvidenceSaved
                   ? "Penjualan tersimpan dan paket masuk Siap Diangkut."
                   : onlineDetails?.trackingNumber
-                    ? "Penjualan tersimpan dan paket masuk antrean Packing."
+                    ? "Penjualan tersimpan dan paket masuk Siap Diangkut."
                     : "Penjualan tersimpan dan stok otomatis berkurang",
             );
             return { sale, data: updated };
@@ -22965,7 +22965,7 @@ function SaleModal({
                   <>
                     <section className="pos-online-order-fields">
                       <h4>Detail pesanan online</h4>
-                      <p>Hubungkan transaksi dengan marketplace dan bukti packing.</p>
+                      <p>Hubungkan transaksi dengan marketplace. Foto packing dapat ditambahkan bila diperlukan.</p>
                       <div className="form-grid">
                         <Field label="Sumber pesanan">
                           <select
@@ -22996,7 +22996,7 @@ function SaleModal({
                               setTrackingNumber(value);
                             }}
                           />
-                          <small className="pos-note-hint">Nomor resi menghubungkan transaksi dengan bukti foto packing di menu Pengiriman.</small>
+                          <small className="pos-note-hint">Nomor resi menghubungkan transaksi dengan proses pengiriman.</small>
                         </Field>
                         {trackingNumber && canManagePackingEvidence && (
                           <Field label="Foto bukti packing (opsional)">
@@ -23008,7 +23008,7 @@ function SaleModal({
                             <small className="pos-note-hint">
                               {packingProofFile
                                 ? "Foto siap disimpan. Paket akan langsung masuk ke Siap Diangkut."
-                                : "Tanpa foto, paket tetap masuk ke tab Packing dengan status Menunggu bukti packing."}
+                                : "Tanpa foto pun paket langsung masuk ke Siap Diangkut."}
                             </small>
                           </Field>
                         )}
@@ -23199,9 +23199,7 @@ function SaleModal({
                       : printReceipt
                         ? "Simpan & Cetak"
                         : channel === "online" && trackingNumber
-                          ? packingProofFile
-                            ? "Simpan & Siap Diangkut"
-                            : "Simpan & Masuk Packing"
+                          ? "Simpan & Siap Diangkut"
                           : "Simpan Penjualan"}
                   </button>
                 </>
@@ -24070,10 +24068,10 @@ function SaleDetail({
                   <b>
                     {linkedShipment?.packingEvidence?.available
                       ? "Foto tersedia"
-                      : linkedShipment?.status === "pending_packing"
-                        ? "Menunggu bukti packing"
+                      : linkedShipment?.packingEvidence?.status === "resolved"
+                        ? "Bukti sudah kedaluwarsa"
                         : linkedShipment
-                          ? "Bukti sudah kedaluwarsa"
+                          ? "Tidak ada foto (opsional)"
                           : "Belum diproses di menu Pengiriman"}
                   </b>
                 </p>
@@ -24788,7 +24786,6 @@ const newShippingBatchCode = () =>
   `KRM-${jakartaDateKey().replace(/-/g, "")}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
 const shippingStatusLabel = (status?: string) =>
   ({
-    pending_packing: "Menunggu bukti packing",
     ready: "Siap diangkut",
     handover_scanned: "Dalam proses serah terima",
     handed_over: "Sudah diserahkan ke kurir",
@@ -24873,13 +24870,7 @@ function ShippingPage({
   const scoped = shipments.filter(
     (item: any) => !locationId || item.locationId === locationId,
   );
-  const pendingPacking = scoped.filter(
-      (item: any) => item.status === "pending_packing",
-    ),
-    allPendingPacking = shipments.filter(
-      (item: any) => item.status === "pending_packing",
-    ),
-    ready = scoped.filter((item: any) => item.status === "ready"),
+  const ready = scoped.filter((item: any) => item.status === "ready"),
     allReady = shipments.filter((item: any) => item.status === "ready"),
     allHandoverScanned = shipments.filter(
       (item: any) => item.status === "handover_scanned",
@@ -24907,8 +24898,7 @@ function ShippingPage({
     }
     setFocusedShipmentId(shipment.id);
     setLocationId(shipment.locationId);
-    if (shipment.status === "pending_packing") setTab("packing");
-    else if (shipment.status === "ready") setTab("ready");
+    if (shipment.status === "ready") setTab("ready");
     else if (shipment.status === "handover_scanned") {
       setTab("handover");
       if (shipment.handoverBatchCode)
@@ -24968,7 +24958,7 @@ function ShippingPage({
     setPackingCandidate(trackingNumber);
     return {
       ok: true,
-      message: `${trackingNumber} terbaca. Ambil foto packing; foto akan tersimpan otomatis.`,
+      message: `${trackingNumber} terbaca. Foto packing boleh ditambahkan atau dilewati.`,
     };
   };
   const savePackingCandidate = async (
@@ -24976,30 +24966,35 @@ function ShippingPage({
     trackingNumber = packingCandidate,
   ) => {
     if (!trackingNumber || packingSaveInFlightRef.current) return;
-    if (!photo) {
-      notify(
-        "Ambil atau unggah foto bukti packing terlebih dahulu agar paket dapat masuk ke Siap Diangkut.",
-        "error",
-      );
-      return;
-    }
     packingSaveInFlightRef.current = true;
     setSavingPacking(true);
     try {
-      const body = new FormData();
-      body.append("trackingNumber", trackingNumber);
-      body.append("locationId", locationId);
-      body.append("marketplace", marketplace);
-      body.append("image", photo);
-      const result = await runFormCommand(
-        "/api/commands/shipping/ready-with-evidence",
-        body,
-        false,
+      if (photo) {
+        const body = new FormData();
+        body.append("trackingNumber", trackingNumber);
+        body.append("locationId", locationId);
+        body.append("marketplace", marketplace);
+        body.append("image", photo);
+        const result = await runFormCommand(
+          "/api/commands/shipping/ready-with-evidence",
+          body,
+          false,
+        );
+        if (!result.shipment)
+          throw new Error("Server tidak mengembalikan status paket yang tersimpan.");
+        onShipmentSaved(result.shipment);
+      } else {
+        await runCommand("/api/commands/shipping/ready", {
+          trackingNumber,
+          locationId,
+          marketplace,
+        });
+      }
+      notify(
+        photo
+          ? `${trackingNumber} tersimpan dengan foto packing dan siap diangkut.`
+          : `${trackingNumber} tersimpan tanpa foto dan siap diangkut.`,
       );
-      if (!result.shipment)
-        throw new Error("Server tidak mengembalikan status paket yang tersimpan.");
-      onShipmentSaved(result.shipment);
-      notify(`${trackingNumber} tersimpan dengan bukti packing dan siap diangkut.`);
       setPackingCandidate("");
       setPackingProofFile(null);
     } catch (error) {
@@ -25015,16 +25010,6 @@ function ShippingPage({
   };
   const selectPackingProof = (file: File | null) => {
     setPackingProofFile(file);
-  };
-  const openPendingPacking = (shipment: any) => {
-    if (packingCandidate && packingCandidate !== shipment.trackingNumber) {
-      notify("Selesaikan atau batalkan resi yang sedang diproses terlebih dahulu.", "error");
-      return;
-    }
-    setLocationId(shipment.locationId);
-    setMarketplace(shipment.marketplace || "Lainnya");
-    setPackingProofFile(null);
-    setPackingCandidate(shipment.trackingNumber);
   };
   const openPackingEvidence = async (shipment: any) => {
     if (!canViewEvidence || loadingEvidenceId) return;
@@ -25233,11 +25218,6 @@ function ShippingPage({
     >
       <div className="shipping-stats">
         <article>
-          <span>Menunggu bukti packing</span>
-          <b>{allPendingPacking.length}</b>
-          <small>paket perlu foto</small>
-        </article>
-        <article>
           <span>Siap diangkut</span>
           <b>{allReady.length}</b>
           <small>paket menunggu kurir</small>
@@ -25266,7 +25246,7 @@ function ShippingPage({
         aria-label="Tahapan pengiriman pesanan"
       >
         {[
-          ["packing", `Packing (${allPendingPacking.length})`],
+          ["packing", "Packing"],
           ["ready", `Siap Diangkut (${allReady.length})`],
           ["handover", `Serah Terima (${allHandoverScanned.length})`],
           ["history", `Riwayat (${completedBatches.length})`],
@@ -25379,69 +25359,12 @@ function ShippingPage({
               <small>CHECKPOINT 1</small>
               <h3>Scan setelah packing selesai</h3>
               <p>
-                Ambil bukti foto untuk setiap resi. Paket baru masuk ke Siap
-                Diangkut setelah fotonya berhasil disimpan.
+                Scan resi lalu simpan ke Siap Diangkut. Foto packing bersifat
+                opsional dan dapat dilewati.
               </p>
             </div>
-            <span>{pendingPacking.length} menunggu foto</span>
+            <span>Foto opsional</span>
           </div>
-          {pendingPacking.length > 0 && (
-            <section className="pending-packing-list" aria-label="Paket menunggu bukti packing">
-              <header>
-                <div>
-                  <small>ANTREAN DARI POS ONLINE</small>
-                  <h4>Menunggu bukti packing</h4>
-                </div>
-                <span>{pendingPacking.length} paket</span>
-              </header>
-              {pendingPacking.map((shipment: any) => (
-                <article
-                  key={shipment.id}
-                  data-shipment-id={shipment.id}
-                  className={`${shipment.sourceSaleId ? "shipment-linked-sale" : ""} ${focusedShipmentId === shipment.id ? "shipment-focused" : ""}`.trim()}
-                  role={shipment.sourceSaleId ? "button" : undefined}
-                  tabIndex={shipment.sourceSaleId ? 0 : undefined}
-                  onClick={() =>
-                    shipment.sourceSaleId && openSale?.(shipment.sourceSaleId)
-                  }
-                  onKeyDown={(event) => {
-                    if (
-                      shipment.sourceSaleId &&
-                      (event.key === "Enter" || event.key === " ")
-                    ) {
-                      event.preventDefault();
-                      openSale?.(shipment.sourceSaleId);
-                    }
-                  }}
-                >
-                  <div>
-                    <b>{shipment.trackingNumber}</b>
-                    <small>{shipment.marketplace} · {shipment.carrier}</small>
-                    {shipment.sourceSaleId && (
-                      <small className="shipment-sale-link">Klik untuk melihat transaksi</small>
-                    )}
-                  </div>
-                  <span className="pending-packing-badge">Belum upload bukti</span>
-                  <button
-                    type="button"
-                    className="primary"
-                    disabled={!canManageEvidence || savingPacking}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      openPendingPacking(shipment);
-                    }}
-                  >
-                    <Camera size={16} /> Upload bukti
-                  </button>
-                </article>
-              ))}
-              {!canManageEvidence && (
-                <small className="pending-packing-permission">
-                  Minta akun dengan izin bukti pengiriman untuk mengunggah foto.
-                </small>
-              )}
-            </section>
-          )}
           <ContinuousResiScanner
             onDetected={queueReady}
             onDetectedMany={recordReadyMany}
@@ -25643,8 +25566,8 @@ function ShippingPage({
       )}
       {packingCandidate && (
         <Modal
-          title="Upload bukti packing"
-          desc="Ambil foto paket yang sudah selesai dipacking. Setelah disimpan, paket akan masuk ke Siap Diangkut."
+          title="Simpan paket siap diangkut"
+          desc="Foto packing bersifat opsional. Paket tetap dapat disimpan dan dilanjutkan tanpa foto."
           className="packing-upload-modal"
           close={() => {
             if (savingPacking) return;
@@ -25661,10 +25584,10 @@ function ShippingPage({
             <div className="packing-upload-resi">
               <span>NOMOR RESI</span>
               <b>{packingCandidate}</b>
-              <small>{marketplace} · Foto tersimpan maksimal 30 hari</small>
+              <small>{marketplace} · Jika ditambahkan, foto tersimpan maksimal 30 hari</small>
             </div>
             {canManageEvidence ? (
-              <Field label="Foto bukti packing (wajib)">
+              <Field label="Foto bukti packing (opsional)">
                 <EvidencePhotoPicker
                   file={packingProofFile}
                   setFile={selectPackingProof}
@@ -25673,7 +25596,7 @@ function ShippingPage({
               </Field>
             ) : (
               <div className="packing-evidence-permission">
-                Akun ini tidak memiliki izin mengambil bukti foto packing.
+                Akun ini tidak memiliki izin mengambil foto, tetapi paket tetap dapat disimpan tanpa foto.
               </div>
             )}
             <div className="modal-actions">
@@ -25691,12 +25614,14 @@ function ShippingPage({
               <button
                 type="submit"
                 className="primary"
-                disabled={
-                  savingPacking || !packingProofFile || !canManageEvidence
-                }
+                disabled={savingPacking}
               >
                 <Check />
-                {savingPacking ? "Menyimpan…" : "Simpan & Siap Diangkut"}
+                {savingPacking
+                  ? "Menyimpan…"
+                  : packingProofFile
+                    ? "Simpan Foto & Siap Diangkut"
+                    : "Simpan Tanpa Foto"}
               </button>
             </div>
           </form>

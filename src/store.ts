@@ -126,6 +126,16 @@ export const normalizeData = (data: AppData): AppData => {
       total: Number(sale.total || 0),
     };
   });
+  const normalizedShipments = (data.shipments || []).map((shipment) =>
+    (shipment as { status?: string }).status === 'pending_packing'
+      ? {
+          ...shipment,
+          status: 'ready' as const,
+          packedAt: shipment.packedAt || shipment.createdAt,
+          packedBy: shipment.packedBy || shipment.createdBy || 'system-migration',
+        }
+      : shipment,
+  );
   return {
     ...data,
     business: data.business || { name: 'Usaha Saya', ownerName: data.users?.find(item=>item.role==='owner')?.name || 'Owner' },
@@ -143,7 +153,7 @@ export const normalizeData = (data: AppData): AppData => {
     stockCounts: data.stockCounts || [],
     suppliers: data.suppliers || [],
     receipts: data.receipts || [],
-    returns: data.returns || [], stockOuts: data.stockOuts || [], employees: data.employees || [], attendanceSettings: data.attendanceSettings || [], attendances: data.attendances || [], liveSessions: data.liveSessions || [], loans: data.loans || [], payrolls: data.payrolls || [], cashEntries: data.cashEntries || [], debtEntries: data.debtEntries || [], shipments: data.shipments || [], shipmentHandovers: data.shipmentHandovers || [], marketplaceSkuMappings: data.marketplaceSkuMappings || [], marketplaceImports: data.marketplaceImports || [], rolePolicies: data.rolePolicies || {}
+    returns: data.returns || [], stockOuts: data.stockOuts || [], employees: data.employees || [], attendanceSettings: data.attendanceSettings || [], attendances: data.attendances || [], liveSessions: data.liveSessions || [], loans: data.loans || [], payrolls: data.payrolls || [], cashEntries: data.cashEntries || [], debtEntries: data.debtEntries || [], shipments: normalizedShipments, shipmentHandovers: data.shipmentHandovers || [], marketplaceSkuMappings: data.marketplaceSkuMappings || [], marketplaceImports: data.marketplaceImports || [], rolePolicies: data.rolePolicies || {}
   };
 };
 
