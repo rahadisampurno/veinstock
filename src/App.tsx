@@ -2308,22 +2308,71 @@ function App({
     setDataState(dataRef.current);
     return current.data;
   };
-  const applyCommandShipment = (shipment: any) => {
+  const applyShippingCommandResult = (result: any) => {
+    const shipments = Array.isArray(result?.shipments)
+      ? result.shipments
+      : result?.shipment
+        ? [result.shipment]
+        : [];
+    const handovers = Array.isArray(result?.handovers)
+      ? result.handovers
+      : result?.batch
+        ? [result.batch]
+        : [];
+    const movements = Array.isArray(result?.movements) ? result.movements : [];
+    if (!shipments.length && !handovers.length && !movements.length)
+      return false;
+
     let next = dataRef.current;
     applyLocalData((current) => {
       next = {
         ...current,
-        shipments: [
-          shipment,
-          ...(current.shipments || []).filter(
-            (item: any) =>
-              item.id !== shipment.id &&
-              item.trackingNumber !== shipment.trackingNumber,
-          ),
-        ],
+        shipments: shipments.length
+          ? [
+              ...shipments,
+              ...(current.shipments || []).filter(
+                (item: any) =>
+                  !shipments.some(
+                    (shipment: any) =>
+                      item.id === shipment.id ||
+                      item.trackingNumber === shipment.trackingNumber,
+                  ),
+              ),
+            ]
+          : current.shipments,
+        shipmentHandovers: handovers.length
+          ? [
+              ...handovers,
+              ...(current.shipmentHandovers || []).filter(
+                (item: any) =>
+                  !handovers.some(
+                    (handover: any) =>
+                      item.id === handover.id ||
+                      item.batchCode === handover.batchCode,
+                  ),
+              ),
+            ]
+          : current.shipmentHandovers,
+        movements: movements.length
+          ? [
+              ...movements,
+              ...(current.movements || []).filter(
+                (item: any) =>
+                  !movements.some((movement: any) => item.id === movement.id),
+              ),
+            ]
+          : current.movements,
       };
       return next;
     });
+    return next;
+  };
+  const applyCommandShipment = (shipment: any) => {
+    const next = applyShippingCommandResult({ shipments: [shipment] });
+    if (!next)
+      throw new Error(
+        "Server tidak mengembalikan status paket yang tersimpan.",
+      );
     return next;
   };
   const runCommand = async (
@@ -3212,6 +3261,8 @@ function App({
               runCommand={runCommand}
               runFormCommand={runFormCommand}
               onShipmentSaved={applyCommandShipment}
+              onShippingChanged={applyShippingCommandResult}
+              refreshShippingState={refreshCommandState}
               getPackingEvidenceUrl={getPackingEvidenceUrl}
               uploadImage={uploadImage}
               notify={notify}
@@ -24798,6 +24849,8 @@ function ShippingPage({
   runCommand,
   runFormCommand,
   onShipmentSaved,
+  onShippingChanged,
+  refreshShippingState,
   getPackingEvidenceUrl,
   uploadImage,
   notify,
@@ -24948,6 +25001,9 @@ function ShippingPage({
       "Website",
       "Lainnya",
     ];
+  const applySavedShippingResult = async (result: any) => {
+    if (!onShippingChanged(result)) await refreshShippingState();
+  };
   const queueReady = async (trackingNumber: string) => {
     if (packingCandidate)
       return {
@@ -24984,11 +25040,17 @@ function ShippingPage({
           throw new Error("Server tidak mengembalikan status paket yang tersimpan.");
         onShipmentSaved(result.shipment);
       } else {
-        await runCommand("/api/commands/shipping/ready", {
-          trackingNumber,
-          locationId,
-          marketplace,
-        });
+        const result = await runCommand(
+          "/api/commands/shipping/ready",
+          {
+            trackingNumber,
+            locationId,
+            marketplace,
+          },
+          "POST",
+          false,
+        );
+        await applySavedShippingResult(result);
       }
       notify(
         photo
@@ -25029,11 +25091,17 @@ function ShippingPage({
   };
   const recordReadyMany = async (trackingNumbers: string[]) => {
     try {
-      await runCommand("/api/commands/shipping/ready/bulk", {
-        trackingNumbers,
-        locationId,
-        marketplace,
-      });
+      const result = await runCommand(
+        "/api/commands/shipping/ready/bulk",
+        {
+          trackingNumbers,
+          locationId,
+          marketplace,
+        },
+        "POST",
+        false,
+      );
+      await applySavedShippingResult(result);
       return {
         ok: true,
         message: `${trackingNumbers.length} resi tercatat dan siap diangkut.`,
@@ -25075,12 +25143,18 @@ function ShippingPage({
         message: "Resi tidak dimasukkan. Periksa kembali ekspedisi batch.",
       };
     try {
-      await runCommand("/api/commands/shipping/handover/scan", {
-        trackingNumber,
-        locationId,
-        carrier: handoverCarrier,
-        batchCode,
-      });
+      const result = await runCommand(
+        "/api/commands/shipping/handover/scan",
+        {
+          trackingNumber,
+          locationId,
+          carrier: handoverCarrier,
+          batchCode,
+        },
+        "POST",
+        false,
+      );
+      await applySavedShippingResult(result);
       return {
         ok: true,
         message: `${trackingNumber} masuk batch ${batchCode}.`,
@@ -25102,12 +25176,18 @@ function ShippingPage({
         message: "Daftar resi tidak dimasukkan. Periksa ekspedisi batch.",
       };
     try {
-      await runCommand("/api/commands/shipping/handover/scan/bulk", {
-        trackingNumbers,
-        locationId,
-        carrier: handoverCarrier,
-        batchCode,
-      });
+      const result = await runCommand(
+        "/api/commands/shipping/handover/scan/bulk",
+        {
+          trackingNumbers,
+          locationId,
+          carrier: handoverCarrier,
+          batchCode,
+        },
+        "POST",
+        false,
+      );
+      await applySavedShippingResult(result);
       return {
         ok: true,
         message: `${trackingNumbers.length} resi masuk batch ${batchCode}.`,
@@ -25153,23 +25233,32 @@ function ShippingPage({
     if (!correction || correctionReason.trim().length < 3 || correcting) return;
     setCorrecting(true);
     try {
+      let result;
       if (correction.kind === "cancel") {
-        await runCommand(
+        result = await runCommand(
           `/api/commands/shipping/packages/${encodeURIComponent(correction.shipment.id)}/cancel`,
           { reason: correctionReason.trim() },
+          "POST",
+          false,
         );
         notify(`Resi ${correction.shipment.trackingNumber} dibatalkan.`);
       } else {
-        await runCommand("/api/commands/shipping/handover/remove", {
-          trackingNumber: correction.shipment.trackingNumber,
-          batchCode,
-          reason: correctionReason.trim(),
-        });
+        result = await runCommand(
+          "/api/commands/shipping/handover/remove",
+          {
+            trackingNumber: correction.shipment.trackingNumber,
+            batchCode,
+            reason: correctionReason.trim(),
+          },
+          "POST",
+          false,
+        );
         notify(
           `Resi ${correction.shipment.trackingNumber} dikembalikan ke daftar Siap Diangkut.`,
         );
         if (scanned.length === 1) setBatchCode(newShippingBatchCode());
       }
+      await applySavedShippingResult(result);
       setCorrection(null);
       setCorrectionReason("");
     } catch (error) {
@@ -25187,12 +25276,18 @@ function ShippingPage({
     setFinishing(true);
     try {
       const proofUrl = proofFile ? await uploadImage(proofFile) : undefined;
-      await runCommand("/api/commands/shipping/handover/finalize", {
-        batchCode,
-        courierName,
-        vehicleNumber,
-        proofUrl,
-      });
+      const result = await runCommand(
+        "/api/commands/shipping/handover/finalize",
+        {
+          batchCode,
+          courierName,
+          vehicleNumber,
+          proofUrl,
+        },
+        "POST",
+        false,
+      );
+      await applySavedShippingResult(result);
       notify(
         `${scanned.length} paket berhasil diserahkan ke ${handoverCarrier}.`,
       );

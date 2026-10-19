@@ -21,6 +21,7 @@ import {
   publicShipmentEvidence,
   resolvePackingEvidence,
 } from "./shippingEvidence.mjs";
+import { archiveReadyShipments } from "./shippingReadyReset.mjs";
 
 sharp.cache({ memory: 32, files: 0, items: 64 });
 sharp.concurrency(Math.max(1, Math.min(2, sharp.concurrency())));
@@ -488,6 +489,69 @@ async function backfillRolePolicyDependencies(pool) {
         JSON.stringify(compactMarketplaceSnapshot(state)),
         row.id,
       ]);
+  }
+}
+
+// Reset operasional satu kali yang diminta Menengs setelah bukti packing
+// dijadikan opsional. Paket lama tetap dipertahankan untuk audit; hanya status
+// `ready` yang diarsipkan sebagai cancelled agar angka Siap Diangkut kembali 0.
+// Batch serah-terima dan paket yang sudah diserahkan tidak disentuh.
+async function archiveLegacyReadyShipmentsForMenengs(pool) {
+  if (!isProduction) return;
+  const migrationKey = "shippingReadyReset20261019";
+  const organizationId = "org-meneng";
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    const [rows] = await connection.execute(
+      "SELECT version, payload FROM app_state WHERE id=? FOR UPDATE",
+      [organizationId],
+    );
+    if (!rows.length) {
+      await connection.rollback();
+      return;
+    }
+    const state =
+      typeof rows[0].payload === "string"
+        ? JSON.parse(rows[0].payload)
+        : rows[0].payload;
+    state.securityMigrations ||= {};
+    if (state.securityMigrations[migrationKey]) {
+      await connection.rollback();
+      return;
+    }
+
+    const archivedAt = new Date().toISOString();
+    const shipmentIds = archiveReadyShipments(state, {
+      archivedAt,
+      cancelReason:
+        "Reset data Siap Diangkut atas permintaan operasional Menengs pada 19 Oktober 2026.",
+    });
+    state.securityMigrations[migrationKey] = {
+      completedAt: archivedAt,
+      shipmentCount: shipmentIds.length,
+      shipmentIds,
+    };
+    const nextVersion = Number(rows[0].version || 0) + 1;
+    await connection.execute(
+      "UPDATE app_state SET version=?, payload=? WHERE id=?",
+      [
+        nextVersion,
+        JSON.stringify(compactMarketplaceSnapshot(state)),
+        organizationId,
+      ],
+    );
+    await connection.commit();
+    console.info("Archived legacy ready shipments for Menengs", {
+      organizationId,
+      shipmentCount: shipmentIds.length,
+      version: nextVersion,
+    });
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
   }
 }
 
@@ -1446,6 +1510,7 @@ async function db() {
         await syncStateToSQL(pool, "org-meneng", initialState);
       }
     }
+    await archiveLegacyReadyShipmentsForMenengs(pool);
   }
   return pool;
 }
@@ -2706,7 +2771,12 @@ async function commitCommandState(conn, orgId, state, version, previousState) {
 }
 
 const demoCommandLocks = new Map();
-async function executeCommand(req, res, mutate) {
+async function executeCommand(
+  req,
+  res,
+  mutate,
+  { preferLockedSnapshot = false } = {},
+) {
   const conn = await db();
   const actor = await currentUser(conn, req.auth);
   if (!actor) {
@@ -2726,16 +2796,26 @@ async function executeCommand(req, res, mutate) {
     await previous;
   }
   try {
+    let lockedSnapshot;
     if (connection) {
       await connection.beginTransaction();
       // Serialisasi seluruh mutasi tenant pada baris versi kanonis. Ini
       // mencegah dua perangkat memakai saldo awal yang sama secara bersamaan.
-      await connection.execute(
-        "SELECT version FROM app_state WHERE id = ? FOR UPDATE",
+      const [lockedRows] = await connection.execute(
+        "SELECT version, payload FROM app_state WHERE id = ? FOR UPDATE",
         [req.auth.org],
       );
+      if (preferLockedSnapshot && lockedRows[0]) {
+        let payload = lockedRows[0].payload;
+        if (typeof payload === "string") payload = JSON.parse(payload);
+        lockedSnapshot = {
+          version: Number(lockedRows[0].version || 0),
+          data: payload,
+        };
+      }
     }
-    const loaded = await loadStateForCommand(connection, req.auth.org);
+    const loaded =
+      lockedSnapshot || await loadStateForCommand(connection, req.auth.org);
     if (!loaded.data)
       throw invalidCommand(
         "Data usaha belum siap. Muat ulang halaman lalu coba lagi.",
@@ -4287,18 +4367,29 @@ const recordHandoverShipments = (
     shipment.handoverBatchCode = batchCode;
     shipment.carrier = carrier;
   });
+  return { batch, shipments: selected };
 };
 
 app.post("/api/commands/shipping/ready", requireAuth, async (req, res) => {
-  await executeCommand(req, res, async (state, actor) => {
-    recordReadyShipments(state, actor, {
-      trackingNumbers: normalizeShippingTrackingNumbers(
-        req.body?.trackingNumber,
-      ),
-      locationId: String(req.body?.locationId || ""),
-      marketplace: String(req.body?.marketplace || "Lainnya").trim().slice(0, 40),
-    });
-  });
+  await executeCommand(
+    req,
+    res,
+    async (state, actor) => {
+      const shipments = recordReadyShipments(state, actor, {
+        trackingNumbers: normalizeShippingTrackingNumbers(
+          req.body?.trackingNumber,
+        ),
+        locationId: String(req.body?.locationId || ""),
+        marketplace: String(req.body?.marketplace || "Lainnya")
+          .trim()
+          .slice(0, 40),
+      });
+      res.locals.commandResult = {
+        shipments: shipments.map(publicShipmentEvidence),
+      };
+    },
+    { preferLockedSnapshot: true },
+  );
 });
 
 app.post(
@@ -4436,6 +4527,7 @@ app.post(
             shipment: publicShipmentEvidence(shipment),
           };
         },
+        { preferLockedSnapshot: true },
       );
       timings.commitMs = Date.now() - commitStartedAt;
       if (commandResult.ok) {
@@ -4527,36 +4619,55 @@ app.get(
 );
 
 app.post("/api/commands/shipping/ready/bulk", requireAuth, async (req, res) => {
-  await executeCommand(req, res, async (state, actor) => {
-    recordReadyShipments(state, actor, {
-      trackingNumbers: normalizeShippingTrackingNumbers(
-        req.body?.trackingNumbers,
-      ),
-      locationId: String(req.body?.locationId || ""),
-      marketplace: String(req.body?.marketplace || "Lainnya").trim().slice(0, 40),
-    });
-  });
+  await executeCommand(
+    req,
+    res,
+    async (state, actor) => {
+      const shipments = recordReadyShipments(state, actor, {
+        trackingNumbers: normalizeShippingTrackingNumbers(
+          req.body?.trackingNumbers,
+        ),
+        locationId: String(req.body?.locationId || ""),
+        marketplace: String(req.body?.marketplace || "Lainnya")
+          .trim()
+          .slice(0, 40),
+      });
+      res.locals.commandResult = {
+        shipments: shipments.map(publicShipmentEvidence),
+      };
+    },
+    { preferLockedSnapshot: true },
+  );
 });
 
 app.post(
   "/api/commands/shipping/handover/scan",
   requireAuth,
   async (req, res) => {
-    await executeCommand(req, res, async (state, actor) => {
-      const locationId = String(req.body?.locationId || "");
-      const batchCode = String(req.body?.batchCode || "")
-        .trim()
-        .toUpperCase();
-      const carrier = String(req.body?.carrier || "").trim();
-      recordHandoverShipments(state, actor, {
-        trackingNumbers: normalizeShippingTrackingNumbers(
-          req.body?.trackingNumber,
-        ),
-        locationId,
-        carrier,
-        batchCode,
-      });
-    });
+    await executeCommand(
+      req,
+      res,
+      async (state, actor) => {
+        const locationId = String(req.body?.locationId || "");
+        const batchCode = String(req.body?.batchCode || "")
+          .trim()
+          .toUpperCase();
+        const carrier = String(req.body?.carrier || "").trim();
+        const result = recordHandoverShipments(state, actor, {
+          trackingNumbers: normalizeShippingTrackingNumbers(
+            req.body?.trackingNumber,
+          ),
+          locationId,
+          carrier,
+          batchCode,
+        });
+        res.locals.commandResult = {
+          batch: result.batch,
+          shipments: result.shipments.map(publicShipmentEvidence),
+        };
+      },
+      { preferLockedSnapshot: true },
+    );
   },
 );
 
@@ -4564,16 +4675,25 @@ app.post(
   "/api/commands/shipping/handover/scan/bulk",
   requireAuth,
   async (req, res) => {
-    await executeCommand(req, res, async (state, actor) => {
-      recordHandoverShipments(state, actor, {
-        trackingNumbers: normalizeShippingTrackingNumbers(
-          req.body?.trackingNumbers,
-        ),
-        locationId: String(req.body?.locationId || ""),
-        carrier: String(req.body?.carrier || "").trim(),
-        batchCode: String(req.body?.batchCode || "").trim().toUpperCase(),
-      });
-    });
+    await executeCommand(
+      req,
+      res,
+      async (state, actor) => {
+        const result = recordHandoverShipments(state, actor, {
+          trackingNumbers: normalizeShippingTrackingNumbers(
+            req.body?.trackingNumbers,
+          ),
+          locationId: String(req.body?.locationId || ""),
+          carrier: String(req.body?.carrier || "").trim(),
+          batchCode: String(req.body?.batchCode || "").trim().toUpperCase(),
+        });
+        res.locals.commandResult = {
+          batch: result.batch,
+          shipments: result.shipments.map(publicShipmentEvidence),
+        };
+      },
+      { preferLockedSnapshot: true },
+    );
   },
 );
 
@@ -4608,7 +4728,7 @@ app.post(
         cancelReason: reason,
       });
       state.movements ||= [];
-      state.movements.push({
+      const movement = {
         id: commandId("audit"),
         variantId: "system",
         locationId: shipment.locationId,
@@ -4617,8 +4737,13 @@ app.post(
         note: `${shipment.trackingNumber} · ${reason}`,
         user: actor.name,
         createdAt: new Date().toISOString(),
-      });
-    });
+      };
+      state.movements.push(movement);
+      res.locals.commandResult = {
+        shipments: [publicShipmentEvidence(shipment)],
+        movements: [movement],
+      };
+    }, { preferLockedSnapshot: true });
   },
 );
 
@@ -4671,7 +4796,7 @@ app.post(
           cancelReason: reason,
         });
       state.movements ||= [];
-      state.movements.push({
+      const movement = {
         id: commandId("audit"),
         variantId: "system",
         locationId: shipment.locationId,
@@ -4680,8 +4805,14 @@ app.post(
         note: `${trackingNumber} dikeluarkan dari ${batchCode} · ${reason}`,
         user: actor.name,
         createdAt: new Date().toISOString(),
-      });
-    });
+      };
+      state.movements.push(movement);
+      res.locals.commandResult = {
+        batch,
+        shipments: [publicShipmentEvidence(shipment)],
+        movements: [movement],
+      };
+    }, { preferLockedSnapshot: true });
   },
 );
 
@@ -4735,7 +4866,11 @@ app.post(
         item.handedOverAt = completedAt;
         item.handedOverBy = actor.id;
       });
-    });
+      res.locals.commandResult = {
+        batch,
+        shipments: shipments.map(publicShipmentEvidence),
+      };
+    }, { preferLockedSnapshot: true });
   },
 );
 

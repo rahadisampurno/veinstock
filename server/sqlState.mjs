@@ -389,18 +389,103 @@ export async function syncStateToSQL(conn, orgId, data, previousData = null) {
 }
 
 export async function getStateFromSQL(conn, orgId) {
-  const [locations] = await conn.execute(
+  // Pembacaan state sebelumnya menunggu setiap tabel secara berurutan. Pada
+  // koneksi pool, query yang independen dapat berjalan bersamaan tanpa
+  // mengubah bentuk maupun sumber kebenaran data yang dikembalikan. Batasi
+  // konkurensi agar satu pemuatan state tidak menghabiskan seluruh pool DB.
+  const executeQueries = async (queries, concurrency = 4) => {
+    const results = [];
+    for (let offset = 0; offset < queries.length; offset += concurrency) {
+      results.push(
+        ...(await Promise.all(
+          queries.slice(offset, offset + concurrency).map((query) => query()),
+        )),
+      );
+    }
+    return results;
+  };
+  const locationsQuery = () => conn.execute(
     "SELECT id, name, type, address, active, is_central_warehouse as isCentralWarehouse FROM locations WHERE organization_id = ?",
     [orgId],
   );
-  const [products] = await conn.execute(
+  const productsQuery = () => conn.execute(
     "SELECT id, name, category, unit, active, image_url as imageUrl FROM products WHERE organization_id = ?",
     [orgId],
   );
-  const [variants] = await conn.execute(
+  const variantsQuery = () => conn.execute(
     "SELECT id, product_id, name, sku, barcode, package_weight as packageWeight, flavor, spice_level as spiceLevel, cost, online_cost as onlineCost, price, online_price as onlinePrice, reseller_price as resellerPrice, min_stock as minStock, active FROM variants WHERE organization_id = ?",
     [orgId],
   );
+  const balancesQuery = () => conn.execute(
+    "SELECT location_id as locationId, variant_id as variantId, quantity FROM balances WHERE organization_id = ?",
+    [orgId],
+  );
+  const salesQuery = () => conn.execute(
+    "SELECT id, location_id as locationId, gross_total as grossTotal, discount_amount as discountAmount, discount_type as discountType, discount_value as discountValue, total, platform_fee as platformFee, net_payout as netPayout, source_platform as sourcePlatform, marketplace_order_id as marketplaceOrderId, tracking_number as trackingNumber, cod_status as codStatus, cod_settled_at as codSettledAt, cod_settlement_amount as codSettlementAmount, source_import_id as sourceImportId, channel, method, status, note, cashier_id as cashierId, created_at as createdAt FROM sales WHERE organization_id = ?",
+    [orgId],
+  );
+  const transfersQuery = () => conn.execute(
+    "SELECT id, transfer_code as transferCode, from_id as fromId, to_id as toId, variant_id as variantId, quantity, status, created_at as createdAt, received_at as receivedAt, cancelled_at as cancelledAt, cancel_reason as cancelReason, created_by as createdBy FROM transfers WHERE organization_id = ?",
+    [orgId],
+  );
+  const movementsQuery = () => conn.execute(
+    "SELECT id, location_id as locationId, variant_id as variantId, quantity, type, reason as note, reference_id as referenceId, date as createdAt, created_by as user FROM stock_movements WHERE organization_id = ?",
+    [orgId],
+  );
+  const stockCountsQuery = () => conn.execute(
+    "SELECT id, location_id as locationId, variant_id as variantId, expected, actual as actualQty, reason, created_by as createdBy, created_at FROM stock_counts WHERE organization_id = ?",
+    [orgId],
+  );
+  const organizationsQuery = () => conn.execute(
+    "SELECT name, owner_name, phone, email, address, logo_url, negative_stock_policy FROM organizations WHERE id = ?",
+    [orgId],
+  );
+  const appStateQuery = () => conn.execute(
+    "SELECT version, payload FROM app_state WHERE id = ?",
+    [orgId],
+  );
+  const attendanceQuery = () => conn.execute(
+    "SELECT id, employee_id as employeeId, location_id as locationId, DATE_FORMAT(attendance_date, '%Y-%m-%d') as date, check_in_at as checkInAt, check_out_at as checkOutAt, check_in_gps as checkInGps, check_out_gps as checkOutGps, late_minutes as lateMinutes FROM attendance_records WHERE organization_id = ? ORDER BY attendance_date DESC",
+    [orgId],
+  );
+  const marketplaceMappingsQuery = () => conn.execute(
+    "SELECT platform, external_sku as externalSku, variant_id as variantId, created_at as createdAt, updated_at as updatedAt FROM marketplace_sku_mappings WHERE organization_id = ?",
+    [orgId],
+  );
+  const marketplaceImportsQuery = () => conn.execute(
+    "SELECT id, platform, fingerprint, income_fingerprint as incomeFingerprint, source_file_name as sourceFileName, income_file_name as incomeFileName, location_id as locationId, sale_id as saleId, row_count as rowCount, ignored_row_count as ignoredRowCount, duplicate_order_count as duplicateOrderCount, total_quantity as totalQuantity, gross_total as grossTotal, discount_amount as discountAmount, platform_fee as platformFee, net_payout as netPayout, created_at as createdAt, created_by as createdBy FROM marketplace_imports WHERE organization_id = ? ORDER BY created_at DESC",
+    [orgId],
+  );
+
+  const [
+    [locations],
+    [products],
+    [variants],
+    [balances],
+    [sales],
+    [transfers],
+    [movements],
+    [stockCountsRows],
+    [orgs],
+    [states],
+    [attendanceRows],
+    [marketplaceSkuMappings],
+    [marketplaceImports],
+  ] = await executeQueries([
+    locationsQuery,
+    productsQuery,
+    variantsQuery,
+    balancesQuery,
+    salesQuery,
+    transfersQuery,
+    movementsQuery,
+    stockCountsQuery,
+    organizationsQuery,
+    appStateQuery,
+    attendanceQuery,
+    marketplaceMappingsQuery,
+    marketplaceImportsQuery,
+  ]);
 
   const variantsByProduct = new Map();
   for (const variant of variants) {
@@ -415,15 +500,6 @@ export async function getStateFromSQL(conn, orgId) {
     p.variants = variantsByProduct.get(p.id) || [];
   }
 
-  const [balances] = await conn.execute(
-    "SELECT location_id as locationId, variant_id as variantId, quantity FROM balances WHERE organization_id = ?",
-    [orgId],
-  );
-
-  const [sales] = await conn.execute(
-    "SELECT id, location_id as locationId, gross_total as grossTotal, discount_amount as discountAmount, discount_type as discountType, discount_value as discountValue, total, platform_fee as platformFee, net_payout as netPayout, source_platform as sourcePlatform, marketplace_order_id as marketplaceOrderId, tracking_number as trackingNumber, cod_status as codStatus, cod_settled_at as codSettledAt, cod_settlement_amount as codSettlementAmount, source_import_id as sourceImportId, channel, method, status, note, cashier_id as cashierId, created_at as createdAt FROM sales WHERE organization_id = ?",
-    [orgId],
-  );
   const saleIds = sales.map((s) => s.id);
   let saleItems = [];
   if (saleIds.length > 0) {
@@ -471,20 +547,6 @@ export async function getStateFromSQL(conn, orgId) {
       });
   }
 
-  const [transfers] = await conn.execute(
-    "SELECT id, transfer_code as transferCode, from_id as fromId, to_id as toId, variant_id as variantId, quantity, status, created_at as createdAt, received_at as receivedAt, cancelled_at as cancelledAt, cancel_reason as cancelReason, created_by as createdBy FROM transfers WHERE organization_id = ?",
-    [orgId],
-  );
-
-  const [movements] = await conn.execute(
-    "SELECT id, location_id as locationId, variant_id as variantId, quantity, type, reason as note, reference_id as referenceId, date as createdAt, created_by as user FROM stock_movements WHERE organization_id = ?",
-    [orgId],
-  );
-
-  const [stockCountsRows] = await conn.execute(
-    "SELECT id, location_id as locationId, variant_id as variantId, expected, actual as actualQty, reason, created_by as createdBy, created_at FROM stock_counts WHERE organization_id = ?",
-    [orgId],
-  );
   const stockCounts = stockCountsRows.map((sc) => ({
     ...sc,
     systemQty: sc.expected,
@@ -492,10 +554,6 @@ export async function getStateFromSQL(conn, orgId) {
     createdAt: sc.created_at,
   }));
 
-  const [orgs] = await conn.execute(
-    "SELECT name, owner_name, phone, email, address, logo_url, negative_stock_policy FROM organizations WHERE id = ?",
-    [orgId],
-  );
   const business = orgs[0]
     ? {
         name: orgs[0].name,
@@ -508,24 +566,8 @@ export async function getStateFromSQL(conn, orgId) {
       }
     : { name: "MENENGS" };
 
-  const [states] = await conn.execute(
-    "SELECT version, payload FROM app_state WHERE id = ?",
-    [orgId],
-  );
   const rawState = states[0]?.payload || {};
   const version = Number(states[0]?.version || 0);
-  const [attendanceRows] = await conn.execute(
-    "SELECT id, employee_id as employeeId, location_id as locationId, DATE_FORMAT(attendance_date, '%Y-%m-%d') as date, check_in_at as checkInAt, check_out_at as checkOutAt, check_in_gps as checkInGps, check_out_gps as checkOutGps, late_minutes as lateMinutes FROM attendance_records WHERE organization_id = ? ORDER BY attendance_date DESC",
-    [orgId],
-  );
-  const [marketplaceSkuMappings] = await conn.execute(
-    "SELECT platform, external_sku as externalSku, variant_id as variantId, created_at as createdAt, updated_at as updatedAt FROM marketplace_sku_mappings WHERE organization_id = ?",
-    [orgId],
-  );
-  const [marketplaceImports] = await conn.execute(
-    "SELECT id, platform, fingerprint, income_fingerprint as incomeFingerprint, source_file_name as sourceFileName, income_file_name as incomeFileName, location_id as locationId, sale_id as saleId, row_count as rowCount, ignored_row_count as ignoredRowCount, duplicate_order_count as duplicateOrderCount, total_quantity as totalQuantity, gross_total as grossTotal, discount_amount as discountAmount, platform_fee as platformFee, net_payout as netPayout, created_at as createdAt, created_by as createdBy FROM marketplace_imports WHERE organization_id = ? ORDER BY created_at DESC",
-    [orgId],
-  );
   for (const record of marketplaceImports) {
     for (const field of [
       "rowCount",

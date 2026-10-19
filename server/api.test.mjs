@@ -14,7 +14,7 @@ const patch = (path, body, token) => request(path, { method: 'PATCH', headers: {
 const decodeJwtPayload = token => JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'));
 
 beforeAll(async () => {
-  server = spawn(process.execPath, ['server/index.mjs'], { cwd: process.cwd(), env: { ...process.env, PORT: String(port), DB_HOST: '', JWT_SECRET: 'integration-test-secret', ALLOW_SELF_REGISTRATION: 'true', ALLOW_LEGACY_SNAPSHOT: 'true' }, stdio: 'ignore' });
+  server = spawn(process.execPath, ['server/index.mjs'], { cwd: process.cwd(), env: { ...process.env, NODE_ENV: 'test', PORT: String(port), DB_HOST: '', JWT_SECRET: 'integration-test-secret', ALLOW_SELF_REGISTRATION: 'true', ALLOW_LEGACY_SNAPSHOT: 'true' }, stdio: 'ignore' });
   for (let attempt = 0; attempt < 100; attempt += 1) {
     try { if ((await fetch(`${base}/api/health`)).ok) return; } catch { /* server belum siap */ }
     await new Promise(resolve => setTimeout(resolve, 50));
@@ -1598,15 +1598,27 @@ describe('multi-tenant API', () => {
     const suffix = `${Date.now()}-shipping`;
     const owner = await post('/api/register', { organizationName: 'Pengiriman Aman', name: 'Owner', email: `owner-${suffix}@test.local`, password: 'Password123!' });
     const trackingNumber = `SPXID${Date.now()}`;
-    expect((await post('/api/commands/shipping/ready', { trackingNumber, locationId: 'loc-owner', marketplace: 'Shopee' }, owner.body.token)).status).toBe(201);
+    const readyResult = await post('/api/commands/shipping/ready', { trackingNumber, locationId: 'loc-owner', marketplace: 'Shopee' }, owner.body.token);
+    expect(readyResult.status).toBe(201);
+    expect(readyResult.body.shipments).toContainEqual(expect.objectContaining({ trackingNumber, status: 'ready' }));
     expect((await post('/api/commands/shipping/ready', { trackingNumber, locationId: 'loc-owner', marketplace: 'Shopee' }, owner.body.token)).status).toBe(400);
     const jneTrackingNumber = `JNE${Date.now()}AUTO`;
     expect((await post('/api/commands/shipping/ready', { trackingNumber: jneTrackingNumber, locationId: 'loc-owner', marketplace: 'Tokopedia' }, owner.body.token)).status).toBe(201);
     const unknownTrackingNumber = `UNKNOWN${Date.now()}`;
     expect((await post('/api/commands/shipping/ready', { trackingNumber: unknownTrackingNumber, locationId: 'loc-owner', marketplace: 'Website' }, owner.body.token)).status).toBe(201);
     const batchCode = `KRM-${Date.now()}`;
-    expect((await post('/api/commands/shipping/handover/scan', { trackingNumber, locationId: 'loc-owner', carrier: 'SPX Express', batchCode }, owner.body.token)).status).toBe(201);
-    expect((await post('/api/commands/shipping/handover/finalize', { batchCode, courierName: 'Kurir SPX', vehicleNumber: 'B 1234 XYZ' }, owner.body.token)).status).toBe(201);
+    const scanResult = await post('/api/commands/shipping/handover/scan', { trackingNumber, locationId: 'loc-owner', carrier: 'SPX Express', batchCode }, owner.body.token);
+    expect(scanResult.status).toBe(201);
+    expect(scanResult.body).toMatchObject({
+      batch: { batchCode, status: 'draft' },
+      shipments: [{ trackingNumber, status: 'handover_scanned', handoverBatchCode: batchCode }],
+    });
+    const finalizeResult = await post('/api/commands/shipping/handover/finalize', { batchCode, courierName: 'Kurir SPX', vehicleNumber: 'B 1234 XYZ' }, owner.body.token);
+    expect(finalizeResult.status).toBe(201);
+    expect(finalizeResult.body).toMatchObject({
+      batch: { batchCode, status: 'completed' },
+      shipments: [{ trackingNumber, status: 'handed_over' }],
+    });
     const sicepatBatchCode = `KRM-SC-${Date.now()}`;
     expect((await post('/api/commands/shipping/handover/scan', { trackingNumber: unknownTrackingNumber, locationId: 'loc-owner', carrier: 'SiCepat', batchCode: sicepatBatchCode }, owner.body.token)).status).toBe(201);
     expect((await post('/api/commands/shipping/handover/finalize', { batchCode: sicepatBatchCode, courierName: 'Kurir SiCepat' }, owner.body.token)).status).toBe(201);
@@ -1621,11 +1633,21 @@ describe('multi-tenant API', () => {
     const suffix = `${Date.now()}-shipping-correction`;
     const owner = await post('/api/register', { organizationName: 'Pengiriman Koreksi', name: 'Owner', email: `owner-${suffix}@test.local`, password: 'Password123!' });
     const trackingNumbers = [`SPXID${Date.now()}A`, `SPXID${Date.now()}B`];
-    expect((await post('/api/commands/shipping/ready/bulk', { trackingNumbers, locationId: 'loc-owner', marketplace: 'Shopee' }, owner.body.token)).status).toBe(201);
+    const bulkReadyResult = await post('/api/commands/shipping/ready/bulk', { trackingNumbers, locationId: 'loc-owner', marketplace: 'Shopee' }, owner.body.token);
+    expect(bulkReadyResult.status).toBe(201);
+    expect(bulkReadyResult.body.shipments).toHaveLength(2);
     const batchCode = `KRM-CORRECTION-${Date.now()}`;
-    expect((await post('/api/commands/shipping/handover/scan/bulk', { trackingNumbers, locationId: 'loc-owner', carrier: 'SPX Express', batchCode }, owner.body.token)).status).toBe(201);
+    const bulkScanResult = await post('/api/commands/shipping/handover/scan/bulk', { trackingNumbers, locationId: 'loc-owner', carrier: 'SPX Express', batchCode }, owner.body.token);
+    expect(bulkScanResult.status).toBe(201);
+    expect(bulkScanResult.body.shipments).toHaveLength(2);
 
-    expect((await post('/api/commands/shipping/handover/remove', { trackingNumber: trackingNumbers[0], batchCode, reason: 'Salah memasukkan paket' }, owner.body.token)).status).toBe(201);
+    const removeResult = await post('/api/commands/shipping/handover/remove', { trackingNumber: trackingNumbers[0], batchCode, reason: 'Salah memasukkan paket' }, owner.body.token);
+    expect(removeResult.status).toBe(201);
+    expect(removeResult.body).toMatchObject({
+      batch: { batchCode, status: 'draft' },
+      shipments: [{ trackingNumber: trackingNumbers[0], status: 'ready' }],
+      movements: [{ type: 'Koreksi batch pengiriman' }],
+    });
     expect((await post('/api/commands/shipping/handover/remove', { trackingNumber: trackingNumbers[1], batchCode, reason: 'Batch kurir diganti' }, owner.body.token)).status).toBe(201);
     let refreshed = await request('/api/state', { headers: { authorization: `Bearer ${owner.body.token}` } });
     const packageToCancel = refreshed.body.data.shipments.find((item) => item.trackingNumber === trackingNumbers[0]);
