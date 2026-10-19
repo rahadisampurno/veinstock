@@ -502,59 +502,67 @@ async function archiveLegacyReadyShipmentsForMenengs(pool) {
   // V2 mencakup pending_packing lama. Status itu ditampilkan sebagai ready
   // sejak foto dijadikan opsional, tetapi belum tercakup oleh reset pertama.
   const migrationKey = "shippingReadyReset20261019V2";
-  const organizationId = "org-meneng";
-  const connection = await pool.getConnection();
-  try {
-    await connection.beginTransaction();
-    const [rows] = await connection.execute(
-      "SELECT version, payload FROM app_state WHERE id=? FOR UPDATE",
-      [organizationId],
-    );
-    if (!rows.length) {
-      await connection.rollback();
-      return;
-    }
-    const state =
-      typeof rows[0].payload === "string"
-        ? JSON.parse(rows[0].payload)
-        : rows[0].payload;
-    state.securityMigrations ||= {};
-    if (state.securityMigrations[migrationKey]) {
-      await connection.rollback();
-      return;
-    }
+  // Akun operasional produksi dibuat sebagai ruang usaha "Menengs" dan tidak
+  // selalu memakai ID seed `org-meneng`. Pilih tenant dari master organisasi,
+  // bukan dari ID bawaan, supaya reset tepat mengenai ruang kerja klien.
+  const [organizations] = await pool.execute(
+    "SELECT id FROM organizations WHERE id='org-meneng' OR LOWER(TRIM(name))='menengs'",
+  );
+  for (const organization of organizations) {
+    const organizationId = organization.id;
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [rows] = await connection.execute(
+        "SELECT version, payload FROM app_state WHERE id=? FOR UPDATE",
+        [organizationId],
+      );
+      if (!rows.length) {
+        await connection.rollback();
+        continue;
+      }
+      const state =
+        typeof rows[0].payload === "string"
+          ? JSON.parse(rows[0].payload)
+          : rows[0].payload;
+      state.securityMigrations ||= {};
+      if (state.securityMigrations[migrationKey]) {
+        await connection.rollback();
+        continue;
+      }
 
-    const archivedAt = new Date().toISOString();
-    const shipmentIds = archiveReadyShipments(state, {
-      archivedAt,
-      cancelReason:
-        "Reset data Siap Diangkut atas permintaan operasional Menengs pada 19 Oktober 2026.",
-    });
-    state.securityMigrations[migrationKey] = {
-      completedAt: archivedAt,
-      shipmentCount: shipmentIds.length,
-      shipmentIds,
-    };
-    const nextVersion = Number(rows[0].version || 0) + 1;
-    await connection.execute(
-      "UPDATE app_state SET version=?, payload=? WHERE id=?",
-      [
-        nextVersion,
-        JSON.stringify(compactMarketplaceSnapshot(state)),
+      const archivedAt = new Date().toISOString();
+      const shipmentIds = archiveReadyShipments(state, {
+        archivedAt,
+        cancelReason:
+          "Reset data Siap Diangkut atas permintaan operasional Menengs pada 19 Oktober 2026.",
+      });
+      state.securityMigrations[migrationKey] = {
+        completedAt: archivedAt,
+        shipmentCount: shipmentIds.length,
+        shipmentIds,
+      };
+      const nextVersion = Number(rows[0].version || 0) + 1;
+      await connection.execute(
+        "UPDATE app_state SET version=?, payload=? WHERE id=?",
+        [
+          nextVersion,
+          JSON.stringify(compactMarketplaceSnapshot(state)),
+          organizationId,
+        ],
+      );
+      await connection.commit();
+      console.info("Archived legacy ready shipments for Menengs", {
         organizationId,
-      ],
-    );
-    await connection.commit();
-    console.info("Archived legacy ready shipments for Menengs", {
-      organizationId,
-      shipmentCount: shipmentIds.length,
-      version: nextVersion,
-    });
-  } catch (error) {
-    await connection.rollback();
-    throw error;
-  } finally {
-    connection.release();
+        shipmentCount: shipmentIds.length,
+        version: nextVersion,
+      });
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
   }
 }
 
