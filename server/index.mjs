@@ -494,11 +494,14 @@ async function backfillRolePolicyDependencies(pool) {
 
 // Reset operasional satu kali yang diminta Menengs setelah bukti packing
 // dijadikan opsional. Paket lama tetap dipertahankan untuk audit; hanya status
-// `ready` yang diarsipkan sebagai cancelled agar angka Siap Diangkut kembali 0.
+// `ready` dan status lama `pending_packing` yang diarsipkan sebagai cancelled
+// agar angka Siap Diangkut kembali 0.
 // Batch serah-terima dan paket yang sudah diserahkan tidak disentuh.
 async function archiveLegacyReadyShipmentsForMenengs(pool) {
   if (!isProduction) return;
-  const migrationKey = "shippingReadyReset20261019";
+  // V2 mencakup pending_packing lama. Status itu ditampilkan sebagai ready
+  // sejak foto dijadikan opsional, tetapi belum tercakup oleh reset pertama.
+  const migrationKey = "shippingReadyReset20261019V2";
   const organizationId = "org-meneng";
   const connection = await pool.getConnection();
   try {

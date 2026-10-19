@@ -4,11 +4,13 @@ export const archiveReadyShipments = (
     archivedAt,
     cancelledBy = "system-client-reset",
     cancelReason,
+    statuses = ["ready", "pending_packing"],
   },
 ) => {
+  const resettableStatuses = new Set(statuses);
   const shipmentIds = [];
   for (const shipment of state.shipments || []) {
-    if (shipment.status !== "ready") continue;
+    if (!resettableStatuses.has(shipment.status)) continue;
     shipmentIds.push(shipment.id);
     Object.assign(shipment, {
       status: "cancelled",

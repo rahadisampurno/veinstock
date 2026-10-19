@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { archiveReadyShipments } from "./shippingReadyReset.mjs";
 
 describe("reset antrean Siap Diangkut", () => {
-  it("mengarsipkan hanya paket ready tanpa mengubah batch dan paket selesai", () => {
+  it("mengarsipkan ready dan pending packing tanpa mengubah batch atau paket selesai", () => {
     const handedOver = {
       id: "ship-completed",
       trackingNumber: "DONE-001",
@@ -33,7 +33,7 @@ describe("reset antrean Siap Diangkut", () => {
         {
           id: "ship-ready-2",
           trackingNumber: "READY-002",
-          status: "ready",
+          status: "pending_packing",
           locationId: "loc-outlet",
           handoverBatchCode: "stale-batch",
         },
@@ -89,7 +89,7 @@ describe("reset antrean Siap Diangkut", () => {
     }).toEqual(protectedData);
   });
 
-  it("aman dijalankan ketika tidak ada paket ready", () => {
+  it("aman dijalankan ketika tidak ada paket ready atau pending packing", () => {
     const state = {
       shipments: [{ id: "ship-1", status: "handover_scanned" }],
     };
